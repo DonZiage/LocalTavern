@@ -1,48 +1,61 @@
-This is a Kotlin Multiplatform project targeting Android, iOS, Desktop (JVM).
 
-* [/composeApp](./composeApp/src) is for code that will be shared across your Compose Multiplatform applications.
-  It contains several subfolders:
-  - [commonMain](./composeApp/src/commonMain/kotlin) is for code that’s common for all targets.
-  - Other folders are for Kotlin code that will be compiled for only the platform indicated in the folder name.
-    For example, if you want to use Apple’s CoreCrypto for the iOS part of your Kotlin app,
-    the [iosMain](./composeApp/src/iosMain/kotlin) folder would be the right place for such calls.
-    Similarly, if you want to edit the Desktop (JVM) specific part, the [jvmMain](./composeApp/src/jvmMain/kotlin)
-    folder is the appropriate location.
+# LocalTavern
 
-* [/iosApp](./iosApp/iosApp) contains iOS applications. Even if you’re sharing your UI with Compose Multiplatform,
-  you need this entry point for your iOS app. This is also where you should add SwiftUI code for your project.
+LocalTavern is a standalone, privacy-focused LLM interface designed for Windows, Linux, and Android. It aims to provide a premium "product" experience—a native application rather than a browser wrapper—prioritizing local control, high-fidelity UI, and zero-dependency operation.
 
-### Build and Run Android Application
+## The Goal
 
-To build and run the development version of the Android app, use the run configuration from the run widget
-in your IDE’s toolbar or build it directly from the terminal:
-- on macOS/Linux
-  ```shell
-  ./gradlew :composeApp:assembleDebug
-  ```
-- on Windows
-  ```shell
-  .\gradlew.bat :composeApp:assembleDebug
-  ```
+The project exists to solve the "service complexity" problem. Most LLM interfaces require complex environments (Python/Node.js) or cloud accounts. LocalTavern is built to be a simple, native binary that you run locally, keeping your data on your hardware and your configurations synced across your own devices.
 
-### Build and Run Desktop (JVM) Application
 
-To build and run the development version of the desktop app, use the run configuration from the run widget
-in your IDE’s toolbar or run it directly from the terminal:
-- on macOS/Linux
-  ```shell
-  ./gradlew :composeApp:run
-  ```
-- on Windows
-  ```shell
-  .\gradlew.bat :composeApp:run
-  ```
+## Core Principles
 
-### Build and Run iOS Application
+- **Privacy First:** Zero telemetry, zero metrics, and no mandatory cloud accounts. All chat history and API keys are stored locally.
 
-To build and run the development version of the iOS app, use the run configuration from the run widget
-in your IDE’s toolbar or open the [/iosApp](./iosApp) directory in Xcode and run it from there.
+- **Zero-Dependency:** Shipped as native binaries. You don't need to install a specific runtime or manage environments to use it.
 
----
+- **Symmetry:** Full feature parity across desktop and mobile versions.
 
-Learn more about [Kotlin Multiplatform](https://www.jetbrains.com/help/kotlin-multiplatform-dev/get-started.html)…
+- **Local Sync:** Encrypted P2P differential synchronization via WiFi or USB—no intermediary servers required.
+
+
+## Key Features
+
+- **Multi-Backend Support:**
+
+    - ***Commercial:*** Native integration for OpenAI, Gemini, Anthropic, Mistral, DeepSeek, OpenRouter, and more.
+
+    - ***Local Inference:*** Connect directly to Ollama, LM Studio, KoboldCPP, or any OpenAI-compatible local endpoint.
+
+- **Character & Persona Management:** * Full support for SillyTavern-compatible PNG metadata cards.
+
+    - Multiple user personas with custom avatars and system prompts.
+
+    - Local "Lorebook" (World Info) support for character-specific context triggers.
+
+- **Advanced Control:** Granular parameter sliders (Temperature, Top-P, Presence Penalty, etc.).
+
+    - Real-time cost estimation based on active model pricing and prompt length.
+
+    - Automatic reasoning mode for supported models (DeepSeek-R1, O1).
+
+- **UI/UX:** A refined interface utilizing glassmorphism, fluid animations, and a consistent 12-16pt rounded aesthetic.
+## Technical Stack
+
+**Framework:** Compose Multiplatform (Kotlin)
+
+**Database:** SQLDelight (Type-safe, cross-platform SQL)
+
+**Networking:** Ktor
+
+**Image Loading:** Coil3
+
+**Encryption:** SQLCipher / Platform-native KeyStore
+
+
+## Disclaimer
+
+**This is a vibecoded project.** 
+LocalTavern is built primarily to satisfy my own specific use-case and workflow. It is opinionated and developed at the speed of my own needs. While I aim for it to be a stable and useful tool for anyone who values privacy and native performance, it is provided "as-is."
+
+*Everyone is free to contribute, open issues, or fork the project if they find it useful.*

@@ -1,19 +1,103 @@
-*.iml
-.kotlin
-.gradle
+# ==========================================
+# Compose Multiplatform (CMP) Master Ignore
+# ==========================================
+
+# --- Gradle & Build Artifacts ---
+.gradle/
+build/
 **/build/
-xcuserdata
-!src/**/build/
+*/build/
+.kotlin/
+bin/
+!gradle-wrapper.jar
+
+# --- Kotlin Multiplatform / Native ---
+.konan/
+kotlin-native-macos*/
+kotlin-native-linux*/
+kotlin-native-windows*/
+*.klib
+# Linked frameworks for iOS
+*.framework/
+
+# --- Android Specific ---
+*.apk
+*.ap_
+*.dex
+*.class
 local.properties
-.idea
-.DS_Store
-captures
 .externalNativeBuild
-.cxx
-*.xcodeproj/*
-!*.xcodeproj/project.pbxproj
-!*.xcodeproj/xcshareddata/
-!*.xcodeproj/project.xcworkspace/
-!*.xcworkspace/contents.xcworkspacedata
-**/xcshareddata/WorkspaceSettings.xcsettings
+.cxx/
+captures/
+output.json
+# Proguard / R6 rules
+proguard/
+# Android Studio Profiler
+*.hprof
+
+# --- iOS Specific (Xcode, CocoaPods, Swift PM) ---
+/iosApp/DerivedData/
+/iosApp/.bundle/
+/iosApp/build/
+/iosApp/index.dat
+/iosApp/*.xcworkspace
+/iosApp/xcuserdata/
+/iosApp/xcshareddata/
+/iosApp/*.lsplugin
+/iosApp/Pods/
+/iosApp/Pods.txt
+/iosApp/Podfile.lock
+/iosApp/.xcresult/
+
+# --- Web Specific (Compose HTML/Wasm) ---
 node_modules/
+dist/
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- IDEs: IntelliJ IDEA & Android Studio ---
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+.navigation/
+# !.idea/runConfigurations/
+
+# --- IDEs: Visual Studio Code ---
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# --- Secrets & Keys (CRITICAL) ---
+*.jks
+*.keystore
+*.p12
+*.key
+*.pem
+google-services.json
+GoogleService-Info.plist
+secrets.properties
+
+# --- OS Specific ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# --- Logs & Crash Reports ---
+*.log
+hs_err_pid*
+replay_pid*
