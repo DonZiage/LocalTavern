@@ -100,4 +100,8 @@ desktop.ini
 # --- Logs & Crash Reports ---
 *.log
 hs_err_pid*
+<<<<<<< HEAD
 replay_pid*
+=======
+replay_pid*
+>>>>>>> 7bed07d (.gitignore setup)
