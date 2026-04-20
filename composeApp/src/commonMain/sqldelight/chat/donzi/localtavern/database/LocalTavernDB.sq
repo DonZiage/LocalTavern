@@ -1,0 +1,76 @@
+CREATE TABLE CharacterEntity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    personality TEXT,
+    scenario TEXT,
+    firstMes TEXT,
+    mesExample TEXT,
+    creatorNotes TEXT,
+    systemPrompt TEXT,
+    altGreetings TEXT,
+    avatarPath TEXT
+);
+
+-- Queries
+insertCharacter:
+INSERT INTO CharacterEntity(name, description, personality, scenario, firstMes, mesExample, creatorNotes, systemPrompt, altGreetings, avatarPath)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+selectAllCharacters:
+SELECT * FROM CharacterEntity ORDER BY name ASC;
+
+updateCharacter:
+UPDATE CharacterEntity
+SET name = ?,
+    description = ?,
+    personality = ?,
+    scenario = ?,
+    firstMes = ?,
+    systemPrompt = ?,
+    altGreetings = ?
+WHERE id = ?;
+
+deleteCharactersByIds:
+DELETE FROM CharacterEntity WHERE id IN ?;
+
+-- Your Personas (User profiles)
+CREATE TABLE PersonaEntity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    avatarPath TEXT
+);
+
+-- Chat Sessions (Groups messages together)
+CREATE TABLE ChatSession (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    characterId INTEGER NOT NULL,
+    personaId INTEGER NOT NULL,
+    title TEXT,
+    lastTimestamp INTEGER NOT NULL
+);
+
+-- The Messages
+CREATE TABLE MessageEntity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sessionId INTEGER NOT NULL,
+    role TEXT NOT NULL, -- "user" or "assistant"
+    content TEXT NOT NULL,
+    timestamp INTEGER NOT NULL
+);
+
+insertPersona:
+INSERT INTO PersonaEntity(name, description, avatarPath) VALUES (?, ?, ?);
+
+selectAllPersonas:
+SELECT * FROM PersonaEntity;
+
+selectMessagesBySession:
+SELECT * FROM MessageEntity WHERE sessionId = ? ORDER BY timestamp ASC;
+
+insertMessage:
+INSERT INTO MessageEntity(sessionId, role, content, timestamp) VALUES (?, ?, ?, ?);
+
+selectLastSessionForCharacter:
+SELECT * FROM ChatSession WHERE characterId = ? ORDER BY lastTimestamp DESC LIMIT 1;
