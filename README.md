@@ -58,8 +58,4 @@ The project exists to solve the "service complexity" problem. Most LLM interface
 **This is a vibecoded project.** 
 LocalTavern is built primarily to satisfy my own specific use-case and workflow. It is opinionated and developed at the speed of my own needs. While I aim for it to be a stable and useful tool for anyone who values privacy and native performance, it is provided "as-is."
 
-<<<<<<< HEAD
 *Everyone is free to contribute, open issues, or fork the project if they find it useful.*
-=======
-*Everyone is free to contribute, open issues, or fork the project if they find it useful.*
->>>>>>> faae00f (README setup)
