@@ -1,8 +1,16 @@
 package chat.donzi.localtavern
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -16,6 +24,7 @@ import chat.donzi.localtavern.database.createDatabase
 import chat.donzi.localtavern.utils.CharacterManager
 import chat.donzi.localtavern.ui.components.CharacterDefinitionEditor
 import chat.donzi.localtavern.ui.components.CharacterListSection
+import chat.donzi.localtavern.ui.components.ApiConnectionSettings
 import kotlinx.coroutines.launch
 import java.awt.FileDialog
 import java.awt.Frame
@@ -55,7 +64,7 @@ fun TavernChatScreen() {
         if (showSettings) {
             Box(
                 modifier = Modifier
-                    .width(280.dp)
+                    .width(320.dp)
                     .fillMaxHeight()
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             ) { SettingsPanel() }
@@ -175,7 +184,77 @@ fun triggerCharacterImport(scope: kotlinx.coroutines.CoroutineScope, onComplete:
     }
 }
 
-@Composable fun SettingsPanel()         { Text("Settings",  modifier = Modifier.padding(16.dp)) }
+@Composable
+fun SettingsPanel() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(8.dp)
+    ) {
+        Text(
+            "Settings",
+            style = MaterialTheme.typography.headlineSmall,
+            modifier = Modifier.padding(8.dp)
+        )
+        
+        CollapsibleSection(title = "API Connection") {
+            ApiConnectionSettings()
+        }
+        
+        CollapsibleSection(title = "Appearance") {
+            Text("Coming soon...", modifier = Modifier.padding(16.dp))
+        }
+
+        CollapsibleSection(title = "General") {
+            Text("Coming soon...", modifier = Modifier.padding(16.dp))
+        }
+    }
+}
+
+@Composable
+fun CollapsibleSection(
+    title: String,
+    content: @Composable () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                Icon(
+                    if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    contentDescription = null
+                )
+            }
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically(),
+                exit = shrinkVertically()
+            ) {
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    content()
+                }
+            }
+        }
+    }
+}
+
 @Composable fun PersonaSelectorSection(){ Text("Personas",  modifier = Modifier.padding(16.dp)) }
 @Composable fun ChatLayout()            { Text("Chat Area", modifier = Modifier.padding(16.dp)) }
 @Composable fun TavernTheme(content: @Composable () -> Unit) { MaterialTheme { content() } }

@@ -1,9 +1,11 @@
 package chat.donzi.localtavern.ui.components
 
+import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -16,8 +18,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.database.CharacterEntity
 
@@ -59,60 +61,101 @@ fun CharacterListSection(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             val interactionSource = remember { MutableInteractionSource() }
-            BasicTextField(
-                value = query,
-                onValueChange = { query = it },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(40.dp)
-                    .focusRequester(focusRequester),
-                textStyle = MaterialTheme.typography.bodyMedium.copy(
-                    color = MaterialTheme.colorScheme.onSurface
-                ),
-                singleLine = true,
-                interactionSource = interactionSource,
-                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                decorationBox = { innerTextField ->
-                    TextFieldDefaults.DecorationBox(
+
+            AnimatedContent(
+                targetState = isSearchActive,
+                modifier = Modifier.weight(1f),
+                transitionSpec = {
+                    (fadeIn() + expandHorizontally(expandFrom = Alignment.Start))
+                        .togetherWith(fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.Start))
+                },
+                label = "SearchTransition"
+            ) { active ->
+                if (active) {
+                    // Expanded Search Bar
+                    LaunchedEffect(Unit) {
+                        focusRequester.requestFocus()
+                    }
+
+                    BasicTextField(
                         value = query,
-                        innerTextField = innerTextField,
-                        enabled = true,
+                        onValueChange = { query = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(40.dp)
+                            .focusRequester(focusRequester),
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                            color = MaterialTheme.colorScheme.onSurface
+                        ),
                         singleLine = true,
-                        visualTransformation = VisualTransformation.None,
                         interactionSource = interactionSource,
-                        placeholder = null,
-                        leadingIcon = {
-                            IconButton(
-                                onClick = {
-                                    isSearchActive = !isSearchActive
-                                    if (isSearchActive) focusRequester.requestFocus()
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        decorationBox = { innerTextField ->
+                            TextFieldDefaults.DecorationBox(
+                                value = query,
+                                innerTextField = innerTextField,
+                                enabled = true,
+                                singleLine = true,
+                                visualTransformation = VisualTransformation.None,
+                                interactionSource = interactionSource,
+                                leadingIcon = {
+                                    // Match the size and ensure no extra internal padding
+                                    IconButton(
+                                        onClick = { isSearchActive = false },
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Search,
+                                            null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
                                 },
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Icon(Icons.Default.Search, null, modifier = Modifier.size(20.dp))
-                            }
-                        },
-                        trailingIcon = {
-                            if (query.isNotEmpty()) {
-                                IconButton(onClick = { query = "" }, modifier = Modifier.size(24.dp)) {
-                                    Icon(Icons.Default.Close, null, modifier = Modifier.size(16.dp))
-                                }
-                            }
-                        },
-                        container = {
-                            if (isSearchActive || query.isNotEmpty()) {
+                                trailingIcon = {
+                                    if (query.isNotEmpty()) {
+                                        IconButton(onClick = { query = "" }, modifier = Modifier.size(24.dp)) {
+                                            Icon(Icons.Default.Close, null, modifier = Modifier.size(16.dp))
+                                        }
+                                    }
+                                },
+                                container = {
                                 OutlinedTextFieldDefaults.ContainerBox(
-                                    enabled = true,
+                                        enabled = true,
                                     isError = false,
                                     interactionSource = interactionSource,
                                     colors = OutlinedTextFieldDefaults.colors(),
+                                    shape = CircleShape
                                 )
-                            }
-                        },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                },
+                                // Reduced start padding because the leadingIcon already 
+                                // provides spacing, preventing the text from being too far right.
+                                contentPadding = PaddingValues(start = 0.dp, end = 12.dp, top = 0.dp, bottom = 0.dp),
+                            )
+                        }
                     )
+                } else {
+                    // Collapsed Icon
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(40.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        IconButton(
+                            onClick = { isSearchActive = true },
+                            modifier = Modifier
+                                .padding(start = 4.dp) // Offset to match the TextField's leadingIcon position
+                                .size(40.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Search,
+                                contentDescription = "Open Search",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
                 }
-            )
+            }
 
             actions()
         }

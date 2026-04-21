@@ -74,3 +74,67 @@ INSERT INTO MessageEntity(sessionId, role, content, timestamp) VALUES (?, ?, ?, 
 
 selectLastSessionForCharacter:
 SELECT * FROM ChatSession WHERE characterId = ? ORDER BY lastTimestamp DESC LIMIT 1;
+
+-- API Connections
+CREATE TABLE ApiConnection (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL, -- "OpenAI", "Anthropic", etc.
+    name TEXT NOT NULL,     -- User-defined name for this connection
+    baseUrl TEXT,
+    apiKey TEXT,
+    model TEXT,
+    isActive INTEGER NOT NULL DEFAULT 0,
+    isChatCompletion INTEGER NOT NULL DEFAULT 1,
+    lastUsed INTEGER DEFAULT 0, -- Timestamp of last use
+    temperature REAL NOT NULL DEFAULT 1.0,
+    topP REAL NOT NULL DEFAULT 1.0,
+    topK INTEGER NOT NULL DEFAULT 0,
+    presencePenalty REAL NOT NULL DEFAULT 0.0,
+    frequencyPenalty REAL NOT NULL DEFAULT 0.0,
+    contextLimit INTEGER NOT NULL DEFAULT 4096,
+    responseLimit INTEGER NOT NULL DEFAULT 0
+);
+
+selectAllApiConnections:
+SELECT * FROM ApiConnection;
+
+insertApiConnection:
+INSERT INTO ApiConnection(
+    provider, name, baseUrl, apiKey, model, isActive, isChatCompletion, lastUsed,
+    temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+updateApiConnection:
+UPDATE ApiConnection
+SET provider = ?,
+    name = ?,
+    baseUrl = ?,
+    apiKey = ?,
+    model = ?,
+    isActive = ?,
+    isChatCompletion = ?,
+    lastUsed = ?,
+    temperature = ?,
+    topP = ?,
+    topK = ?,
+    presencePenalty = ?,
+    frequencyPenalty = ?,
+    contextLimit = ?,
+    responseLimit = ?
+WHERE id = ?;
+
+deleteApiConnection:
+DELETE FROM ApiConnection WHERE id = ?;
+
+setActiveApiConnection:
+UPDATE ApiConnection SET isActive = 0;
+
+updateActiveApiConnection:
+UPDATE ApiConnection SET isActive = 1, lastUsed = ? WHERE id = ?;
+
+selectActiveApiConnection:
+SELECT * FROM ApiConnection WHERE isActive = 1 LIMIT 1;
+
+selectLastUsedApiConnection:
+SELECT * FROM ApiConnection ORDER BY lastUsed DESC LIMIT 1;

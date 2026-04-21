@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.database.CharacterEntity
+import kotlinx.coroutines.launch
 
 @Composable
 fun CharacterDefinitionEditor(
@@ -45,15 +46,18 @@ fun CharacterDefinitionEditor(
     }
 
     var confirmDelete by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
     fun persist() = onSave(name, description, personality, scenario, firstMes, systemPrompt, altGreetings)
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState())
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -150,13 +154,31 @@ fun CharacterDefinitionEditor(
                         originalImage = original,
                         character = character
                     )
-                    val file = java.io.File(
-                        System.getProperty("user.home") + "/Desktop/${character.name}.png"
-                    )
+                    val osName = System.getProperty("os.name") ?: ""
+                    val baseFolder = if (osName.contains("Android", ignoreCase = true)) {
+                        "/storage/emulated/0/Download"
+                    } else {
+                        System.getProperty("user.home") + "/Documents"
+                    }
+                    
+                    val file = java.io.File(baseFolder, "${character.name}.png")
                     file.writeBytes(exportedBytes)
+
+                    scope.launch {
+                        snackbarHostState.showSnackbar(
+                            message = "Exported ${file.name} to ${file.parent}",
+                            duration = SnackbarDuration.Long
+                        )
+                    }
                 }
             ) { Text("Export PNG") }
         }
+    }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp)
+        )
     }
 
     if (confirmDelete) {
