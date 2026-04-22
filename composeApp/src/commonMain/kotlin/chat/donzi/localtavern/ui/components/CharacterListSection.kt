@@ -201,7 +201,7 @@ fun CharacterListSection(
                 CharacterItem(
                     name = char.name,
                     description = char.personality ?: "No personality set.",
-                    avatarPath = char.avatarPath,
+                    avatarData = char.avatarData,
                     selected = isSelected,
                     selectionMode = selectionMode,
                     onClick = {

@@ -18,7 +18,7 @@ class ChatRepository(private val database: LocalTavernDB) {
 
     suspend fun upsertCharacter(
         card: SillyTavernCardV2,
-        avatarPath: String? = null
+        avatarData: ByteArray? = null
     ) = withContext(Dispatchers.IO) {
         queries.insertCharacter(
             name = card.name,
@@ -30,7 +30,7 @@ class ChatRepository(private val database: LocalTavernDB) {
             creatorNotes = card.creator_notes,
             systemPrompt = card.system_prompt,
             altGreetings = card.alternate_greetings.joinToString("|||").ifBlank { null },
-            avatarPath = avatarPath
+            avatarData = avatarData
         )
     }
 
@@ -43,7 +43,7 @@ class ChatRepository(private val database: LocalTavernDB) {
         firstMes: String?,
         systemPrompt: String?,
         altGreetings: List<String> = emptyList(),
-        avatarPath: String? = null
+        avatarData: ByteArray? = null
     ) = withContext(Dispatchers.IO) {
         queries.updateCharacter(
             name = name,
@@ -53,7 +53,7 @@ class ChatRepository(private val database: LocalTavernDB) {
             firstMes = firstMes,
             systemPrompt = systemPrompt,
             altGreetings = altGreetings.joinToString("|||").ifBlank { null },
-            avatarPath = avatarPath,
+            avatarData = avatarData,
             id = id
         )
     }

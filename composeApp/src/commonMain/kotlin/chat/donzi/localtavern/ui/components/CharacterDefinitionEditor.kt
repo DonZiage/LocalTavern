@@ -2,9 +2,13 @@
 package chat.donzi.localtavern.ui.components
 
 import chat.donzi.localtavern.utils.CharacterManager
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateOffsetAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -16,15 +20,24 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import chat.donzi.localtavern.database.CharacterEntity
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
 import java.awt.FileDialog
 import java.awt.Frame
 import java.io.File
+import kotlin.math.abs
 
 @Composable
 fun CharacterDefinitionEditor(
@@ -38,7 +51,7 @@ fun CharacterDefinitionEditor(
         firstMes: String,
         systemPrompt: String,
         altGreetings: List<String>,
-        avatarPath: String?
+        avatarData: ByteArray?
     ) -> Unit,
     onDelete: () -> Unit
 ) {
@@ -55,26 +68,25 @@ fun CharacterDefinitionEditor(
                 ?: emptyList()
         )
     }
-    var avatarPath by remember(character.id) { mutableStateOf(character.avatarPath) }
+    var avatarData by remember(character.id) { mutableStateOf(character.avatarData) }
 
     var confirmDelete by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     
     var showImageMenu by remember { mutableStateOf(false) }
+    var showFullImage by remember { mutableStateOf(false) }
 
     // Consistent Red Color for Delete Button (Material 700 Red)
     val deleteRed = Color(0xFFD32F2F)
 
-    fun persist() = onSave(name, description, personality, scenario, firstMes, systemPrompt, altGreetings, avatarPath)
+    fun persist() = onSave(name, description, personality, scenario, firstMes, systemPrompt, altGreetings, avatarData)
 
     val exportCharacter = {
-        val original = character.avatarPath
-            ?.let { File(it).takeIf(File::exists)?.readBytes() }
-            ?: ByteArray(0)
+        val original = avatarData ?: ByteArray(0)
         val exportedBytes = CharacterManager.exportToPng(
             originalImage = original,
-            character = character
+            character = character.copy(avatarData = avatarData)
         )
         val osName = System.getProperty("os.name") ?: ""
         val baseFolder = if (osName.contains("Android", ignoreCase = true)) {
@@ -103,11 +115,8 @@ fun CharacterDefinitionEditor(
         dialog.isVisible = true
         if (dialog.file != null) {
             val file = File(dialog.directory, dialog.file)
-            val copiedPath = CharacterManager.copyAvatar(file, name)
-            if (copiedPath != null) {
-                avatarPath = copiedPath
-                persist()
-            }
+            avatarData = file.readBytes()
+            persist()
         }
     }
 
@@ -182,9 +191,9 @@ fun CharacterDefinitionEditor(
                             .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f), CircleShape)
                             .clickable { showImageMenu = true }
                     ) {
-                        if (avatarPath != null) {
+                        if (avatarData != null) {
                             AsyncImage(
-                                model = avatarPath,
+                                model = avatarData,
                                 contentDescription = "Character Avatar",
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier.fillMaxSize()
@@ -203,7 +212,7 @@ fun CharacterDefinitionEditor(
                         expanded = showImageMenu,
                         onDismissRequest = { showImageMenu = false }
                     ) {
-                        if (avatarPath == null) {
+                        if (avatarData == null) {
                             DropdownMenuItem(
                                 text = { Text("Add Photo") },
                                 leadingIcon = { Icon(Icons.Default.AddAPhoto, null) },
@@ -213,6 +222,14 @@ fun CharacterDefinitionEditor(
                                 }
                             )
                         } else {
+                            DropdownMenuItem(
+                                text = { Text("View Photo") },
+                                leadingIcon = { Icon(Icons.Default.Visibility, null) },
+                                onClick = {
+                                    showImageMenu = false
+                                    showFullImage = true
+                                }
+                            )
                             DropdownMenuItem(
                                 text = { Text("Update Photo") },
                                 leadingIcon = { Icon(Icons.Default.Refresh, null) },
@@ -226,7 +243,7 @@ fun CharacterDefinitionEditor(
                                 leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
                                 onClick = {
                                     showImageMenu = false
-                                    avatarPath = null
+                                    avatarData = null
                                     persist()
                                 }
                             )
@@ -301,6 +318,88 @@ fun CharacterDefinitionEditor(
             hostState = snackbarHostState,
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp)
         )
+    }
+
+    if (showFullImage && avatarData != null) {
+        Dialog(
+            onDismissRequest = { showFullImage = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            var isZoomed by remember { mutableStateOf(false) }
+            var panOffset by remember { mutableStateOf(Offset.Zero) }
+            var imageSize by remember { mutableStateOf(IntSize.Zero) }
+            var transformOrigin by remember { mutableStateOf(TransformOrigin.Center) }
+            
+            val scale by animateFloatAsState(if (isZoomed) 3.5f else 1f)
+            val displayOffset by animateOffsetAsState(if (isZoomed) panOffset else Offset.Zero)
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.6f))
+                    .clickable { showFullImage = false },
+                contentAlignment = Alignment.Center
+            ) {
+                AsyncImage(
+                    model = avatarData,
+                    contentDescription = "Full Image",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize(0.7f) // 15% margin on each side (total 30% reduction)
+                        .onGloballyPositioned { imageSize = it.size }
+                        .graphicsLayer(
+                            scaleX = scale, 
+                            scaleY = scale,
+                            translationX = displayOffset.x,
+                            translationY = displayOffset.y,
+                            transformOrigin = transformOrigin
+                        )
+                        .pointerInput(Unit) {
+                            detectTapGestures(onTap = { showFullImage = false })
+                        }
+                        .pointerInput(Unit) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = { offset ->
+                                    val pivotX = if (imageSize.width > 0) offset.x / imageSize.width else 0.5f
+                                    val pivotY = if (imageSize.height > 0) offset.y / imageSize.height else 0.5f
+                                    transformOrigin = TransformOrigin(pivotX, pivotY)
+                                    isZoomed = true
+                                },
+                                onDragEnd = { 
+                                    isZoomed = false
+                                    panOffset = Offset.Zero
+                                },
+                                onDragCancel = { 
+                                    isZoomed = false
+                                    panOffset = Offset.Zero
+                                },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    
+                                    val zoomFactor = 3.5f
+                                    // The limit is reached when the zoomed image edge hits the 0.7f box boundaries
+                                    // imageSize is already 70% of screen. Zoomed size is imageSize * 3.5
+                                    // The pan limit relative to the box center is:
+                                    val maxX = (imageSize.width * zoomFactor - imageSize.width) / 2f
+                                    val maxY = (imageSize.height * zoomFactor - imageSize.height) / 2f
+                                    
+                                    val distX = (abs(panOffset.x) / maxX).coerceIn(0f, 1f)
+                                    val distY = (abs(panOffset.y) / maxY).coerceIn(0f, 1f)
+                                    
+                                    // Speed drops to 0 at the border (dist=1) and is 4.0 at the center (dist=0)
+                                    val speedMultiplierX = 4f * (1f - distX)
+                                    val speedMultiplierY = 4f * (1f - distY)
+                                    
+                                    val newX = (panOffset.x - dragAmount.x * speedMultiplierX).coerceIn(-maxX, maxX)
+                                    val newY = (panOffset.y - dragAmount.y * speedMultiplierY).coerceIn(-maxY, maxY)
+                                    
+                                    panOffset = Offset(newX, newY)
+                                }
+                            )
+                        }
+                )
+            }
+        }
     }
 
     if (confirmDelete) {

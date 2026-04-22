@@ -9,12 +9,12 @@ CREATE TABLE CharacterEntity (
     creatorNotes TEXT,
     systemPrompt TEXT,
     altGreetings TEXT,
-    avatarPath TEXT
+    avatarData BLOB
 );
 
 -- Queries
 insertCharacter:
-INSERT INTO CharacterEntity(name, description, personality, scenario, firstMes, mesExample, creatorNotes, systemPrompt, altGreetings, avatarPath)
+INSERT INTO CharacterEntity(name, description, personality, scenario, firstMes, mesExample, creatorNotes, systemPrompt, altGreetings, avatarData)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 selectAllCharacters:
@@ -29,7 +29,7 @@ SET name = ?,
     firstMes = ?,
     systemPrompt = ?,
     altGreetings = ?,
-    avatarPath = ?
+    avatarData = ?
 WHERE id = ?;
 
 deleteCharactersByIds:
@@ -40,7 +40,7 @@ CREATE TABLE PersonaEntity (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     description TEXT,
-    avatarPath TEXT
+    avatarData BLOB
 );
 
 -- Chat Sessions (Groups messages together)
@@ -62,7 +62,7 @@ CREATE TABLE MessageEntity (
 );
 
 insertPersona:
-INSERT INTO PersonaEntity(name, description, avatarPath) VALUES (?, ?, ?);
+INSERT INTO PersonaEntity(name, description, avatarData) VALUES (?, ?, ?);
 
 selectAllPersonas:
 SELECT * FROM PersonaEntity;

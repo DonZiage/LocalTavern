@@ -133,6 +133,15 @@ fun TavernChatScreen(
         value = repository?.getAllCharacters() ?: emptyList()
     }
 
+    // Sync selectedCharacter when characters list changes
+    LaunchedEffect(characters) {
+        selectedCharacter?.let { current ->
+            characters.find { it.id == current.id }?.let { updated ->
+                selectedCharacter = updated
+            }
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         // Main Content Layer
         Column(modifier = Modifier.fillMaxSize()) {
@@ -161,7 +170,7 @@ fun TavernChatScreen(
                 CharacterDefinitionEditor(
                     character = selectedCharacter!!,
                     onClose = { editingDefinitions = false },
-                    onSave = { name, description, personality, scenario, firstMes, systemPrompt, altGreetings, avatarPath ->
+                    onSave = { name, description, personality, scenario, firstMes, systemPrompt, altGreetings, avatarData ->
                         scope.launch {
                             repository?.updateCharacter(
                                 id = selectedCharacter!!.id,
@@ -172,7 +181,7 @@ fun TavernChatScreen(
                                 firstMes = firstMes,
                                 systemPrompt = systemPrompt,
                                 altGreetings = altGreetings,
-                                avatarPath = avatarPath
+                                avatarData = avatarData
                             )
                             refreshTrigger++
                         }
@@ -289,7 +298,7 @@ fun triggerCharacterImport(scope: kotlinx.coroutines.CoroutineScope, onComplete:
         val imported = CharacterManager.processImport(file)
         if (imported != null) {
             scope.launch {
-                repository?.upsertCharacter(imported.card, imported.avatarPath)
+                repository?.upsertCharacter(imported.card, imported.avatarData)
                 onComplete()
             }
         } else {

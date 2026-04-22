@@ -15,8 +15,29 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 
 data class ImportedCharacter(
     val card: SillyTavernCardV2,
-    val avatarPath: String?
-)
+    val avatarData: ByteArray?
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (javaClass != other?.javaClass) return false
+
+        other as ImportedCharacter
+
+        if (card != other.card) return false
+        if (avatarData != null) {
+            if (other.avatarData == null) return false
+            if (!avatarData.contentEquals(other.avatarData)) return false
+        } else if (other.avatarData != null) return false
+
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = card.hashCode()
+        result = 31 * result + (avatarData?.contentHashCode() ?: 0)
+        return result
+    }
+}
 
 object CharacterManager {
     private val json = Json {
@@ -25,28 +46,30 @@ object CharacterManager {
         encodeDefaults = true
     }
 
-    private val avatarsDir: File by lazy {
-        val os = System.getProperty("os.name").lowercase()
-        val base = if (os.contains("win")) {
-            System.getenv("APPDATA") ?: System.getProperty("user.home")
-        } else {
-            System.getProperty("user.home")
-        }
-        File(base, "LocalTavern/avatars").apply { 
-            if (!exists()) mkdirs() 
-        }
+    private fun isPng(bytes: ByteArray): Boolean {
+        if (bytes.size < 8) return false
+        return bytes[0].toInt() == 0x89.toByte().toInt() &&
+               bytes[1].toInt() == 0x50.toByte().toInt() &&
+               bytes[2].toInt() == 0x4E.toByte().toInt() &&
+               bytes[3].toInt() == 0x47.toByte().toInt() &&
+               bytes[4].toInt() == 0x0D.toByte().toInt() &&
+               bytes[5].toInt() == 0x0A.toByte().toInt() &&
+               bytes[6].toInt() == 0x1A.toByte().toInt() &&
+               bytes[7].toInt() == 0x0A.toByte().toInt()
     }
 
     fun processImport(file: File): ImportedCharacter? {
         return try {
             val bytes = file.readBytes()
-            val isPng = file.extension.lowercase() == "png"
+            val png = isPng(bytes)
 
-            val jsonString: String? = if (isPng) {
+            val jsonString: String? = if (png) {
                 PngParser.extractSillyTavernCard(bytes)
             } else if (file.extension.lowercase() == "json") {
                 bytes.decodeToString()
-            } else null
+            } else {
+                PngParser.extractSillyTavernCard(bytes)
+            }
 
             if (jsonString.isNullOrBlank()) {
                 println("[CharacterManager] No character JSON found in ${file.name}")
@@ -58,41 +81,28 @@ object CharacterManager {
                 return null
             }
 
-            val avatarPath: String? = if (isPng) {
-                val safeName = card.name.ifBlank { file.nameWithoutExtension }
-                    .replace(Regex("[^A-Za-z0-9._-]"), "_")
-                val target = File(avatarsDir, "${safeName}-${System.currentTimeMillis()}.png")
-                target.writeBytes(bytes)
-                target.absolutePath
-            } else null
+            val avatarData: ByteArray? = if (png) bytes else null
 
-            ImportedCharacter(card, avatarPath)
+            ImportedCharacter(card, avatarData)
         } catch (e: Exception) {
-            e.printStackTrace()
-            null
-        }
-    }
-
-    fun copyAvatar(sourceFile: File, characterName: String): String? {
-        return try {
-            val safeName = characterName.ifBlank { "Unknown" }
-                .replace(Regex("[^A-Za-z0-9._-]"), "_")
-            val target = File(avatarsDir, "${safeName}-${System.currentTimeMillis()}${sourceFile.extension.let { if (it.isNotEmpty()) ".$it" else "" }}")
-            sourceFile.copyTo(target, overwrite = true)
-            target.absolutePath
-        } catch (e: Exception) {
+            println("[CharacterManager] Error processing import: ${e.message}")
             e.printStackTrace()
             null
         }
     }
 
     private fun parseCardJson(jsonString: String): SillyTavernCardV2? {
-        val element = json.parseToJsonElement(jsonString)
-        if (element !is JsonObject) return null
-        return if (element.containsKey("data")) {
-            json.decodeFromJsonElement<SillyTavernWrapper>(element).data
-        } else {
-            json.decodeFromJsonElement<SillyTavernCardV2>(element)
+        return try {
+            val element = json.parseToJsonElement(jsonString)
+            if (element !is JsonObject) return null
+            if (element.containsKey("data")) {
+                json.decodeFromJsonElement<SillyTavernWrapper>(element).data
+            } else {
+                json.decodeFromJsonElement<SillyTavernCardV2>(element)
+            }
+        } catch (e: Exception) {
+            println("[CharacterManager] JSON parsing error: ${e.message}")
+            null
         }
     }
 

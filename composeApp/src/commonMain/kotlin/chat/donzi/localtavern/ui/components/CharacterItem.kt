@@ -24,7 +24,7 @@ import coil3.compose.AsyncImage
 fun CharacterItem(
     name: String,
     description: String,
-    avatarPath: String? = null,
+    avatarData: ByteArray? = null,
     selected: Boolean = false,
     selectionMode: Boolean = false,
     onClick: () -> Unit,
@@ -47,9 +47,9 @@ fun CharacterItem(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(modifier = Modifier.size(50.dp)) {
-                if (avatarPath != null) {
+                if (avatarData != null) {
                     AsyncImage(
-                        model = avatarPath,
+                        model = avatarData,
                         contentDescription = name,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
