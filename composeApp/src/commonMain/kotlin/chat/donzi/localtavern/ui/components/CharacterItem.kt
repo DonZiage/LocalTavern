@@ -1,7 +1,6 @@
 package chat.donzi.localtavern.ui.components
 
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -15,13 +14,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import java.io.File
-import javax.imageio.ImageIO
+import coil3.compose.AsyncImage
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -34,13 +30,6 @@ fun CharacterItem(
     onClick: () -> Unit,
     onLongClick: () -> Unit = {}
 ) {
-    val avatar: ImageBitmap? = remember(avatarPath) {
-        avatarPath
-            ?.let(::File)
-            ?.takeIf { it.exists() }
-            ?.let { runCatching { ImageIO.read(it)?.toComposeImageBitmap() }.getOrNull() }
-    }
-
     val containerColor =
         if (selected) MaterialTheme.colorScheme.primaryContainer
         else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
@@ -58,9 +47,9 @@ fun CharacterItem(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(modifier = Modifier.size(50.dp)) {
-                if (avatar != null) {
-                    Image(
-                        bitmap = avatar,
+                if (avatarPath != null) {
+                    AsyncImage(
+                        model = avatarPath,
                         contentDescription = name,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier

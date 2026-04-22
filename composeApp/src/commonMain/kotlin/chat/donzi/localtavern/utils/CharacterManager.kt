@@ -26,19 +26,28 @@ object CharacterManager {
     }
 
     private val avatarsDir: File by lazy {
-        File(System.getProperty("user.home"), ".localtavern/avatars").apply { mkdirs() }
+        val os = System.getProperty("os.name").lowercase()
+        val base = if (os.contains("win")) {
+            System.getenv("APPDATA") ?: System.getProperty("user.home")
+        } else {
+            System.getProperty("user.home")
+        }
+        File(base, "LocalTavern/avatars").apply { 
+            if (!exists()) mkdirs() 
+        }
     }
 
     fun processImport(file: File): ImportedCharacter? {
         return try {
             val bytes = file.readBytes()
-            val isPng = file.extension.lowercase() != "json"
+            val isPng = file.extension.lowercase() == "png"
 
             val jsonString: String? = if (isPng) {
                 PngParser.extractSillyTavernCard(bytes)
-            } else {
+            } else if (file.extension.lowercase() == "json") {
                 bytes.decodeToString()
-            }
+            } else null
+
             if (jsonString.isNullOrBlank()) {
                 println("[CharacterManager] No character JSON found in ${file.name}")
                 return null
@@ -58,6 +67,19 @@ object CharacterManager {
             } else null
 
             ImportedCharacter(card, avatarPath)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    fun copyAvatar(sourceFile: File, characterName: String): String? {
+        return try {
+            val safeName = characterName.ifBlank { "Unknown" }
+                .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            val target = File(avatarsDir, "${safeName}-${System.currentTimeMillis()}${sourceFile.extension.let { if (it.isNotEmpty()) ".$it" else "" }}")
+            sourceFile.copyTo(target, overwrite = true)
+            target.absolutePath
         } catch (e: Exception) {
             e.printStackTrace()
             null
@@ -94,31 +116,16 @@ object CharacterManager {
 
     private fun insertMetadataChunk(pngBytes: ByteArray, data: ByteArray): ByteArray {
         val out = ByteArrayOutputStream()
-        
-        // A valid PNG must start with an 8-byte signature and the first chunk MUST be IHDR.
-        // IHDR chunk is 13 bytes data + 12 bytes overhead (length, type, CRC) = 25 bytes.
-        // Minimum size to safely read signature + IHDR is 8 + 25 = 33 bytes.
-        if (pngBytes.size < 33) {
-            return pngBytes
-        }
+        if (pngBytes.size < 33) return pngBytes
 
-        // 1. Write the PNG Signature (8 bytes)
         out.write(pngBytes, 0, 8)
-
-        // 2. Identify and write the IHDR chunk first to maintain PNG validity
-        // The 4 bytes after the signature are the IHDR data length (usually 00 00 00 0D)
         val ihdrDataLength = ((pngBytes[8].toInt() and 0xFF) shl 24) or
                              ((pngBytes[9].toInt() and 0xFF) shl 16) or
                              ((pngBytes[10].toInt() and 0xFF) shl 8) or
                              (pngBytes[11].toInt() and 0xFF)
-        
-        // Total IHDR chunk size = 4 (length) + 4 (type) + dataLength + 4 (CRC)
         val ihdrTotalSize = 12 + ihdrDataLength
-        
-        // Write the original IHDR chunk
         out.write(pngBytes, 8, ihdrTotalSize)
 
-        // 3. Insert our custom 'tEXt' metadata chunk after IHDR
         val type = "tEXt".encodeToByteArray()
         val length = data.size
         out.write((length shr 24) and 0xFF); out.write((length shr 16) and 0xFF)
@@ -131,12 +138,10 @@ object CharacterManager {
         out.write((crcVal shr 24) and 0xFF); out.write((crcVal shr 16) and 0xFF)
         out.write((crcVal shr 8) and 0xFF); out.write(crcVal and 0xFF)
 
-        // 4. Write the remaining chunks of the original PNG
         val remainingOffset = 8 + ihdrTotalSize
         if (pngBytes.size > remainingOffset) {
             out.write(pngBytes, remainingOffset, pngBytes.size - remainingOffset)
         }
-
         return out.toByteArray()
     }
 }

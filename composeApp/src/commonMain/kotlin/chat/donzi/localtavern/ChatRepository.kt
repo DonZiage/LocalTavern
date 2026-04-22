@@ -42,7 +42,8 @@ class ChatRepository(private val database: LocalTavernDB) {
         description: String?,
         firstMes: String?,
         systemPrompt: String?,
-        altGreetings: List<String> = emptyList()
+        altGreetings: List<String> = emptyList(),
+        avatarPath: String? = null
     ) = withContext(Dispatchers.IO) {
         queries.updateCharacter(
             name = name,
@@ -52,6 +53,7 @@ class ChatRepository(private val database: LocalTavernDB) {
             firstMes = firstMes,
             systemPrompt = systemPrompt,
             altGreetings = altGreetings.joinToString("|||").ifBlank { null },
+            avatarPath = avatarPath,
             id = id
         )
     }

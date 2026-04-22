@@ -28,7 +28,8 @@ SET name = ?,
     scenario = ?,
     firstMes = ?,
     systemPrompt = ?,
-    altGreetings = ?
+    altGreetings = ?,
+    avatarPath = ?
 WHERE id = ?;
 
 deleteCharactersByIds:

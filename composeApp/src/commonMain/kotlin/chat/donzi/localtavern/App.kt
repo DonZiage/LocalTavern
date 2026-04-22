@@ -161,7 +161,7 @@ fun TavernChatScreen(
                 CharacterDefinitionEditor(
                     character = selectedCharacter!!,
                     onClose = { editingDefinitions = false },
-                    onSave = { name, description, personality, scenario, firstMes, systemPrompt, altGreetings ->
+                    onSave = { name, description, personality, scenario, firstMes, systemPrompt, altGreetings, avatarPath ->
                         scope.launch {
                             repository?.updateCharacter(
                                 id = selectedCharacter!!.id,
@@ -171,7 +171,8 @@ fun TavernChatScreen(
                                 description = description,
                                 firstMes = firstMes,
                                 systemPrompt = systemPrompt,
-                                altGreetings = altGreetings
+                                altGreetings = altGreetings,
+                                avatarPath = avatarPath
                             )
                             refreshTrigger++
                         }

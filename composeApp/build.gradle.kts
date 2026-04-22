@@ -39,6 +39,9 @@ kotlin {
                 implementation(libs.ktor.client.core)
                 implementation(libs.ktor.client.content.negotiation)
                 implementation(libs.ktor.serialization.json)
+
+                // Coil3 for image loading
+                implementation("io.coil-kt.coil3:coil-compose:3.0.0-alpha07")
             }
         }
 
