@@ -5,15 +5,12 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.FileUpload
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,6 +27,7 @@ import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.data.database.DriverFactory
 import chat.donzi.localtavern.data.database.createDatabase
 import chat.donzi.localtavern.data.database.ChatRepository
+import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.utils.CharacterManager
 import chat.donzi.localtavern.ui.components.CharacterDefinitionEditor
 import chat.donzi.localtavern.ui.components.CharacterListSection
@@ -125,6 +123,7 @@ fun TavernChatScreen(
     var selectedCharacter by remember { mutableStateOf<CharacterEntity?>(null) }
     var editingDefinitions by remember { mutableStateOf(false) }
     var refreshTrigger by remember { mutableIntStateOf(0) }
+    var showCreateCharacterDialog by remember { mutableStateOf(false) }
 
     val characters by produceState<List<CharacterEntity>>(
         initialValue = emptyList(),
@@ -136,8 +135,13 @@ fun TavernChatScreen(
     // Sync selectedCharacter when characters list changes
     LaunchedEffect(characters) {
         selectedCharacter?.let { current ->
-            characters.find { it.id == current.id }?.let { updated ->
+            val updated = characters.find { it.id == current.id }
+            if (updated != null) {
                 selectedCharacter = updated
+            } else if (editingDefinitions) {
+                // Character was deleted, close the editor
+                selectedCharacter = null
+                editingDefinitions = false
             }
         }
     }
@@ -201,7 +205,7 @@ fun TavernChatScreen(
             }
         }
 
-        // --- Menu Overlay Layer ---
+        // Scrim Overlay
         AnimatedVisibility(
             visible = activeMenu != ActiveMenu.None,
             enter = fadeIn(),
@@ -211,8 +215,12 @@ fun TavernChatScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.5f))
-                    .clickable { activeMenu = ActiveMenu.None }
+                    .background(Color.Black.copy(alpha = 0.4f))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = { activeMenu = ActiveMenu.None }
+                    )
             )
         }
 
@@ -273,19 +281,89 @@ fun TavernChatScreen(
                             }
                         },
                         actions = {
-                            Button(
-                                onClick = { triggerCharacterImport(scope) { refreshTrigger++ } },
-                                modifier = Modifier.height(36.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
-                            ) {
-                                Icon(Icons.Default.FileUpload, null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text("Import", style = MaterialTheme.typography.labelLarge)
+                            var menuExpanded by remember { mutableStateOf(false) }
+                            Box {
+                                Button(
+                                    onClick = { menuExpanded = true },
+                                    modifier = Modifier.height(36.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                                ) {
+                                    Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("New", style = MaterialTheme.typography.labelLarge)
+                                }
+                                DropdownMenu(
+                                    expanded = menuExpanded,
+                                    onDismissRequest = { menuExpanded = false }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Import") },
+                                        onClick = {
+                                            menuExpanded = false
+                                            triggerCharacterImport(scope) { refreshTrigger++ }
+                                        },
+                                        leadingIcon = { Icon(Icons.Default.FileUpload, null) }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Create") },
+                                        onClick = {
+                                            menuExpanded = false
+                                            showCreateCharacterDialog = true
+                                        },
+                                        leadingIcon = { Icon(Icons.Default.Create, null) }
+                                    )
+                                }
                             }
                         }
                     )
                 }
             }
+        }
+
+        if (showCreateCharacterDialog) {
+            var newName by remember { mutableStateOf("") }
+            AlertDialog(
+                onDismissRequest = { showCreateCharacterDialog = false },
+                title = { Text("New Character") },
+                text = {
+                    TextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        label = { Text("Character Name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = newName.isNotBlank(),
+                        onClick = {
+                            val name = newName
+                            showCreateCharacterDialog = false
+                            scope.launch {
+                                val newId = repository?.upsertCharacter(SillyTavernCardV2(name = name))
+                                if (newId != null) {
+                                    refreshTrigger++
+                                    // Fetch it immediately to open the editor
+                                    val newChar = repository?.getAllCharacters()?.find { it.id == newId }
+                                    if (newChar != null) {
+                                        selectedCharacter = newChar
+                                        activeMenu = ActiveMenu.None
+                                        editingDefinitions = true
+                                    }
+                                }
+                            }
+                        }
+                    ) {
+                        Text("Create")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showCreateCharacterDialog = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
     }
 }

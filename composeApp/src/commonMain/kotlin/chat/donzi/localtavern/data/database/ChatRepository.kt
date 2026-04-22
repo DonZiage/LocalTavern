@@ -15,19 +15,22 @@ class ChatRepository(private val database: LocalTavernDB) {
     suspend fun upsertCharacter(
         card: SillyTavernCardV2,
         avatarData: ByteArray? = null
-    ) = withContext(Dispatchers.IO) {
-        queries.insertCharacter(
-            name = card.name,
-            description = card.description,
-            personality = card.personality,
-            scenario = card.scenario,
-            firstMes = card.first_mes,
-            mesExample = card.mes_example,
-            creatorNotes = card.creator_notes,
-            systemPrompt = card.system_prompt,
-            altGreetings = card.alternate_greetings.joinToString("|||").ifBlank { null },
-            avatarData = avatarData
-        )
+    ): Long = withContext(Dispatchers.IO) {
+        database.transactionWithResult {
+            queries.insertCharacter(
+                name = card.name,
+                description = card.description,
+                personality = card.personality,
+                scenario = card.scenario,
+                firstMes = card.first_mes,
+                mesExample = card.mes_example,
+                creatorNotes = card.creator_notes,
+                systemPrompt = card.system_prompt,
+                altGreetings = card.alternate_greetings.joinToString("|||").ifBlank { null },
+                avatarData = avatarData
+            )
+            queries.lastInsertId().executeAsOne()
+        }
     }
 
     suspend fun updateCharacter(

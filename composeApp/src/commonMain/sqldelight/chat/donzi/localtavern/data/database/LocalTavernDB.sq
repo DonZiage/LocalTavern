@@ -17,6 +17,9 @@ insertCharacter:
 INSERT INTO CharacterEntity(name, description, personality, scenario, firstMes, mesExample, creatorNotes, systemPrompt, altGreetings, avatarData)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
+lastInsertId:
+SELECT last_insert_rowid();
+
 selectAllCharacters:
 SELECT * FROM CharacterEntity ORDER BY name ASC;
 
