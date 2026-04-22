@@ -17,6 +17,10 @@ kotlin {
     // Sets Java 11 for the whole project safely
     jvmToolchain(11)
 
+    compilerOptions {
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+    }
+
     androidTarget()
 
     jvm("desktop")
