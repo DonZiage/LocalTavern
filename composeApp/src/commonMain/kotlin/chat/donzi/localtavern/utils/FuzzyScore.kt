@@ -1,4 +1,4 @@
-package chat.donzi.localtavern.ui.components
+package chat.donzi.localtavern.utils
 
 fun String.fuzzyScore(query: String): Int {
     if (query.isBlank()) return 100

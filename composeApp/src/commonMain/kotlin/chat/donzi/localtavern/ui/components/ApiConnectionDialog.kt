@@ -22,6 +22,7 @@ import androidx.compose.ui.window.PopupProperties
 import chat.donzi.localtavern.data.database.ApiConnection
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.data.network.ModelInfo
+import chat.donzi.localtavern.utils.fuzzyScore
 import kotlinx.coroutines.flow.collectLatest
 
 @OptIn(ExperimentalMaterial3Api::class)
