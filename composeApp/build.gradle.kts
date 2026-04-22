@@ -102,7 +102,7 @@ compose.desktop {
 sqldelight {
     databases {
         create("LocalTavernDB") {
-            packageName.set("chat.donzi.localtavern.database")
+            packageName.set("chat.donzi.localtavern.data.database")
         }
     }
 }

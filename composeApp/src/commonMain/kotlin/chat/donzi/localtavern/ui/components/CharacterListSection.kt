@@ -21,7 +21,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import chat.donzi.localtavern.database.CharacterEntity
+import chat.donzi.localtavern.data.database.CharacterEntity
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

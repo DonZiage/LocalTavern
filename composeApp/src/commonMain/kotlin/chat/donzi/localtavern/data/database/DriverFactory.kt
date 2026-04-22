@@ -1,4 +1,4 @@
-package chat.donzi.localtavern.database
+package chat.donzi.localtavern.data.database
 
 import app.cash.sqldelight.db.SqlDriver
 

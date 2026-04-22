@@ -1,4 +1,4 @@
-package chat.donzi.localtavern
+package chat.donzi.localtavern.ui
 
 import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -27,9 +26,10 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import chat.donzi.localtavern.database.CharacterEntity
-import chat.donzi.localtavern.database.DriverFactory
-import chat.donzi.localtavern.database.createDatabase
+import chat.donzi.localtavern.data.database.CharacterEntity
+import chat.donzi.localtavern.data.database.DriverFactory
+import chat.donzi.localtavern.data.database.createDatabase
+import chat.donzi.localtavern.data.database.ChatRepository
 import chat.donzi.localtavern.utils.CharacterManager
 import chat.donzi.localtavern.ui.components.CharacterDefinitionEditor
 import chat.donzi.localtavern.ui.components.CharacterListSection
@@ -126,8 +126,8 @@ fun TavernChatScreen(
     var editingDefinitions by remember { mutableStateOf(false) }
     var refreshTrigger by remember { mutableIntStateOf(0) }
 
-    val characters by produceState(
-        initialValue = emptyList<CharacterEntity>(),
+    val characters by produceState<List<CharacterEntity>>(
+        initialValue = emptyList(),
         key1 = refreshTrigger
     ) {
         value = repository?.getAllCharacters() ?: emptyList()

@@ -1,4 +1,3 @@
-
 package chat.donzi.localtavern.ui.components
 
 import chat.donzi.localtavern.utils.CharacterManager
@@ -31,7 +30,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import chat.donzi.localtavern.database.CharacterEntity
+import chat.donzi.localtavern.data.database.CharacterEntity
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
 import java.awt.FileDialog

@@ -1,4 +1,4 @@
-package chat.donzi.localtavern.models
+package chat.donzi.localtavern.data.models
 
 import kotlinx.serialization.Serializable
 

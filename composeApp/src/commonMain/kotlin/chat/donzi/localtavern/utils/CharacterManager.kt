@@ -1,8 +1,8 @@
 package chat.donzi.localtavern.utils
 
-import chat.donzi.localtavern.models.SillyTavernCardV2
-import chat.donzi.localtavern.models.SillyTavernWrapper
-import chat.donzi.localtavern.database.CharacterEntity
+import chat.donzi.localtavern.data.models.SillyTavernCardV2
+import chat.donzi.localtavern.data.models.SillyTavernWrapper
+import chat.donzi.localtavern.data.database.CharacterEntity
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -19,7 +19,7 @@ data class ImportedCharacter(
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
-        if (javaClass != other?.javaClass) return false
+        if (other == null || this::class != other::class) return false
 
         other as ImportedCharacter
 

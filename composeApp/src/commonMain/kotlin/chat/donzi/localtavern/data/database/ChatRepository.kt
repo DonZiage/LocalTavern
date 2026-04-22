@@ -1,10 +1,6 @@
-package chat.donzi.localtavern
+package chat.donzi.localtavern.data.database
 
-import chat.donzi.localtavern.models.SillyTavernCardV2
-import chat.donzi.localtavern.database.CharacterEntity
-import chat.donzi.localtavern.database.LocalTavernDB
-import chat.donzi.localtavern.database.ApiConnection
-import chat.donzi.localtavern.database.AppSettings
+import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.datetime.Clock
