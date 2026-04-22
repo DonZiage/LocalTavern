@@ -8,7 +8,7 @@ LocalTavern is a standalone, privacy-focused LLM interface designed for Windows,
 The project exists to solve the "service complexity" problem. Most LLM interfaces require complex environments (Python/Node.js) or cloud accounts. LocalTavern is built to be a simple, native binary that you run locally, keeping your data on your hardware and your configurations synced across your own devices.
 
 ## **THIS IS WORK IN PROGRESS**
-*The following description is the ideal outcome but might not represent the current state of the project*
+*The following description is the ideal outcome but might not represent the current state of the project.*
 
 ## Core Principles
 
@@ -60,4 +60,5 @@ The project exists to solve the "service complexity" problem. Most LLM interface
 **This is a vibecoded project.** 
 LocalTavern is built primarily to satisfy my own specific use-case and workflow. It is opinionated and developed at the speed of my own needs. While I aim for it to be a stable and useful tool for anyone who values privacy and native performance, it is provided "as-is."
 
-*Everyone is free to contribute, open issues, or fork the project if they find it useful.*
+*Everyone is free to open issues and share feedback to improve the project.* 
+- **PR are no available until further notice**
