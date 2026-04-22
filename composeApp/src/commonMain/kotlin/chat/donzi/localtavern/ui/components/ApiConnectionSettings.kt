@@ -1,16 +1,15 @@
 package chat.donzi.localtavern.ui.components
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.draggable
-import androidx.compose.foundation.gestures.rememberDraggableState
-import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -20,18 +19,23 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -41,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.zIndex
 import chat.donzi.localtavern.database.ApiConnection
 import chat.donzi.localtavern.network.ChatClient
 import chat.donzi.localtavern.network.ModelInfo
@@ -48,16 +53,21 @@ import chat.donzi.localtavern.repository
 import io.ktor.client.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import kotlin.math.roundToInt
+import kotlin.time.Duration.Companion.milliseconds
 
-@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class, ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun ApiConnectionSettings() {
     val scope = rememberCoroutineScope()
     var connections by remember { mutableStateOf(emptyList<ApiConnection>()) }
+    val reorderableConnections = remember { mutableStateListOf<ApiConnection>() }
     var showAddDialog by remember { mutableStateOf(false) }
+    var editingConnection by remember { mutableStateOf<ApiConnection?>(null) }
     var refreshTrigger by remember { mutableIntStateOf(0) }
     
     val chatClient = remember {
@@ -69,10 +79,23 @@ fun ApiConnectionSettings() {
     }
 
     LaunchedEffect(refreshTrigger) {
-        connections = repository?.getAllApiConnections() ?: emptyList()
+        val list = repository?.getAllApiConnections() ?: emptyList()
+        connections = list
+        reorderableConnections.clear()
+        reorderableConnections.addAll(list)
     }
 
-    val activeConnection = connections.find { it.isActive == 1L }
+    var activeConnection by remember { mutableStateOf<ApiConnection?>(null) }
+    LaunchedEffect(refreshTrigger) {
+        activeConnection = repository?.getActiveApiConnection()
+    }
+
+    val listState = rememberLazyListState()
+    var isCentering by remember { mutableStateOf(false) }
+
+    // Reordering state
+    var draggedItemId by remember { mutableStateOf<Long?>(null) }
+    var dragDisplacement by remember { mutableFloatStateOf(0f) }
 
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         Text(
@@ -82,108 +105,250 @@ fun ApiConnectionSettings() {
             modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
         )
 
-        val listState = rememberLazyListState()
-        
-        LazyRow(
-            state = listState,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(116.dp)
-                .onPointerEvent(PointerEventType.Scroll) {
-                    val delta = it.changes.first().scrollDelta.y
-                    scope.launch {
-                        listState.scrollBy(delta * 50f)
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val constraints = this
+            val itemWidthDp = (constraints.maxWidth * 0.85f).coerceIn(200.dp, 400.dp)
+            val spacingDp = 12.dp
+            val horizontalPadding = (constraints.maxWidth - itemWidthDp) / 2
+            
+            val density = LocalDensity.current
+            val itemWidthPx = with(density) { itemWidthDp.toPx() }
+            val spacingPx = with(density) { spacingDp.toPx() }
+
+            val snapToCenter = {
+                if (!isCentering && draggedItemId == null) {
+                    val layoutInfo = listState.layoutInfo
+                    if (layoutInfo.visibleItemsInfo.isNotEmpty()) {
+                        val closestItem = layoutInfo.visibleItemsInfo.minByOrNull { item ->
+                            val itemCenter = item.offset + (item.size / 2)
+                            kotlin.math.abs(itemCenter - layoutInfo.viewportSize.width / 2)
+                        }
+                        closestItem?.let { item ->
+                            val itemCenter = item.offset + (item.size / 2)
+                            val distance = kotlin.math.abs(itemCenter - layoutInfo.viewportSize.width / 2)
+                            if (distance > 5) {
+                                scope.launch {
+                                    try {
+                                        isCentering = true
+                                        listState.animateScrollToItem(item.index, 0)
+                                    } finally {
+                                        isCentering = false
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-                .draggable(
-                    orientation = Orientation.Horizontal,
-                    state = rememberDraggableState { delta ->
-                        scope.launch {
-                            listState.scrollBy(-delta)
-                        }
-                    }
-                ),
-            contentPadding = PaddingValues(horizontal = 48.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            items(connections, key = { it.id }) { connection ->
-                ApiConnectionItem(
-                    connection = connection,
-                    chatClient = chatClient,
-                    onToggleActive = {
-                        scope.launch {
-                            repository?.setActiveApiConnection(connection.id)
-                            refreshTrigger++
-                        }
-                    },
-                    onToggleMode = { isChat ->
-                        scope.launch {
-                            repository?.updateApiConnection(
-                                id = connection.id,
-                                provider = connection.provider,
-                                name = connection.name,
-                                baseUrl = connection.baseUrl,
-                                apiKey = connection.apiKey,
-                                model = connection.model,
-                                isActive = connection.isActive == 1L,
-                                isChatCompletion = isChat,
-                                temperature = connection.temperature,
-                                topP = connection.topP,
-                                topK = connection.topK,
-                                presencePenalty = connection.presencePenalty,
-                                frequencyPenalty = connection.frequencyPenalty,
-                                contextLimit = connection.contextLimit,
-                                responseLimit = connection.responseLimit
-                            )
-                            refreshTrigger++
-                        }
-                    },
-                    onDelete = {
-                        scope.launch {
-                            repository?.deleteApiConnection(connection.id)
-                            refreshTrigger++
-                        }
-                    }
-                )
             }
-            
-            item {
-                OutlinedCard(
-                    onClick = { showAddDialog = true },
-                    modifier = Modifier
-                        .width(100.dp)
-                        .height(100.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.outlinedCardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
+
+            LaunchedEffect(listState.isScrollInProgress) {
+                if (!listState.isScrollInProgress && !isCentering && draggedItemId == null) {
+                    delay(150.milliseconds)
+                    snapToCenter()
+                }
+            }
+
+            var lastActiveId by remember { mutableStateOf<Long?>(null) }
+            val currentActive = activeConnection
+            LaunchedEffect(currentActive?.id) {
+                if (currentActive != null && currentActive.id != lastActiveId && draggedItemId == null) {
+                    val index = connections.indexOfFirst { it.id == currentActive.id }
+                    if (index != -1) {
+                        scope.launch {
+                            try {
+                                isCentering = true
+                                listState.animateScrollToItem(index, 0)
+                            } finally {
+                                isCentering = false
+                            }
+                        }
+                    }
+                    lastActiveId = currentActive.id
+                }
+            }
+
+            LazyRow(
+                state = listState,
+                userScrollEnabled = !isCentering && draggedItemId == null,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(140.dp)
+                    .onPointerEvent(PointerEventType.Scroll) { event ->
+                        val delta = event.changes.first().scrollDelta.y
+                        event.changes.forEach { it.consume() }
+                        if (!isCentering && delta != 0f && draggedItemId == null) {
+                            scope.launch {
+                                listState.scrollBy(delta * 60f)
+                                delay(350.milliseconds)
+                                if (!listState.isScrollInProgress) snapToCenter()
+                            }
+                        }
+                    }
+                    // Enable drag to scroll on desktop with mouse
+                    .pointerInput(Unit) {
+                        detectDragGestures(
+                            onDrag = { change, dragAmount ->
+                                if (draggedItemId == null) {
+                                    change.consume()
+                                    scope.launch { listState.scrollBy(-dragAmount.x) }
+                                }
+                            },
+                            onDragEnd = { if (draggedItemId == null) snapToCenter() }
+                        )
+                    },
+                contentPadding = PaddingValues(horizontal = horizontalPadding),
+                horizontalArrangement = Arrangement.spacedBy(spacingDp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                itemsIndexed(reorderableConnections, key = { _, it -> it.id }) { index, connection ->
+                    val isDragging = connection.id == draggedItemId
+                    val scale by animateFloatAsState(if (isDragging) 1.05f else 1f)
+                    
+                    // Capture current values in state to avoid stale closure issues during reordering
+                    val currentItemWidthPx by rememberUpdatedState(itemWidthPx)
+                    val currentSpacingPx by rememberUpdatedState(spacingPx)
+
+                    ApiConnectionItem(
+                        connection = connection,
+                        chatClient = chatClient,
+                        onToggleActive = {
+                            scope.launch {
+                                repository?.setActiveApiConnection(connection.id)
+                                refreshTrigger++
+                            }
+                        },
+                        onToggleMode = { isChat ->
+                            scope.launch {
+                                repository?.updateApiConnection(
+                                    id = connection.id, provider = connection.provider, name = connection.name,
+                                    baseUrl = connection.baseUrl, apiKey = connection.apiKey, model = connection.model,
+                                    isActive = connection.isActive == 1L, isChatCompletion = isChat,
+                                    temperature = connection.temperature, topP = connection.topP, topK = connection.topK,
+                                    presencePenalty = connection.presencePenalty, frequencyPenalty = connection.frequencyPenalty,
+                                    contextLimit = connection.contextLimit, responseLimit = connection.responseLimit,
+                                    displayOrder = connection.displayOrder
+                                )
+                                refreshTrigger++
+                            }
+                        },
+                        onDelete = {
+                            scope.launch {
+                                repository?.deleteApiConnection(connection.id)
+                                refreshTrigger++
+                            }
+                        },
+                        onEdit = {
+                            editingConnection = connection
+                        },
+                        onCenterRequest = {
+                            scope.launch {
+                                try {
+                                    isCentering = true
+                                    listState.animateScrollToItem(index, 0)
+                                } finally {
+                                    isCentering = false
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .width(itemWidthDp)
+                            .animateItemPlacement()
+                            .zIndex(if (isDragging) 1f else 0f)
+                            .graphicsLayer {
+                                translationX = if (isDragging) dragDisplacement else 0f
+                                scaleX = scale
+                                scaleY = scale
+                                alpha = if (isDragging) 0.8f else 1f
+                            }
+                            .pointerInput(connection.id) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = { 
+                                        draggedItemId = connection.id
+                                        dragDisplacement = 0f
+                                    },
+                                    onDragEnd = {
+                                        draggedItemId = null
+                                        dragDisplacement = 0f
+                                        scope.launch {
+                                            repository?.updateApiConnectionDisplayOrders(reorderableConnections.map { it.id })
+                                            refreshTrigger++
+                                        }
+                                    },
+                                    onDragCancel = {
+                                        draggedItemId = null
+                                        dragDisplacement = 0f
+                                    },
+                                    onDrag = { change, dragAmount ->
+                                        change.consume()
+                                        dragDisplacement += dragAmount.x
+                                        
+                                        val currentDraggingIndex = reorderableConnections.indexOfFirst { it.id == connection.id }
+                                        if (currentDraggingIndex != -1) {
+                                            val targetIndex = (currentDraggingIndex + (dragDisplacement / (currentItemWidthPx + currentSpacingPx)).roundToInt())
+                                                .coerceIn(0, reorderableConnections.size - 1)
+                                            
+                                            if (targetIndex != currentDraggingIndex) {
+                                                reorderableConnections.add(targetIndex, reorderableConnections.removeAt(currentDraggingIndex))
+                                                dragDisplacement = 0f
+                                            }
+                                        }
+                                    }
+                                )
+                            }
                     )
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally
+                }
+
+                item(key = "add_new_card") {
+                    val addIndex = reorderableConnections.size
+                    val cardShape = RoundedCornerShape(12.dp)
+                    OutlinedCard(
+                        onClick = {
+                            showAddDialog = true
+                            scope.launch {
+                                try {
+                                    isCentering = true
+                                    listState.animateScrollToItem(addIndex, 0)
+                                } finally {
+                                    isCentering = false
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .width(itemWidthDp)
+                            .height(115.dp)
+                            .clip(cardShape),
+                        shape = cardShape,
+                        colors = CardDefaults.outlinedCardColors(
+                            containerColor = MaterialTheme.colorScheme.surface
+                        )
                     ) {
-                        Icon(
-                            Icons.Default.Add,
-                            contentDescription = "Add Connection",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Text(
-                            "Add New",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = "Add Connection",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Text(
+                                "Add New",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                 }
             }
         }
 
-        if (activeConnection != null) {
+        activeConnection?.let { currentActive ->
             Spacer(modifier = Modifier.height(24.dp))
             ParameterControls(
-                connection = activeConnection,
+                connection = currentActive,
                 onUpdate = { updatedConnection ->
                     scope.launch {
                         repository?.updateApiConnection(
@@ -201,7 +366,8 @@ fun ApiConnectionSettings() {
                             presencePenalty = updatedConnection.presencePenalty,
                             frequencyPenalty = updatedConnection.frequencyPenalty,
                             contextLimit = updatedConnection.contextLimit,
-                            responseLimit = updatedConnection.responseLimit
+                            responseLimit = updatedConnection.responseLimit,
+                            displayOrder = updatedConnection.displayOrder
                         )
                         refreshTrigger++
                     }
@@ -211,13 +377,57 @@ fun ApiConnectionSettings() {
     }
 
     if (showAddDialog) {
-        AddApiConnectionDialog(
+        ApiConnectionDialog(
             chatClient = chatClient,
             onDismiss = { showAddDialog = false },
             onSave = { provider, name, baseUrl, apiKey, model ->
                 scope.launch {
-                    repository?.insertApiConnection(provider, name, baseUrl, apiKey, model)
+                    val isFirst = connections.isEmpty()
+                    repository?.insertApiConnection(
+                        provider = provider, 
+                        name = name, 
+                        baseUrl = baseUrl, 
+                        apiKey = apiKey, 
+                        model = model,
+                        isActive = isFirst,
+                        displayOrder = connections.size.toLong()
+                    )
                     showAddDialog = false
+                    refreshTrigger++
+                }
+            }
+        )
+    }
+
+    if (editingConnection != null) {
+        ApiConnectionDialog(
+            chatClient = chatClient,
+            initialConnection = editingConnection,
+            onDismiss = { editingConnection = null },
+            onSave = { provider, name, baseUrl, apiKey, model ->
+                scope.launch {
+                    editingConnection?.let { old ->
+                        val finalApiKey = apiKey.ifBlank { old.apiKey ?: "" }
+                        repository?.updateApiConnection(
+                            id = old.id,
+                            provider = provider,
+                            name = name,
+                            baseUrl = baseUrl,
+                            apiKey = finalApiKey,
+                            model = model,
+                            isActive = old.isActive == 1L,
+                            isChatCompletion = old.isChatCompletion == 1L,
+                            temperature = old.temperature,
+                            topP = old.topP,
+                            topK = old.topK,
+                            presencePenalty = old.presencePenalty,
+                            frequencyPenalty = old.frequencyPenalty,
+                            contextLimit = old.contextLimit,
+                            responseLimit = old.responseLimit,
+                            displayOrder = old.displayOrder
+                        )
+                    }
+                    editingConnection = null
                     refreshTrigger++
                 }
             }
@@ -372,9 +582,10 @@ fun ContextLimitSlider(
     currentLimit: Long,
     onValueChange: (Long) -> Unit
 ) {
-    val presets = remember { listOf(2048L, 4096L, 8192L, 16384L, 32768L, 65536L, 0L) }
+    val presets = remember { listOf(1024L, 2048L, 4096L, 8192L, 16384L, 32768L, 65536L, 0L) }
     val labels = remember {
         mapOf(
+            1024L to "1k",
             2048L to "2k",
             4096L to "4k",
             8192L to "8k",
@@ -451,15 +662,20 @@ fun ContextLimitSlider(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ApiConnectionItem(
     connection: ApiConnection,
     chatClient: ChatClient,
     onToggleActive: () -> Unit,
     onToggleMode: (Boolean) -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onEdit: () -> Unit,
+    onCenterRequest: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     var status by remember { mutableStateOf<Boolean?>(null) }
+    val cardShape = RoundedCornerShape(12.dp)
     
     LaunchedEffect(connection.baseUrl, connection.apiKey) {
         if (!connection.baseUrl.isNullOrBlank() && !connection.apiKey.isNullOrBlank()) {
@@ -468,10 +684,10 @@ fun ApiConnectionItem(
     }
 
     Card(
-        modifier = Modifier
-            .width(220.dp)
-            .height(100.dp)
-            .clickable { onToggleActive() },
+        modifier = modifier
+            .height(115.dp)
+            .clip(cardShape),
+        shape = cardShape,
         colors = CardDefaults.cardColors(
             containerColor = if (connection.isActive == 1L) 
                 MaterialTheme.colorScheme.primaryContainer 
@@ -479,20 +695,35 @@ fun ApiConnectionItem(
                 MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
-        Column(modifier = Modifier.padding(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusIndicator(status, modifier = Modifier.size(20.dp))
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(cardShape)
+                .clickable {
+                    onToggleActive()
+                    onCenterRequest()
+                }
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                StatusIndicator(status, modifier = Modifier.size(16.dp))
                 
                 Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
                     Text(
                         connection.name, 
-                        style = MaterialTheme.typography.labelLarge, 
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
                         maxLines = 1, 
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         connection.provider, 
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontSize = 14.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -500,33 +731,66 @@ fun ApiConnectionItem(
                     Icon(
                         Icons.Default.Delete, 
                         contentDescription = "Delete", 
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
+                        modifier = Modifier.size(22.dp),
+                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.6f)
                     )
                 }
             }
             
             Text(
-                "Model: ${connection.model ?: "None"}", 
-                style = MaterialTheme.typography.labelSmall, 
+                connection.model ?: "None", 
+                style = MaterialTheme.typography.bodyMedium,
+                fontSize = 14.sp,
                 maxLines = 1, 
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 28.dp)
+                modifier = Modifier.padding(start = 24.dp)
             )
 
-            if (status == true) {
+            val blueColor = Color(0xFF2196F3)
+            val primaryColor = MaterialTheme.colorScheme.primary
+            val primaryContainerColor = MaterialTheme.colorScheme.primaryContainer
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onToggleMode(connection.isChatCompletion != 1L) }
+                        .padding(end = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Chat", style = MaterialTheme.typography.labelSmall)
+                    Text("Text", style = MaterialTheme.typography.labelMedium)
                     Switch(
                         checked = connection.isChatCompletion == 1L,
                         onCheckedChange = { onToggleMode(it) },
-                        modifier = Modifier.padding(horizontal = 8.dp).scale(0.7f)
+                        modifier = Modifier.padding(horizontal = 8.dp).scale(0.65f),
+                        thumbContent = { Box(Modifier) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = primaryColor,
+                            checkedTrackColor = primaryContainerColor,
+                            checkedBorderColor = primaryColor,
+                            uncheckedThumbColor = blueColor,
+                            uncheckedTrackColor = blueColor.copy(alpha = 0.2f),
+                            uncheckedBorderColor = blueColor,
+                        )
                     )
-                    Text("Text", style = MaterialTheme.typography.labelSmall)
+                    Text("Chat", style = MaterialTheme.typography.labelMedium)
+                }
+                
+                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    IconButton(
+                        onClick = onEdit,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Edit, 
+                            contentDescription = "Edit",
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                    }
                 }
             }
         }
@@ -572,8 +836,9 @@ fun String.fuzzyScore(query: String): Int {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AddApiConnectionDialog(
+fun ApiConnectionDialog(
     chatClient: ChatClient,
+    initialConnection: ApiConnection? = null,
     onDismiss: () -> Unit,
     onSave: (provider: String, name: String, baseUrl: String, apiKey: String, model: String) -> Unit
 ) {
@@ -601,16 +866,27 @@ fun AddApiConnectionDialog(
         "DreamGen" to "https://dreamgen.com/api/v1"
     )
 
-    var selectedProvider by remember { mutableStateOf("") }
+    var selectedProvider by remember { mutableStateOf(initialConnection?.provider ?: "") }
     var apiKey by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf(initialConnection?.name ?: "") }
     
+    val maskedApiKey = remember(initialConnection?.apiKey) {
+        val key = initialConnection?.apiKey ?: ""
+        if (key.length >= 6) {
+            "${key.take(2)}-••••${key.takeLast(4)}"
+        } else if (key.isNotEmpty()) {
+            "••••"
+        } else {
+            ""
+        }
+    }
+
     var allModels by remember { mutableStateOf(emptyList<ModelInfo>()) }
     var isLoadingModels by remember { mutableStateOf(false) }
     var isKeyValid by remember { mutableStateOf(false) }
     
-    var modelSearch by remember { mutableStateOf("") }
-    var selectedModelFullId by remember { mutableStateOf("") }
+    var modelSearch by remember { mutableStateOf(initialConnection?.model ?: "") }
+    var selectedModelFullId by remember { mutableStateOf(initialConnection?.model ?: "") }
     var modelProviderFilter by remember { mutableStateOf("") }
     
     var providerDropdownExpanded by remember { mutableStateOf(false) }
@@ -619,11 +895,12 @@ fun AddApiConnectionDialog(
     val currentBaseUrl = defaultUrls[selectedProvider] ?: ""
 
     LaunchedEffect(apiKey, selectedProvider) {
-        if (apiKey.length > 5 && currentBaseUrl.isNotBlank()) {
+        val keyToTest = apiKey.ifBlank { initialConnection?.apiKey ?: "" }
+        if (keyToTest.length > 5 && currentBaseUrl.isNotBlank()) {
             isLoadingModels = true
-            isKeyValid = chatClient.checkStatus(currentBaseUrl, apiKey)
+            isKeyValid = chatClient.checkStatus(currentBaseUrl, keyToTest)
             allModels = if (isKeyValid) {
-                chatClient.fetchModels(currentBaseUrl, apiKey)
+                chatClient.fetchModels(currentBaseUrl, keyToTest)
             } else {
                 emptyList()
             }
@@ -631,6 +908,16 @@ fun AddApiConnectionDialog(
         } else {
             isKeyValid = false
             allModels = emptyList()
+        }
+    }
+
+    // Load initial model's provider into filter when models are loaded
+    LaunchedEffect(allModels) {
+        if (initialConnection != null && modelProviderFilter.isEmpty() && selectedModelFullId.isNotEmpty()) {
+            val currentModel = allModels.find { it.id == selectedModelFullId }
+            if (currentModel != null) {
+                modelProviderFilter = currentModel.provider
+            }
         }
     }
 
@@ -691,7 +978,7 @@ fun AddApiConnectionDialog(
     AlertDialog(
         onDismissRequest = { },
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
-        title = { Text("Setup API Connection") },
+        title = { Text(if (initialConnection == null) "Setup API Connection" else "Edit API Connection") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 var mainProviderExpanded by remember { mutableStateOf(false) }
@@ -713,7 +1000,9 @@ fun AddApiConnectionDialog(
                                 text = { Text(provider) },
                                 onClick = {
                                     selectedProvider = provider
-                                    name = "$provider Connection"
+                                    if (name.isBlank() || name.endsWith(" Connection")) {
+                                        name = "$provider Connection"
+                                    }
                                     mainProviderExpanded = false
                                 }
                             )
@@ -725,7 +1014,8 @@ fun AddApiConnectionDialog(
                     OutlinedTextField(
                         value = apiKey,
                         onValueChange = { apiKey = it },
-                        label = { Text("2. Enter API Key") },
+                        label = { Text(if (initialConnection == null) "2. Enter API Key" else "2. Update API Key") },
+                        placeholder = { Text(maskedApiKey) },
                         modifier = Modifier.fillMaxWidth(),
                         visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                         isError = apiKey.isNotEmpty() && !isKeyValid && !isLoadingModels,
@@ -735,7 +1025,7 @@ fun AddApiConnectionDialog(
                     )
                 }
 
-                if (isKeyValid) {
+                if (isKeyValid || selectedModelFullId.isNotEmpty()) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
                             if (selectedModelFullId.isEmpty()) "3. Select Model (Required)" else "3. Model Selected",
@@ -874,7 +1164,7 @@ fun AddApiConnectionDialog(
                         OutlinedTextField(
                             value = name,
                             onValueChange = { name = it },
-                            label = { Text("4. Connection Name") },
+                            label = { Text("4. Profile Name") },
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -884,9 +1174,9 @@ fun AddApiConnectionDialog(
         confirmButton = {
             Button(
                 onClick = { onSave(selectedProvider, name, currentBaseUrl, apiKey, selectedModelFullId) },
-                enabled = isKeyValid && selectedModelFullId.isNotBlank() && name.isNotBlank()
+                enabled = (isKeyValid || (initialConnection != null && selectedModelFullId.isNotEmpty())) && name.isNotBlank()
             ) {
-                Text("Complete Setup")
+                Text(if (initialConnection == null) "Complete Setup" else "Save Changes")
             }
         },
         dismissButton = {

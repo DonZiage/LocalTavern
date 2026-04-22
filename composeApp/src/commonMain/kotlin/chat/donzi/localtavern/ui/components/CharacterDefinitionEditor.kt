@@ -6,7 +6,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -49,7 +51,36 @@ fun CharacterDefinitionEditor(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
+    // Consistent Red Color for Delete Button (Material 700 Red)
+    val deleteRed = Color(0xFFD32F2F)
+
     fun persist() = onSave(name, description, personality, scenario, firstMes, systemPrompt, altGreetings)
+
+    val exportCharacter = {
+        val original = character.avatarPath
+            ?.let { java.io.File(it).takeIf(java.io.File::exists)?.readBytes() }
+            ?: ByteArray(0)
+        val exportedBytes = CharacterManager.exportToPng(
+            originalImage = original,
+            character = character
+        )
+        val osName = System.getProperty("os.name") ?: ""
+        val baseFolder = if (osName.contains("Android", ignoreCase = true)) {
+            "/storage/emulated/0/Download"
+        } else {
+            System.getProperty("user.home") + "/Documents"
+        }
+        
+        val file = java.io.File(baseFolder, "${character.name}.png")
+        file.writeBytes(exportedBytes)
+
+        scope.launch {
+            snackbarHostState.showSnackbar(
+                message = "Exported ${file.name} to ${file.parent}",
+                duration = SnackbarDuration.Long
+            )
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -60,14 +91,51 @@ fun CharacterDefinitionEditor(
         ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Edit Character", style = MaterialTheme.typography.headlineSmall)
-            TextButton(onClick = onClose) { Text("Close") }
+            Text(
+                "Edit Character", 
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.weight(1f)
+            )
+            
+            // Export Button
+            OutlinedButton(
+                onClick = { exportCharacter() },
+                modifier = Modifier.height(36.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+            ) {
+                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Export", style = MaterialTheme.typography.labelLarge)
+            }
+
+            // Delete Button
+            Button(
+                onClick = { confirmDelete = true },
+                modifier = Modifier.height(36.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = deleteRed,
+                    contentColor = Color.White
+                ),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+            ) {
+                Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Delete", style = MaterialTheme.typography.labelLarge)
+            }
+
+            // Close Button
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier.size(36.dp)
+            ) { 
+                Icon(Icons.Default.Close, contentDescription = "Close") 
+            }
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(24.dp))
 
         OutlinedTextField(
             value = name,
@@ -127,52 +195,6 @@ fun CharacterDefinitionEditor(
             minLines = 3
         )
         Spacer(Modifier.height(24.dp))
-
-        Row(modifier = Modifier.fillMaxWidth()) {
-            Button(
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.error,
-                    contentColor = Color.White
-                ),
-                onClick = { confirmDelete = true }
-            ) {
-                Icon(Icons.Default.Delete, contentDescription = null)
-                Spacer(Modifier.width(6.dp))
-                Text("Delete character")
-            }
-
-            Spacer(Modifier.width(12.dp))
-
-            OutlinedButton(
-                modifier = Modifier.weight(1f),
-                onClick = {
-                    val original = character.avatarPath
-                        ?.let { java.io.File(it).takeIf(java.io.File::exists)?.readBytes() }
-                        ?: ByteArray(0)
-                    val exportedBytes = CharacterManager.exportToPng(
-                        originalImage = original,
-                        character = character
-                    )
-                    val osName = System.getProperty("os.name") ?: ""
-                    val baseFolder = if (osName.contains("Android", ignoreCase = true)) {
-                        "/storage/emulated/0/Download"
-                    } else {
-                        System.getProperty("user.home") + "/Documents"
-                    }
-                    
-                    val file = java.io.File(baseFolder, "${character.name}.png")
-                    file.writeBytes(exportedBytes)
-
-                    scope.launch {
-                        snackbarHostState.showSnackbar(
-                            message = "Exported ${file.name} to ${file.parent}",
-                            duration = SnackbarDuration.Long
-                        )
-                    }
-                }
-            ) { Text("Export PNG") }
-        }
     }
 
         SnackbarHost(
@@ -184,13 +206,13 @@ fun CharacterDefinitionEditor(
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            title = { Text("Delete character?") },
+            title = { Text("Delete Character?") },
             text = { Text("\"${character.name}\" will be permanently removed.") },
             confirmButton = {
                 TextButton(onClick = {
                     confirmDelete = false
                     onDelete()
-                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                }) { Text("Delete", color = deleteRed) }
             },
             dismissButton = {
                 TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }

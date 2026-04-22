@@ -1,14 +1,16 @@
 package chat.donzi.localtavern
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.*
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Person
@@ -17,7 +19,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import chat.donzi.localtavern.database.CharacterEntity
 import chat.donzi.localtavern.database.DriverFactory
 import chat.donzi.localtavern.database.createDatabase
@@ -32,58 +41,121 @@ import java.io.File
 
 var repository: ChatRepository? = null
 
+enum class ActiveMenu { None, Settings, Characters }
+
 @Composable
 fun App(driverFactory: DriverFactory) {
+    val scope = rememberCoroutineScope()
+    var isDarkMode by remember { mutableStateOf(false) }
+    var toggleOffset by remember { mutableStateOf(Offset.Zero) }
+    var isTransitioning by remember { mutableStateOf(false) }
+
     LaunchedEffect(Unit) {
         if (repository == null) {
             val database = createDatabase(driverFactory)
             repository = ChatRepository(database)
         }
+        isDarkMode = repository?.getAppSettings()?.isDarkMode == 1L
     }
-    TavernTheme { TavernChatScreen() }
+
+    TavernTheme(isDarkMode = isDarkMode) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background
+            ) {
+                TavernChatScreen(
+                    isDarkMode = isDarkMode,
+                    onDarkModeChange = { newMode, offset ->
+                        if (!isTransitioning) {
+                            toggleOffset = offset
+                            isDarkMode = newMode
+                            isTransitioning = true
+                            // Pushed to IO Dispatcher to prevent UI stuttering
+                            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                repository?.updateDarkMode(newMode)
+                            }
+                        }
+                    }
+                )
+            }
+
+            val waveProgress by animateFloatAsState(
+                targetValue = if (isTransitioning) 1f else 0f,
+                animationSpec = tween(durationMillis = 800),
+                finishedListener = { if (it == 1f) isTransitioning = false }
+            )
+
+            if (isTransitioning) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .zIndex(1000f)
+                        .pointerInput(Unit) {}
+                )
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .zIndex(999f)
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.4f * (1f - waveProgress)),
+                                    Color.Transparent
+                                ),
+                                center = toggleOffset,
+                                radius = waveProgress * 3000f
+                            )
+                        )
+                )
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TavernChatScreen() {
+fun TavernChatScreen(
+    isDarkMode: Boolean,
+    onDarkModeChange: (Boolean, Offset) -> Unit
+) {
     val scope = rememberCoroutineScope()
-    var showSettings by remember { mutableStateOf(false) }
-    var showCharacterMenu by remember { mutableStateOf(false) }
+    var activeMenu by remember { mutableStateOf(ActiveMenu.None) }
     var selectedCharacter by remember { mutableStateOf<CharacterEntity?>(null) }
     var editingDefinitions by remember { mutableStateOf(false) }
     var refreshTrigger by remember { mutableIntStateOf(0) }
 
-    val characters by produceState<List<CharacterEntity>>(
-        initialValue = emptyList(),
+    val characters by produceState(
+        initialValue = emptyList<CharacterEntity>(),
         key1 = refreshTrigger
     ) {
         value = repository?.getAllCharacters() ?: emptyList()
     }
 
-    Row(modifier = Modifier.fillMaxSize()) {
-        if (showSettings) {
-            Box(
-                modifier = Modifier
-                    .width(320.dp)
-                    .fillMaxHeight()
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-            ) { SettingsPanel() }
-        }
-
-        Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
-            CenterAlignedTopAppBar(
-                title = { Text(selectedCharacter?.name ?: "LocalTavern") },
-                navigationIcon = {
-                    IconButton(onClick = { showSettings = !showSettings }) {
-                        Icon(Icons.Default.Settings, null)
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Main Content Layer
+        Column(modifier = Modifier.fillMaxSize()) {
+            Surface(color = MaterialTheme.colorScheme.surface) {
+                CenterAlignedTopAppBar(
+                    title = {
+                        Text(
+                            selectedCharacter?.name ?: "LocalTavern",
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { activeMenu = if (activeMenu == ActiveMenu.Settings) ActiveMenu.None else ActiveMenu.Settings }) {
+                            Icon(Icons.Default.Settings, null)
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { activeMenu = if (activeMenu == ActiveMenu.Characters) ActiveMenu.None else ActiveMenu.Characters }) {
+                            Icon(Icons.Default.Person, null)
+                        }
                     }
-                },
-                actions = {
-                    IconButton(onClick = { showCharacterMenu = !showCharacterMenu }) {
-                        Icon(Icons.Default.Person, null)
-                    }
-                }
-            )
+                )
+            }
 
             if (editingDefinitions && selectedCharacter != null) {
                 CharacterDefinitionEditor(
@@ -119,49 +191,90 @@ fun TavernChatScreen() {
             }
         }
 
-        if (showCharacterMenu) {
-            Column(
+        // --- Menu Overlay Layer ---
+        AnimatedVisibility(
+            visible = activeMenu != ActiveMenu.None,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.zIndex(100f)
+        ) {
+            Box(
                 modifier = Modifier
-                    .width(240.dp)
-                    .fillMaxHeight()
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .clickable { activeMenu = ActiveMenu.None }
+            )
+        }
+
+        // Settings Menu (Left)
+        AnimatedVisibility(
+            visible = activeMenu == ActiveMenu.Settings,
+            enter = slideInHorizontally { -it },
+            exit = slideOutHorizontally { -it },
+            modifier = Modifier
+                .zIndex(101f)
+                .fillMaxHeight()
+                .width(320.dp)
+                .align(Alignment.CenterStart)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 8.dp
             ) {
-                PersonaSelectorSection()
-                HorizontalDivider()
-
-                Text(
-                    "Characters",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                SettingsPanel(
+                    isDarkMode = isDarkMode,
+                    onDarkModeChange = onDarkModeChange
                 )
+            }
+        }
 
-                CharacterListSection(
-                    characters = characters,
-                    modifier = Modifier.weight(1f),
-                    onSelect = { char ->
-                        selectedCharacter = char
-                        editingDefinitions = true
-                    },
-                    onDeleteSelected = { ids ->
-                        scope.launch {
-                            repository?.deleteCharacters(ids)
-                            if (selectedCharacter?.id in ids) {
-                                selectedCharacter = null
-                                editingDefinitions = false
+        // Characters Menu (Right)
+        AnimatedVisibility(
+            visible = activeMenu == ActiveMenu.Characters,
+            enter = slideInHorizontally { it },
+            exit = slideOutHorizontally { it },
+            modifier = Modifier
+                .zIndex(101f)
+                .fillMaxHeight()
+                .width(320.dp)
+                .align(Alignment.CenterEnd)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 8.dp
+            ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    PersonaSelectorSection()
+                    HorizontalDivider()
+                    CharacterListSection(
+                        characters = characters,
+                        modifier = Modifier.weight(1f),
+                        onSelect = { char ->
+                            selectedCharacter = char
+                            activeMenu = ActiveMenu.None
+                            editingDefinitions = true
+                        },
+                        onDeleteSelected = { ids ->
+                            scope.launch {
+                                repository?.deleteCharacters(ids)
+                                refreshTrigger++
                             }
-                            refreshTrigger++
+                        },
+                        actions = {
+                            Button(
+                                onClick = { triggerCharacterImport(scope) { refreshTrigger++ } },
+                                modifier = Modifier.height(36.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                            ) {
+                                Icon(Icons.Default.FileUpload, null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Import", style = MaterialTheme.typography.labelLarge)
+                            }
                         }
-                    },
-                    actions = {
-                        Button(
-                            onClick = { triggerCharacterImport(scope) { refreshTrigger++ } },
-                            modifier = Modifier.height(40.dp),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
-                        ) {
-                            Text("Import")
-                        }
-                    }
-                )
+                    )
+                }
             }
         }
     }
@@ -185,25 +298,47 @@ fun triggerCharacterImport(scope: kotlinx.coroutines.CoroutineScope, onComplete:
 }
 
 @Composable
-fun SettingsPanel() {
+fun SettingsPanel(
+    isDarkMode: Boolean,
+    onDarkModeChange: (Boolean, Offset) -> Unit
+) {
+    var switchOffset by remember { mutableStateOf(Offset.Zero) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(8.dp)
+            .padding(16.dp)
     ) {
-        Text(
-            "Settings",
-            style = MaterialTheme.typography.headlineSmall,
-            modifier = Modifier.padding(8.dp)
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "Settings",
+                style = MaterialTheme.typography.headlineSmall
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Dark Mode",
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(end = 8.dp)
+                )
+                Switch(
+                    modifier = Modifier.onGloballyPositioned { 
+                        switchOffset = it.positionInRoot() + Offset(it.size.width / 2f, it.size.height / 2f)
+                    },
+                    checked = isDarkMode,
+                    onCheckedChange = { onDarkModeChange(it, switchOffset) }
+                )
+            }
+        }
         
         CollapsibleSection(title = "API Connection") {
             ApiConnectionSettings()
-        }
-        
-        CollapsibleSection(title = "Appearance") {
-            Text("Coming soon...", modifier = Modifier.padding(16.dp))
         }
 
         CollapsibleSection(title = "General") {
@@ -257,4 +392,17 @@ fun CollapsibleSection(
 
 @Composable fun PersonaSelectorSection(){ Text("Personas",  modifier = Modifier.padding(16.dp)) }
 @Composable fun ChatLayout()            { Text("Chat Area", modifier = Modifier.padding(16.dp)) }
-@Composable fun TavernTheme(content: @Composable () -> Unit) { MaterialTheme { content() } }
+
+@Composable
+fun TavernTheme(
+    isDarkMode: Boolean = false,
+    content: @Composable () -> Unit
+) {
+    // Instant switch avoids the full-tree recomposition freeze, letting the overlay handle the visual transition
+    val colorScheme = if (isDarkMode) darkColorScheme() else lightColorScheme()
+
+    MaterialTheme(
+        colorScheme = colorScheme,
+        content = content
+    )
+}

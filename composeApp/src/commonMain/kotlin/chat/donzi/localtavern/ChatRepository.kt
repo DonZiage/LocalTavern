@@ -4,10 +4,12 @@ import chat.donzi.localtavern.models.SillyTavernCardV2
 import chat.donzi.localtavern.database.CharacterEntity
 import chat.donzi.localtavern.database.LocalTavernDB
 import chat.donzi.localtavern.database.ApiConnection
+import chat.donzi.localtavern.database.AppSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.datetime.Clock
 
-class ChatRepository(database: LocalTavernDB) {
+class ChatRepository(private val database: LocalTavernDB) {
     private val queries = database.localTavernDBQueries
 
     suspend fun getAllCharacters(): List<CharacterEntity> = withContext(Dispatchers.IO) {
@@ -65,9 +67,7 @@ class ChatRepository(database: LocalTavernDB) {
     }
 
     private fun currentTimeMillis(): Long {
-        // Simple fallback since kotlinx-datetime is not being resolved
-        // In KMP, you might want to use expect/actual for a more robust solution
-        return 0L // Placeholder until dependency is fixed or proper KMP time is used
+        return Clock.System.now().toEpochMilliseconds()
     }
 
     suspend fun insertApiConnection(
@@ -84,7 +84,8 @@ class ChatRepository(database: LocalTavernDB) {
         presencePenalty: Double = 0.0,
         frequencyPenalty: Double = 0.0,
         contextLimit: Long = 4096,
-        responseLimit: Long = 0
+        responseLimit: Long = 1024,
+        displayOrder: Long = 0
     ) = withContext(Dispatchers.IO) {
         queries.insertApiConnection(
             provider, 
@@ -101,7 +102,8 @@ class ChatRepository(database: LocalTavernDB) {
             presencePenalty,
             frequencyPenalty,
             contextLimit,
-            responseLimit
+            responseLimit,
+            displayOrder
         )
     }
 
@@ -121,7 +123,8 @@ class ChatRepository(database: LocalTavernDB) {
         presencePenalty: Double,
         frequencyPenalty: Double,
         contextLimit: Long,
-        responseLimit: Long
+        responseLimit: Long,
+        displayOrder: Long
     ) = withContext(Dispatchers.IO) {
         queries.updateApiConnection(
             provider, 
@@ -139,6 +142,7 @@ class ChatRepository(database: LocalTavernDB) {
             frequencyPenalty,
             contextLimit,
             responseLimit,
+            displayOrder,
             id
         )
     }
@@ -155,5 +159,23 @@ class ChatRepository(database: LocalTavernDB) {
     suspend fun getActiveApiConnection(): ApiConnection? = withContext(Dispatchers.IO) {
         queries.selectActiveApiConnection().executeAsOneOrNull()
             ?: queries.selectLastUsedApiConnection().executeAsOneOrNull()
+    }
+
+    suspend fun updateApiConnectionDisplayOrders(orderedIds: List<Long>): Unit = withContext(Dispatchers.IO) {
+        database.transaction {
+            orderedIds.forEachIndexed { index, id ->
+                queries.updateApiConnectionDisplayOrder(index.toLong(), id)
+            }
+        }
+    }
+
+    // App Settings
+    suspend fun getAppSettings(): AppSettings = withContext(Dispatchers.IO) {
+        queries.insertDefaultSettings()
+        queries.getAppSettings().executeAsOne()
+    }
+
+    suspend fun updateDarkMode(isDarkMode: Boolean) = withContext(Dispatchers.IO) {
+        queries.updateDarkMode(if (isDarkMode) 1L else 0L)
     }
 }
