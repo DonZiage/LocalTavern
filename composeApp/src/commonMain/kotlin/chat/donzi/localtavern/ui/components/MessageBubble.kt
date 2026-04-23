@@ -1,21 +1,41 @@
 package chat.donzi.localtavern.ui.components
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun MessageBubble(content: String, isUser: Boolean) {
+fun MessageBubble(
+    content: String,
+    isUser: Boolean,
+    onEdit: (String) -> Unit
+) {
+    var isEditing by remember { mutableStateOf(false) }
+    var editedText by remember { mutableStateOf(content) }
+
+    val bubbleColor = if (isUser) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.secondaryContainer
+    }
+    
+    val textColor = if (isUser) {
+        MaterialTheme.colorScheme.onPrimary
+    } else {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    }
+
     Column(
         modifier = Modifier.fillMaxWidth().padding(8.dp),
         horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
@@ -23,16 +43,58 @@ fun MessageBubble(content: String, isUser: Boolean) {
         Box(
             modifier = Modifier
                 .background(
-                    color = if (isUser) Color(0xFF007AFF) else Color(0xFFE9E9EB), // iOS Blue vs Grey
-                    shape = RoundedCornerShape(16.dp) // iOS 16 style
+                    color = bubbleColor,
+                    shape = RoundedCornerShape(16.dp)
                 )
                 .padding(12.dp)
         ) {
-            Text(
-                text = content,
-                color = if (isUser) Color.White else Color.Black,
-                fontSize = 16.sp
-            )
+            if (content == "...") {
+                AnimatedEllipsis()
+            } else if (isEditing) {
+                Column {
+                    TextField(
+                        value = editedText,
+                        onValueChange = { editedText = it },
+                        modifier = Modifier.fillMaxWidth(0.8f),
+                        colors = TextFieldDefaults.colors(
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    )
+                    Row(
+                        modifier = Modifier.align(Alignment.End).padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        IconButton(onClick = { isEditing = false }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "Cancel", tint = textColor)
+                        }
+                        IconButton(onClick = {
+                            onEdit(editedText)
+                            isEditing = false
+                        }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Default.Check, contentDescription = "Save", tint = textColor)
+                        }
+                    }
+                }
+            } else {
+                Row(verticalAlignment = Alignment.Top) {
+                    Text(
+                        text = content,
+                        color = textColor,
+                        fontSize = 16.sp,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(
+                        Icons.Default.Edit,
+                        contentDescription = "Edit",
+                        modifier = Modifier
+                            .size(16.dp)
+                            .clickable { isEditing = true },
+                        tint = textColor.copy(alpha = 0.6f)
+                    )
+                }
+            }
         }
     }
 }

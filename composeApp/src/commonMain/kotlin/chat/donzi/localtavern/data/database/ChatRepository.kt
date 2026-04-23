@@ -12,9 +12,32 @@ class ChatRepository(private val database: LocalTavernDB) {
         queries.selectAllCharacters().executeAsList()
     }
 
+    suspend fun getAssistant(): CharacterEntity? = withContext(Dispatchers.IO) {
+        queries.selectAssistant().executeAsOneOrNull()
+    }
+
+    suspend fun createAssistant(): Long = withContext(Dispatchers.IO) {
+        database.transactionWithResult {
+            queries.insertCharacter(
+                name = "Assistant",
+                description = "A helpful AI assistant.",
+                personality = "Helpful, polite, and direct.",
+                scenario = "",
+                firstMes = "Hello! How can I help you today?",
+                mesExample = null,
+                creatorNotes = null,
+                systemPrompt = null,
+                altGreetings = null,
+                avatarData = null,
+                isAssistant = 1L
+            )
+            queries.lastInsertId().executeAsOne()
+        }
+    }
+
     suspend fun getCharacterById(id: Long): CharacterEntity? = withContext(Dispatchers.IO) {
-        // Fallback to finding the character in the list if selectCharacterById is missing from the SQLDelight queries
-        queries.selectAllCharacters().executeAsList().find { it.id == id }
+        // Fallback or better query if exists, otherwise filter
+        (queries.selectAllCharacters().executeAsList() + (queries.selectAssistant().executeAsOneOrNull()?.let { listOf(it) } ?: emptyList())).find { it.id == id }
     }
 
     suspend fun upsertCharacter(
@@ -32,7 +55,8 @@ class ChatRepository(private val database: LocalTavernDB) {
                 creatorNotes = card.creator_notes,
                 systemPrompt = card.system_prompt,
                 altGreetings = card.alternate_greetings.joinToString("|||").ifBlank { null },
-                avatarData = avatarData
+                avatarData = avatarData,
+                isAssistant = 0L
             )
             queries.lastInsertId().executeAsOne()
         }
@@ -50,7 +74,8 @@ class ChatRepository(private val database: LocalTavernDB) {
                 creatorNotes = null,
                 systemPrompt = null,
                 altGreetings = null,
-                avatarData = null
+                avatarData = null,
+                isAssistant = 0L
             )
             queries.lastInsertId().executeAsOne()
         }
@@ -231,5 +256,37 @@ class ChatRepository(private val database: LocalTavernDB) {
 
     suspend fun updateDarkMode(isDarkMode: Boolean) = withContext(Dispatchers.IO) {
         queries.updateDarkMode(if (isDarkMode) 1L else 0L)
+    }
+
+    // Sessions and Messages
+    suspend fun getOrCreateSession(characterId: Long, personaId: Long): Long = withContext(Dispatchers.IO) {
+        val session = queries.selectLastSessionForCharacter(characterId).executeAsOneOrNull()
+        if (session != null) {
+            session.id
+        } else {
+            database.transactionWithResult {
+                queries.insertChatSession(characterId, personaId, null, currentTimeMillis())
+                queries.lastInsertId().executeAsOne()
+            }
+        }
+    }
+
+    suspend fun getMessagesForSession(sessionId: Long): List<MessageEntity> = withContext(Dispatchers.IO) {
+        queries.selectMessagesBySession(sessionId).executeAsList()
+    }
+
+    suspend fun insertMessage(sessionId: Long, role: String, content: String): Long = withContext(Dispatchers.IO) {
+        database.transactionWithResult {
+            queries.insertMessage(sessionId, role, content, currentTimeMillis())
+            queries.lastInsertId().executeAsOne()
+        }
+    }
+
+    suspend fun updateMessageContent(id: Long, content: String) = withContext(Dispatchers.IO) {
+        queries.updateMessageContent(content, id)
+    }
+
+    suspend fun deleteMessage(id: Long) = withContext(Dispatchers.IO) {
+        queries.deleteMessage(id)
     }
 }

@@ -43,13 +43,13 @@ fun ThemeTransitionContainer(
     isAnimatingTheme: Boolean,
     animationProgress: Float,
     animationCenter: Offset,
-    content: @Composable () -> Unit
+    content: @Composable (isDarkMode: Boolean) -> Unit
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         // Base Layer (Shows the "old" theme during animation, then switches to "new")
         LocalTavernTheme(darkTheme = baseLayerDarkMode) {
             Surface(modifier = Modifier.fillMaxSize()) {
-                content()
+                content(baseLayerDarkMode)
             }
         }
 
@@ -72,7 +72,7 @@ fun ThemeTransitionContainer(
                             }
                         }
                 ) {
-                    content()
+                    content(isDarkMode)
                 }
             }
         }

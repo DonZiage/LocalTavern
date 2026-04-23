@@ -2,9 +2,13 @@ package chat.donzi.localtavern.data.network
 
 import io.ktor.client.*
 import io.ktor.client.call.*
+import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import io.ktor.utils.io.*
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 
@@ -87,6 +91,78 @@ class ChatClient(private val httpClient: HttpClient) {
                 }
             })
         }
-        return response.bodyAsText()
+        
+        if (response.status != HttpStatusCode.OK) {
+            return "Error: ${response.status.description}"
+        }
+
+        val json = Json { ignoreUnknownKeys = true }
+        val bodyText = response.bodyAsText()
+        return try {
+            val element = json.parseToJsonElement(bodyText)
+            if (isChatCompletion) {
+                element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("message")?.jsonObject?.get("content")?.jsonPrimitive?.content ?: bodyText
+            } else {
+                element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("text")?.jsonPrimitive?.content ?: bodyText
+            }
+        } catch (e: Exception) {
+            bodyText
+        }
+    }
+
+    fun streamChatRequest(baseUrl: String, apiKey: String, model: String, prompt: String, isChatCompletion: Boolean = true): Flow<String> = flow {
+        val endpoint = if (isChatCompletion) "$baseUrl/chat/completions" else "$baseUrl/completions"
+        
+        try {
+            httpClient.preparePost(endpoint) {
+                header(HttpHeaders.Authorization, "Bearer $apiKey")
+                contentType(ContentType.Application.Json)
+                setBody(buildJsonObject {
+                    put("model", model)
+                    put("stream", true)
+                    if (isChatCompletion) {
+                        put("messages", buildJsonArray {
+                            add(buildJsonObject {
+                                put("role", "user")
+                                put("content", prompt)
+                            })
+                        })
+                    } else {
+                        put("prompt", prompt)
+                    }
+                })
+            }.execute { response ->
+                if (response.status != HttpStatusCode.OK) {
+                    emit("Error: ${response.status.description}")
+                    return@execute
+                }
+
+                val channel: ByteReadChannel = response.bodyAsChannel()
+                while (!channel.isClosedForRead) {
+                    val line = channel.readUTF8Line() ?: break
+                    if (line.startsWith("data: ")) {
+                        val data = line.substring(6)
+                        if (data == "[DONE]") break
+                        
+                        try {
+                            val json = Json { ignoreUnknownKeys = true }
+                            val element = json.parseToJsonElement(data)
+                            val content = if (isChatCompletion) {
+                                element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("delta")?.jsonObject?.get("content")?.jsonPrimitive?.content
+                            } else {
+                                element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("text")?.jsonPrimitive?.content
+                            }
+                            if (content != null) {
+                                emit(content)
+                            }
+                        } catch (e: Exception) {
+                            // Skip invalid lines
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            emit("Error: ${e.message}")
+        }
     }
 }

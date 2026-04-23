@@ -9,19 +9,23 @@ CREATE TABLE CharacterEntity (
     creatorNotes TEXT,
     systemPrompt TEXT,
     altGreetings TEXT,
-    avatarData BLOB
+    avatarData BLOB,
+    isAssistant INTEGER NOT NULL DEFAULT 0
 );
 
 -- Queries
 insertCharacter:
-INSERT INTO CharacterEntity(name, description, personality, scenario, firstMes, mesExample, creatorNotes, systemPrompt, altGreetings, avatarData)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO CharacterEntity(name, description, personality, scenario, firstMes, mesExample, creatorNotes, systemPrompt, altGreetings, avatarData, isAssistant)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 lastInsertId:
 SELECT last_insert_rowid();
 
 selectAllCharacters:
-SELECT * FROM CharacterEntity ORDER BY name ASC;
+SELECT * FROM CharacterEntity ORDER BY isAssistant DESC, name ASC;
+
+selectAssistant:
+SELECT * FROM CharacterEntity WHERE isAssistant = 1 LIMIT 1;
 
 updateCharacter:
 UPDATE CharacterEntity
@@ -89,8 +93,17 @@ SELECT * FROM MessageEntity WHERE sessionId = ? ORDER BY timestamp ASC;
 insertMessage:
 INSERT INTO MessageEntity(sessionId, role, content, timestamp) VALUES (?, ?, ?, ?);
 
+updateMessageContent:
+UPDATE MessageEntity SET content = ? WHERE id = ?;
+
+deleteMessage:
+DELETE FROM MessageEntity WHERE id = ?;
+
 selectLastSessionForCharacter:
 SELECT * FROM ChatSession WHERE characterId = ? ORDER BY lastTimestamp DESC LIMIT 1;
+
+insertChatSession:
+INSERT INTO ChatSession(characterId, personaId, title, lastTimestamp) VALUES (?, ?, ?, ?);
 
 -- API Connections
 CREATE TABLE ApiConnection (

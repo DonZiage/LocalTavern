@@ -183,7 +183,8 @@ fun ApiConnectionDialog(
                         readOnly = true,
                         label = { Text("1. Select Provider") },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = mainProviderExpanded) },
-                        modifier = Modifier.menuAnchor().fillMaxWidth()
+                        modifier = Modifier.menuAnchor().fillMaxWidth(),
+                        singleLine = true
                     )
                     ExposedDropdownMenu(expanded = mainProviderExpanded, onDismissRequest = { mainProviderExpanded = false }) {
                         providers.forEach { provider ->
@@ -191,9 +192,6 @@ fun ApiConnectionDialog(
                                 text = { Text(provider) },
                                 onClick = {
                                     selectedProvider = provider
-                                    if (name.isBlank() || name.endsWith(" Connection")) {
-                                        name = "$provider Connection"
-                                    }
                                     mainProviderExpanded = false
                                 }
                             )
@@ -212,7 +210,8 @@ fun ApiConnectionDialog(
                         isError = apiKey.isNotEmpty() && !isKeyValid && !isLoadingModels,
                         trailingIcon = {
                             if (isLoadingModels) CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                        }
+                        },
+                        singleLine = true
                     )
                 }
 
@@ -260,7 +259,8 @@ fun ApiConnectionDialog(
                                             Icon(Icons.Default.Clear, "Clear filter")
                                         }
                                     }
-                                }
+                                },
+                                singleLine = true
                             )
                             
                             DropdownMenu(
@@ -325,7 +325,8 @@ fun ApiConnectionDialog(
                                         false
                                     },
                                 isError = selectedModelFullId.isEmpty(),
-                                interactionSource = interactionSource
+                                interactionSource = interactionSource,
+                                singleLine = true
                             )
                             DropdownMenu(
                                 expanded = modelDropdownExpanded && filteredModels.isNotEmpty(),
@@ -355,8 +356,9 @@ fun ApiConnectionDialog(
                         OutlinedTextField(
                             value = name,
                             onValueChange = { name = it },
-                            label = { Text("4. Profile Name") },
-                            modifier = Modifier.fillMaxWidth()
+                            label = { Text("4. Profile Name (Optional)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
                         )
                     }
                 }
@@ -364,8 +366,10 @@ fun ApiConnectionDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onSave(selectedProvider, name, currentBaseUrl, apiKey, selectedModelFullId) },
-                enabled = (isKeyValid || (initialConnection != null && selectedModelFullId.isNotEmpty())) && name.isNotBlank()
+                onClick = { 
+                    onSave(selectedProvider, name, currentBaseUrl, apiKey, selectedModelFullId)
+                },
+                enabled = (isKeyValid || (initialConnection != null && selectedModelFullId.isNotEmpty())) && selectedModelFullId.isNotBlank()
             ) {
                 Text(if (initialConnection == null) "Complete Setup" else "Save Changes")
             }

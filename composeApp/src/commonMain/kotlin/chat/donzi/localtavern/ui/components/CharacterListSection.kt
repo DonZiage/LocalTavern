@@ -20,6 +20,10 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
+import chat.donzi.localtavern.utils.CharacterManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -30,6 +34,7 @@ fun CharacterListSection(
     onDeleteSelected: (Set<Long>) -> Unit,
     onImportCharacter: (SillyTavernCardV2, ByteArray?) -> Unit,
     onCreateCharacter: (String) -> Unit,
+    onEditCharacter: (CharacterEntity) -> Unit,
     actions: @Composable RowScope.() -> Unit = {}
 ) {
     var query by remember { mutableStateOf("") }
@@ -38,6 +43,12 @@ fun CharacterListSection(
     var isSearchActive by remember { mutableStateOf(false) }
     val focusRequester = focusRequester()
     var showCharacterMenu by remember { mutableStateOf(false) }
+    var showCreateDialog by remember { mutableStateOf(false) }
+    var newCharacterName by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+
+    var characterToDelete by remember { mutableStateOf<CharacterEntity?>(null) }
+    var showMultiDeleteConfirm by remember { mutableStateOf(false) }
 
     // Drop ids that no longer exist (e.g. after deletion).
     LaunchedEffect(characters) {
@@ -155,8 +166,44 @@ fun CharacterListSection(
                 }
             }
 
-            IconButton(onClick = { showCharacterMenu = true }) {
-                Icon(Icons.Default.Add, contentDescription = "Add Character", tint = MaterialTheme.colorScheme.primary)
+            Box {
+                Button(
+                    onClick = { showCharacterMenu = true },
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("New")
+                }
+
+                DropdownMenu(
+                    expanded = showCharacterMenu,
+                    onDismissRequest = { showCharacterMenu = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Import") },
+                        leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
+                        onClick = {
+                            showCharacterMenu = false
+                            scope.launch {
+                                val imported = withContext(Dispatchers.Default) {
+                                    CharacterManager.openImportDialog()
+                                }
+                                imported?.let {
+                                    onImportCharacter(it.card, it.avatarData)
+                                }
+                            }
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Create") },
+                        leadingIcon = { Icon(Icons.Default.Create, contentDescription = null) },
+                        onClick = {
+                            showCharacterMenu = false
+                            showCreateDialog = true
+                        }
+                    )
+                }
             }
 
             actions()
@@ -184,9 +231,7 @@ fun CharacterListSection(
                     TextButton(
                         enabled = selectedIds.isNotEmpty(),
                         onClick = {
-                            onDeleteSelected(selectedIds.toSet())
-                            selectedIds.clear()
-                            selectionMode = false
+                            showMultiDeleteConfirm = true
                         }
                     ) {
                         Icon(Icons.Default.Delete, contentDescription = null)
@@ -217,25 +262,94 @@ fun CharacterListSection(
                     onLongClick = {
                         if (!selectionMode) selectionMode = true
                         if (!isSelected) selectedIds.add(char.id)
-                    }
+                    },
+                    onEditClick = { onEditCharacter(char) },
+                    onDeleteClick = { characterToDelete = char }
                 )
             }
         }
     }
 
-    if (showCharacterMenu) {
-        CharacterMenu(
-            onDismissRequest = { showCharacterMenu = false },
-            onImportCharacter = { card, avatar ->
-                onImportCharacter(card, avatar)
-                showCharacterMenu = false
+    if (showCreateDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreateDialog = false },
+            title = { Text("Create New Character") },
+            text = {
+                OutlinedTextField(
+                    value = newCharacterName,
+                    onValueChange = { newCharacterName = it },
+                    label = { Text("Character Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
             },
-            onCreateCharacter = { name ->
-                onCreateCharacter(name)
-                showCharacterMenu = false
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newCharacterName.isNotBlank()) {
+                            onCreateCharacter(newCharacterName)
+                            newCharacterName = ""
+                            showCreateDialog = false
+                        }
+                    },
+                    enabled = newCharacterName.isNotBlank()
+                ) {
+                    Text("Create")
+                }
             },
-            onManageApiConnections = {},
-            onManagePersonas = {}
+            dismissButton = {
+                TextButton(onClick = { showCreateDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (characterToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { characterToDelete = null },
+            title = { Text("Delete Character?") },
+            text = { Text("\"${characterToDelete?.name}\" will be permanently removed.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteSelected(setOf(characterToDelete!!.id))
+                        characterToDelete = null
+                    }
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { characterToDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showMultiDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showMultiDeleteConfirm = false },
+            title = { Text("Delete Characters?") },
+            text = { Text("Are you sure you want to delete ${selectedIds.size} characters?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteSelected(selectedIds.toSet())
+                        selectedIds.clear()
+                        selectionMode = false
+                        showMultiDeleteConfirm = false
+                    }
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showMultiDeleteConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
         )
     }
 }

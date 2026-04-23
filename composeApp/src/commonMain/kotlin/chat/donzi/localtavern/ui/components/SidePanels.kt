@@ -51,7 +51,8 @@ fun SidePanels(
     onCharacterSelect: (CharacterEntity) -> Unit,
     onCharactersDelete: (Set<Long>) -> Unit,
     onCharacterImport: (SillyTavernCardV2, ByteArray?) -> Unit,
-    onCharacterCreate: (String) -> Unit
+    onCharacterCreate: (String) -> Unit,
+    onCharacterEdit: (CharacterEntity) -> Unit
 ) {
     Box(modifier = Modifier.fillMaxSize().zIndex(100f)) {
         // Scrim Overlay
@@ -173,7 +174,8 @@ fun SidePanels(
                                 onSelect = onCharacterSelect,
                                 onDeleteSelected = onCharactersDelete,
                                 onImportCharacter = onCharacterImport,
-                                onCreateCharacter = onCharacterCreate
+                                onCreateCharacter = onCharacterCreate,
+                                onEditCharacter = onCharacterEdit
                             )
                         }
                     }

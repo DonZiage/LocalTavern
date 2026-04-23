@@ -13,6 +13,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.utils.CharacterManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -26,6 +30,7 @@ fun CharacterMenu(
     val sheetState = rememberModalBottomSheetState()
     var showCreateDialog by remember { mutableStateOf(false) }
     var newCharacterName by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
 
     if (showCreateDialog) {
         AlertDialog(
@@ -84,10 +89,15 @@ fun CharacterMenu(
                 headlineContent = { Text("Import Character from PNG") },
                 leadingContent = { Icon(Icons.Default.Add, contentDescription = null) },
                 modifier = Modifier.padding(horizontal = 8.dp).clickable {
-                    CharacterManager.openImportDialog()?.let { imported ->
-                        onImportCharacter(imported.card, imported.avatarData)
+                    scope.launch {
+                        val imported = withContext(Dispatchers.Default) {
+                            CharacterManager.openImportDialog()
+                        }
+                        imported?.let {
+                            onImportCharacter(it.card, it.avatarData)
+                        }
+                        onDismissRequest()
                     }
-                    onDismissRequest()
                 }
             )
             
