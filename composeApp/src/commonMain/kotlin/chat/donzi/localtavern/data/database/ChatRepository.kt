@@ -12,6 +12,11 @@ class ChatRepository(private val database: LocalTavernDB) {
         queries.selectAllCharacters().executeAsList()
     }
 
+    suspend fun getCharacterById(id: Long): CharacterEntity? = withContext(Dispatchers.IO) {
+        // Fallback to finding the character in the list if selectCharacterById is missing from the SQLDelight queries
+        queries.selectAllCharacters().executeAsList().find { it.id == id }
+    }
+
     suspend fun upsertCharacter(
         card: SillyTavernCardV2,
         avatarData: ByteArray? = null
@@ -28,6 +33,24 @@ class ChatRepository(private val database: LocalTavernDB) {
                 systemPrompt = card.system_prompt,
                 altGreetings = card.alternate_greetings.joinToString("|||").ifBlank { null },
                 avatarData = avatarData
+            )
+            queries.lastInsertId().executeAsOne()
+        }
+    }
+
+    suspend fun createCharacter(name: String): Long = withContext(Dispatchers.IO) {
+        database.transactionWithResult {
+            queries.insertCharacter(
+                name = name,
+                description = null,
+                personality = "",
+                scenario = "",
+                firstMes = null,
+                mesExample = null,
+                creatorNotes = null,
+                systemPrompt = null,
+                altGreetings = null,
+                avatarData = null
             )
             queries.lastInsertId().executeAsOne()
         }
@@ -60,6 +83,32 @@ class ChatRepository(private val database: LocalTavernDB) {
     suspend fun deleteCharacters(ids: Collection<Long>) = withContext(Dispatchers.IO) {
         if (ids.isEmpty()) return@withContext
         queries.deleteCharactersByIds(ids.toList())
+    }
+
+    // Personas
+    suspend fun getAllPersonas(): List<PersonaEntity> = withContext(Dispatchers.IO) {
+        queries.selectAllPersonas().executeAsList()
+    }
+
+    suspend fun insertPersona(
+        name: String,
+        description: String?,
+        avatarData: ByteArray?
+    ) = withContext(Dispatchers.IO) {
+        queries.insertPersona(name, description, avatarData)
+    }
+
+    suspend fun updatePersona(
+        id: Long,
+        name: String,
+        description: String?,
+        avatarData: ByteArray?
+    ) = withContext(Dispatchers.IO) {
+        queries.updatePersona(name, description, avatarData, id)
+    }
+
+    suspend fun deletePersona(id: Long) = withContext(Dispatchers.IO) {
+        queries.deletePersona(id)
     }
 
     // API Connections
@@ -174,6 +223,10 @@ class ChatRepository(private val database: LocalTavernDB) {
     suspend fun getAppSettings(): AppSettings = withContext(Dispatchers.IO) {
         queries.insertDefaultSettings()
         queries.getAppSettings().executeAsOne()
+    }
+
+    suspend fun updateActivePersonaId(personaId: Long?) = withContext(Dispatchers.IO) {
+        queries.updateActivePersonaId(personaId)
     }
 
     suspend fun updateDarkMode(isDarkMode: Boolean) = withContext(Dispatchers.IO) {

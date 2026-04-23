@@ -12,6 +12,8 @@ import java.io.File
 import java.util.zip.CRC32
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
+import java.awt.FileDialog
+import java.awt.Frame
 
 data class ImportedCharacter(
     val card: SillyTavernCardV2,
@@ -56,6 +58,17 @@ object CharacterManager {
                bytes[5].toInt() == 0x0A.toByte().toInt() &&
                bytes[6].toInt() == 0x1A.toByte().toInt() &&
                bytes[7].toInt() == 0x0A.toByte().toInt()
+    }
+
+    fun openImportDialog(): ImportedCharacter? {
+        val dialog = FileDialog(Frame(), "Select Character PNG", FileDialog.LOAD)
+        dialog.isVisible = true
+        return if (dialog.file != null) {
+            val file = File(dialog.directory, dialog.file)
+            processImport(file)
+        } else {
+            null
+        }
     }
 
     fun processImport(file: File): ImportedCharacter? {

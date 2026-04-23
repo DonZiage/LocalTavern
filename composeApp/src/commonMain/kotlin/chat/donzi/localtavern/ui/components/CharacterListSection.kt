@@ -8,9 +8,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -21,6 +19,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.data.database.CharacterEntity
+import chat.donzi.localtavern.data.models.SillyTavernCardV2
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -29,13 +28,16 @@ fun CharacterListSection(
     modifier: Modifier = Modifier,
     onSelect: (CharacterEntity) -> Unit,
     onDeleteSelected: (Set<Long>) -> Unit,
+    onImportCharacter: (SillyTavernCardV2, ByteArray?) -> Unit,
+    onCreateCharacter: (String) -> Unit,
     actions: @Composable RowScope.() -> Unit = {}
 ) {
     var query by remember { mutableStateOf("") }
     var selectionMode by remember { mutableStateOf(false) }
     val selectedIds = remember { mutableStateListOf<Long>() }
     var isSearchActive by remember { mutableStateOf(false) }
-    val focusRequester = remember { FocusRequester() }
+    val focusRequester = focusRequester()
+    var showCharacterMenu by remember { mutableStateOf(false) }
 
     // Drop ids that no longer exist (e.g. after deletion).
     LaunchedEffect(characters) {
@@ -98,7 +100,6 @@ fun CharacterListSection(
                                 visualTransformation = VisualTransformation.None,
                                 interactionSource = interactionSource,
                                 leadingIcon = {
-                                    // Match the size and ensure no extra internal padding
                                     IconButton(
                                         onClick = { isSearchActive = false },
                                         modifier = Modifier.size(40.dp)
@@ -126,8 +127,6 @@ fun CharacterListSection(
                                     shape = CircleShape
                                 )
                                 },
-                                // Reduced start padding because the leadingIcon already 
-                                // provides spacing, preventing the text from being too far right.
                                 contentPadding = PaddingValues(start = 0.dp, end = 12.dp, top = 0.dp, bottom = 0.dp),
                             )
                         }
@@ -143,7 +142,7 @@ fun CharacterListSection(
                         IconButton(
                             onClick = { isSearchActive = true },
                             modifier = Modifier
-                                .padding(start = 4.dp) // Offset to match the TextField's leadingIcon position
+                                .padding(start = 4.dp)
                                 .size(40.dp)
                         ) {
                             Icon(
@@ -154,6 +153,10 @@ fun CharacterListSection(
                         }
                     }
                 }
+            }
+
+            IconButton(onClick = { showCharacterMenu = true }) {
+                Icon(Icons.Default.Add, contentDescription = "Add Character", tint = MaterialTheme.colorScheme.primary)
             }
 
             actions()
@@ -219,4 +222,23 @@ fun CharacterListSection(
             }
         }
     }
+
+    if (showCharacterMenu) {
+        CharacterMenu(
+            onDismissRequest = { showCharacterMenu = false },
+            onImportCharacter = { card, avatar ->
+                onImportCharacter(card, avatar)
+                showCharacterMenu = false
+            },
+            onCreateCharacter = { name ->
+                onCreateCharacter(name)
+                showCharacterMenu = false
+            },
+            onManageApiConnections = {},
+            onManagePersonas = {}
+        )
+    }
 }
+
+@Composable
+fun focusRequester(): FocusRequester = remember { FocusRequester() }

@@ -1,6 +1,5 @@
 package chat.donzi.localtavern.ui.components
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,9 +42,7 @@ fun ApiConnectionItem(
     }
 
     Card(
-        modifier = modifier
-            .height(115.dp)
-            .clip(cardShape),
+        modifier = modifier.clip(cardShape),
         shape = cardShape,
         colors = CardDefaults.cardColors(
             containerColor = if (connection.isActive == 1L) 
@@ -86,13 +83,24 @@ fun ApiConnectionItem(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
-                    Icon(
-                        Icons.Default.Delete, 
-                        contentDescription = "Delete", 
-                        modifier = Modifier.size(22.dp),
-                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.6f)
-                    )
+                
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            Icons.Default.Edit, 
+                            contentDescription = "Edit",
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                    }
+                    IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            Icons.Default.Delete, 
+                            contentDescription = "Delete", 
+                            modifier = Modifier.size(22.dp),
+                            tint = MaterialTheme.colorScheme.error.copy(alpha = 0.6f)
+                        )
+                    }
                 }
             }
             
@@ -110,8 +118,8 @@ fun ApiConnectionItem(
             val primaryContainerColor = MaterialTheme.colorScheme.primaryContainer
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                verticalAlignment = Alignment.Bottom
             ) {
                 Row(
                     modifier = Modifier
@@ -136,20 +144,6 @@ fun ApiConnectionItem(
                         )
                     )
                     Text("Chat", style = MaterialTheme.typography.labelMedium)
-                }
-                
-                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    IconButton(
-                        onClick = onEdit,
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.Edit, 
-                            contentDescription = "Edit",
-                            modifier = Modifier.size(20.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                        )
-                    }
                 }
             }
         }
