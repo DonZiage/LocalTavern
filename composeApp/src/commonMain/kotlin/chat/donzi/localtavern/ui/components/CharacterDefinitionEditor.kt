@@ -30,12 +30,12 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import chat.donzi.localtavern.saveFile
+import chat.donzi.localtavern.openDirectory
 import chat.donzi.localtavern.data.database.CharacterEntity
+import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
-import java.awt.FileDialog
-import java.awt.Frame
-import java.io.File
 import kotlin.math.abs
 
 @Composable
@@ -87,36 +87,36 @@ fun CharacterDefinitionEditor(
             originalImage = original,
             character = character.copy(avatarData = avatarData)
         )
-        val osName = System.getProperty("os.name") ?: ""
-        val baseFolder = if (osName.contains("Android", ignoreCase = true)) {
-            "/storage/emulated/0/Download"
-        } else {
-            System.getProperty("user.home") + "/Documents"
-        }
         
-        val file = File(baseFolder, "${character.name}.png")
-        file.writeBytes(exportedBytes)
-
-        scope.launch {
-            snackbarHostState.showSnackbar(
-                message = "Exported ${file.name} to ${file.parent}",
-                duration = SnackbarDuration.Long
-            )
+        try {
+            val fileName = "${character.name}.png"
+            val savedPath = saveFile(fileName, exportedBytes)
+            if (savedPath != null) {
+                scope.launch {
+                    val result = snackbarHostState.showSnackbar(
+                        message = "Exported to LocalTavern/ExportedCharacters",
+                        actionLabel = "Show",
+                        duration = SnackbarDuration.Long
+                    )
+                    if (result == SnackbarResult.ActionPerformed) {
+                        openDirectory(savedPath)
+                    }
+                }
+            } else {
+                scope.launch {
+                    snackbarHostState.showSnackbar("Failed to export: Could not save file")
+                }
+            }
+        } catch (e: Exception) {
+            scope.launch {
+                snackbarHostState.showSnackbar("Failed to export: ${e.message}")
+            }
         }
     }
 
-    val pickImage = {
-        val dialog = FileDialog(Frame(), "Select Character Image", FileDialog.LOAD)
-        dialog.setFilenameFilter { _, filename -> 
-            val ext = filename.lowercase()
-            ext.endsWith(".png") || ext.endsWith(".jpg") || ext.endsWith(".jpeg") || ext.endsWith(".webp")
-        }
-        dialog.isVisible = true
-        if (dialog.file != null) {
-            val file = File(dialog.directory, dialog.file)
-            avatarData = file.readBytes()
-            persist()
-        }
+    val pickImage = rememberImagePickerLauncher { bytes ->
+        avatarData = bytes
+        persist()
     }
 
     Box(modifier = Modifier.fillMaxSize()) {

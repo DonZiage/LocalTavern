@@ -3,7 +3,7 @@ package chat.donzi.localtavern.data.database
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 
 class ChatRepository(private val database: LocalTavernDB) {
     private val queries = database.localTavernDBQueries
@@ -261,14 +261,11 @@ class ChatRepository(private val database: LocalTavernDB) {
     // Sessions and Messages
     suspend fun getOrCreateSession(characterId: Long, personaId: Long): Long = withContext(Dispatchers.IO) {
         val session = queries.selectLastSessionForCharacter(characterId).executeAsOneOrNull()
-        if (session != null) {
-            session.id
-        } else {
-            database.transactionWithResult {
+        session?.id
+            ?: database.transactionWithResult {
                 queries.insertChatSession(characterId, personaId, null, currentTimeMillis())
                 queries.lastInsertId().executeAsOne()
             }
-        }
     }
 
     suspend fun getMessagesForSession(sessionId: Long): List<MessageEntity> = withContext(Dispatchers.IO) {

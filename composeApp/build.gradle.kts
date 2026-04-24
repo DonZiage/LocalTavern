@@ -1,5 +1,3 @@
-import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.androidApplication)
@@ -25,58 +23,72 @@ kotlin {
 
     jvm("desktop")
 
+    iosX64()
+    iosArm64()
+    iosSimulatorArm64()
+
     sourceSets {
-        val commonMain by getting {
-            dependencies {
-                implementation(libs.kotlinx.serialization.json)
-                implementation(libs.kotlinx.datetime)
-                implementation(compose.runtime)
-                implementation(compose.foundation)
-                implementation(compose.material3)
-                implementation(compose.ui)
-                implementation(compose.components.resources)
-                implementation(compose.components.uiToolingPreview)
-                implementation(compose.materialIconsExtended)
+        commonMain.dependencies {
+            implementation(libs.kotlinx.serialization.json)
+            implementation(libs.kotlinx.datetime)
 
-                // Foundation Dependencies [cite: 56]
-                implementation(libs.sqldelight.runtime)
-                implementation(libs.ktor.client.core)
-                implementation(libs.ktor.client.content.negotiation)
-                implementation(libs.ktor.serialization.json)
+            // Swapped from compose.* to your libs.versions.toml definitions
+            implementation(libs.compose.runtime)
+            implementation(libs.compose.foundation)
+            implementation(libs.compose.material3)
+            implementation(libs.compose.ui)
+            implementation(libs.compose.components.resources)
+            implementation(libs.compose.uiToolingPreview)
 
-                // Coil3 for image loading
-                implementation("io.coil-kt.coil3:coil-compose:3.0.0-alpha07")
-            }
+            // Pinned to the last supported version as requested by the warning
+            implementation(libs.compose.materialIconsExtended)
+
+            // Foundation Dependencies
+            implementation(libs.sqldelight.runtime)
+
+            implementation(libs.ktor.client.core)
+            implementation(libs.ktor.client.content.negotiation)
+            implementation(libs.ktor.serialization.json)
+
+            // Coil3 for image loading
+            implementation(libs.coil3.coil.compose)
         }
 
-        val androidMain by getting {
-            dependencies {
-                implementation(libs.sqldelight.driver.android)
-                implementation(libs.androidx.activity.compose)
-            }
+        // Modern syntax: directly accessing androidMain.dependencies
+        androidMain.dependencies {
+            implementation(libs.sqldelight.driver.android)
+            implementation(libs.androidx.activity.compose)
+            implementation(libs.ktor.client.okhttp)
         }
 
-        val desktopMain by getting {
+
+        // Modern syntax: directly accessing desktopMain.dependencies
+        getByName("desktopMain") {
             dependencies {
                 implementation(compose.desktop.currentOs)
                 implementation(libs.sqldelight.driver.desktop)
 
                 // Networking engine and logging for Desktop
                 implementation("io.ktor:ktor-client-java:$ktorVersion")
-                implementation("ch.qos.logback:logback-classic:1.4.14")
+                implementation(libs.logback.classic)
             }
+        }
+
+        iosMain.dependencies {
+            implementation(libs.sqldelight.driver.native)
+            implementation(libs.ktor.client.darwin)
         }
     }
 }
 
 android {
     namespace = "chat.donzi.localtavern"
-    compileSdk = 34
+    compileSdk = libs.versions.android.compileSdk.get().toInt()
 
     defaultConfig {
         applicationId = "chat.donzi.localtavern"
-        minSdk = 24
-        targetSdk = 34
+        minSdk = libs.versions.android.minSdk.get().toInt()
+        targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = 1
         versionName = "1.0"
     }

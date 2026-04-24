@@ -19,13 +19,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.donzi.localtavern.data.database.PersonaEntity
+import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import coil3.compose.AsyncImage
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.awt.FileDialog
-import java.awt.Frame
-import java.io.File
 
 @Composable
 fun PersonaManagement(
@@ -197,26 +192,9 @@ fun PersonaEditDialog(
     var avatarData by remember { mutableStateOf(initialAvatar) }
     
     var showImageMenu by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
 
-    val pickImage = {
-        scope.launch {
-            val selectedBytes = withContext(Dispatchers.Default) {
-                val dialog = FileDialog(Frame(), "Select Persona Image", FileDialog.LOAD)
-                dialog.setFilenameFilter { _, filename -> 
-                    val ext = filename.lowercase()
-                    ext.endsWith(".png") || ext.endsWith(".jpg") || ext.endsWith(".jpeg") || ext.endsWith(".webp")
-                }
-                dialog.isVisible = true
-                if (dialog.file != null) {
-                    val file = File(dialog.directory, dialog.file)
-                    file.readBytes()
-                } else null
-            }
-            if (selectedBytes != null) {
-                avatarData = selectedBytes
-            }
-        }
+    val pickImage = rememberImagePickerLauncher { bytes ->
+        avatarData = bytes
     }
 
     AlertDialog(
