@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.utils.CharacterManager
+import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -49,6 +50,17 @@ fun CharacterListSection(
 
     var characterToDelete by remember { mutableStateOf<CharacterEntity?>(null) }
     var showMultiDeleteConfirm by remember { mutableStateOf(false) }
+
+    val pickImage = rememberImagePickerLauncher { bytes ->
+        scope.launch {
+            val imported = withContext(Dispatchers.Default) {
+                CharacterManager.processImport(bytes)
+            }
+            imported?.let {
+                onImportCharacter(it.card, it.avatarData)
+            }
+        }
+    }
 
     // Drop ids that no longer exist (e.g. after deletion).
     LaunchedEffect(characters) {
@@ -130,13 +142,13 @@ fun CharacterListSection(
                                     }
                                 },
                                 container = {
-                                OutlinedTextFieldDefaults.ContainerBox(
+                                    OutlinedTextFieldDefaults.Container(
                                         enabled = true,
-                                    isError = false,
-                                    interactionSource = interactionSource,
-                                    colors = OutlinedTextFieldDefaults.colors(),
-                                    shape = CircleShape
-                                )
+                                        isError = false,
+                                        interactionSource = interactionSource,
+                                        colors = OutlinedTextFieldDefaults.colors(),
+                                        shape = CircleShape
+                                    )
                                 },
                                 contentPadding = PaddingValues(start = 0.dp, end = 12.dp, top = 0.dp, bottom = 0.dp),
                             )
@@ -185,14 +197,7 @@ fun CharacterListSection(
                         leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
                         onClick = {
                             showCharacterMenu = false
-                            scope.launch {
-                                val imported = withContext(Dispatchers.Default) {
-                                    CharacterManager.openImportDialog()
-                                }
-                                imported?.let {
-                                    onImportCharacter(it.card, it.avatarData)
-                                }
-                            }
+                            pickImage()
                         }
                     )
                     DropdownMenuItem(

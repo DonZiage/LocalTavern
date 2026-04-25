@@ -3,17 +3,11 @@ package chat.donzi.localtavern.utils
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.data.models.SillyTavernWrapper
 import chat.donzi.localtavern.data.database.CharacterEntity
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
-import java.io.ByteArrayOutputStream
-import java.io.File
-import java.util.zip.CRC32
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
-import java.awt.FileDialog
-import java.awt.Frame
 
 data class ImportedCharacter(
     val card: SillyTavernCardV2,
@@ -60,37 +54,27 @@ object CharacterManager {
                bytes[7].toInt() == 0x0A.toByte().toInt()
     }
 
-    fun openImportDialog(): ImportedCharacter? {
-        val dialog = FileDialog(Frame(), "Select Character PNG", FileDialog.LOAD)
-        dialog.isVisible = true
-        return if (dialog.file != null) {
-            val file = File(dialog.directory, dialog.file)
-            processImport(file)
-        } else {
-            null
-        }
-    }
-
-    fun processImport(file: File): ImportedCharacter? {
+    fun processImport(bytes: ByteArray, fileName: String? = null): ImportedCharacter? {
         return try {
-            val bytes = file.readBytes()
             val png = isPng(bytes)
+            val isJson = fileName?.endsWith(".json", ignoreCase = true) == true
 
             val jsonString: String? = if (png) {
                 PngParser.extractSillyTavernCard(bytes)
-            } else if (file.extension.lowercase() == "json") {
+            } else if (isJson) {
                 bytes.decodeToString()
             } else {
+                // Try PNG anyway if unknown
                 PngParser.extractSillyTavernCard(bytes)
             }
 
             if (jsonString.isNullOrBlank()) {
-                println("[CharacterManager] No character JSON found in ${file.name}")
+                println("[CharacterManager] No character JSON found")
                 return null
             }
 
             val card = parseCardJson(jsonString) ?: run {
-                println("[CharacterManager] Failed to parse card JSON from ${file.name}")
+                println("[CharacterManager] Failed to parse card JSON")
                 return null
             }
 
@@ -138,33 +122,79 @@ object CharacterManager {
     }
 
     private fun insertMetadataChunk(pngBytes: ByteArray, data: ByteArray): ByteArray {
-        val out = ByteArrayOutputStream()
         if (pngBytes.size < 33) return pngBytes
 
-        out.write(pngBytes, 0, 8)
         val ihdrDataLength = ((pngBytes[8].toInt() and 0xFF) shl 24) or
                              ((pngBytes[9].toInt() and 0xFF) shl 16) or
                              ((pngBytes[10].toInt() and 0xFF) shl 8) or
                              (pngBytes[11].toInt() and 0xFF)
         val ihdrTotalSize = 12 + ihdrDataLength
-        out.write(pngBytes, 8, ihdrTotalSize)
-
+        
         val type = "tEXt".encodeToByteArray()
-        val length = data.size
-        out.write((length shr 24) and 0xFF); out.write((length shr 16) and 0xFF)
-        out.write((length shr 8) and 0xFF); out.write(length and 0xFF)
-        out.write(type)
-        out.write(data)
-
-        val crc = CRC32(); crc.update(type); crc.update(data)
-        val crcVal = crc.value.toInt()
-        out.write((crcVal shr 24) and 0xFF); out.write((crcVal shr 16) and 0xFF)
-        out.write((crcVal shr 8) and 0xFF); out.write(crcVal and 0xFF)
-
+        val chunkTotalSize = 4 + 4 + data.size + 4 // length + type + data + crc
+        
+        val result = ByteArray(pngBytes.size + chunkTotalSize)
+        
+        // Copy signature + IHDR
+        pngBytes.copyInto(result, 0, 0, 8 + ihdrTotalSize)
+        
+        var offset = 8 + ihdrTotalSize
+        
+        // Length
+        writeInt(result, offset, data.size)
+        offset += 4
+        
+        // Type
+        type.copyInto(result, offset)
+        offset += type.size
+        
+        // Data
+        data.copyInto(result, offset)
+        offset += data.size
+        
+        // CRC
+        val crc = CommonCRC32()
+        crc.update(type)
+        crc.update(data)
+        writeInt(result, offset, crc.value.toInt())
+        offset += 4
+        
+        // Remaining
         val remainingOffset = 8 + ihdrTotalSize
         if (pngBytes.size > remainingOffset) {
-            out.write(pngBytes, remainingOffset, pngBytes.size - remainingOffset)
+            pngBytes.copyInto(result, offset, remainingOffset, pngBytes.size)
         }
-        return out.toByteArray()
+        
+        return result
+    }
+
+    private fun writeInt(array: ByteArray, offset: Int, value: Int) {
+        array[offset] = ((value shr 24) and 0xFF).toByte()
+        array[offset + 1] = ((value shr 16) and 0xFF).toByte()
+        array[offset + 2] = ((value shr 8) and 0xFF).toByte()
+        array[offset + 3] = (value and 0xFF).toByte()
+    }
+}
+
+private class CommonCRC32 {
+    private var crc = -1
+
+    fun update(bytes: ByteArray) {
+        for (b in bytes) {
+            val index = (crc xor b.toInt()) and 0xFF
+            crc = (crc ushr 8) xor crcTable[index]
+        }
+    }
+
+    val value: Long get() = (crc.toLong() xor 0xFFFFFFFFL) and 0xFFFFFFFFL
+
+    companion object {
+        private val crcTable = IntArray(256) { i ->
+            var c = i
+            repeat(8) {
+                c = if (c and 1 != 0) -0x12477ce0 xor (c ushr 1) else c ushr 1
+            }
+            c
+        }
     }
 }

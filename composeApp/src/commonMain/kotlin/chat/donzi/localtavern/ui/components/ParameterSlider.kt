@@ -2,12 +2,15 @@ package chat.donzi.localtavern.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -22,16 +25,19 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ParameterSlider(
     label: String,
     value: Float,
     range: ClosedFloatingPointRange<Float>,
     steps: Int = 0,
-    format: (Float) -> String = { "%.2f".format(it) },
+    format: (Float) -> String = { ((it * 100).roundToInt() / 100.0).toString() },
     onValueChange: (Float) -> Unit
 ) {
     var sliderValue by remember(value) { mutableFloatStateOf(value) }
@@ -92,7 +98,20 @@ fun ParameterSlider(
             },
             onValueChangeFinished = { onValueChange(sliderValue) },
             valueRange = range,
-            steps = steps
+            steps = steps,
+            thumb = {
+                SliderDefaults.Thumb(
+                    interactionSource = remember { MutableInteractionSource() },
+                    thumbSize = DpSize(12.dp, 12.dp)
+                )
+            },
+            track = { sliderState ->
+                SliderDefaults.Track(
+                    sliderState = sliderState,
+                    modifier = Modifier.height(2.dp),
+                    drawStopIndicator = null
+                )
+            }
         )
     }
 }

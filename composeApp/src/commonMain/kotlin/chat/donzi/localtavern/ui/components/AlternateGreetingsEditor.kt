@@ -1,7 +1,5 @@
 package chat.donzi.localtavern.ui.components
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -14,11 +12,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
 
 /**
  * Horizontally-scrollable strip of "alternate greeting" pills.
@@ -33,7 +29,6 @@ fun AlternateGreetingsStrip(
 ) {
     var editingIndex by remember { mutableStateOf<Int?>(null) }
     val scrollState = rememberScrollState()
-    val scope = rememberCoroutineScope()
 
     Column(modifier = modifier.fillMaxWidth()) {
         Text(

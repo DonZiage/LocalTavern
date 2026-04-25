@@ -2,6 +2,7 @@ package chat.donzi.localtavern.data.database
 
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.withContext
 import kotlin.time.Clock
 

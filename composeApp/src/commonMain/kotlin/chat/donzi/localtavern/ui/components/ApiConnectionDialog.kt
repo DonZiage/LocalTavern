@@ -33,29 +33,33 @@ fun ApiConnectionDialog(
     onDismiss: () -> Unit,
     onSave: (provider: String, name: String, baseUrl: String, apiKey: String, model: String) -> Unit
 ) {
-    val providers = listOf(
-        "OpenAI", "xAI", "Gemini", "Anthropic", "Mistral", "DeepSeek", "AI21",
-        "Cohere", "Perplexity", "Fireworks AI", "OpenRouter", "TogetherAI",
-        "NovelAI", "Mancer", "DreamGen"
-    )
+    val providers = remember {
+        listOf(
+            "OpenAI", "xAI", "Gemini", "Anthropic", "Mistral", "DeepSeek", "AI21",
+            "Cohere", "Perplexity", "Fireworks AI", "OpenRouter", "TogetherAI",
+            "NovelAI", "Mancer", "DreamGen"
+        )
+    }
     
-    val defaultUrls = mapOf(
-        "OpenAI" to "https://api.openai.com/v1",
-        "Anthropic" to "https://api.anthropic.com/v1",
-        "OpenRouter" to "https://openrouter.ai/api/v1",
-        "DeepSeek" to "https://api.deepseek.com",
-        "TogetherAI" to "https://api.together.xyz/v1",
-        "Mistral" to "https://api.mistral.ai/v1",
-        "xAI" to "https://api.x.ai/v1",
-        "Gemini" to "https://generativelanguage.googleapis.com/v1beta/openai",
-        "AI21" to "https://api.ai21.com/studio/v1",
-        "Cohere" to "https://api.cohere.ai/v1",
-        "Perplexity" to "https://api.perplexity.ai",
-        "Fireworks AI" to "https://api.fireworks.ai/inference/v1",
-        "NovelAI" to "https://api.novelai.net/v1",
-        "Mancer" to "https://api.mancer.tech/v1",
-        "DreamGen" to "https://dreamgen.com/api/v1"
-    )
+    val defaultUrls = remember {
+        mapOf(
+            "OpenAI" to "https://api.openai.com/v1",
+            "Anthropic" to "https://api.anthropic.com/v1",
+            "OpenRouter" to "https://openrouter.ai/api/v1",
+            "DeepSeek" to "https://api.deepseek.com",
+            "TogetherAI" to "https://api.together.xyz/v1",
+            "Mistral" to "https://api.mistral.ai/v1",
+            "xAI" to "https://api.x.ai/v1",
+            "Gemini" to "https://generativelanguage.googleapis.com/v1beta/openai",
+            "AI21" to "https://api.ai21.com/studio/v1",
+            "Cohere" to "https://api.cohere.ai/v1",
+            "Perplexity" to "https://api.perplexity.ai",
+            "Fireworks AI" to "https://api.fireworks.ai/inference/v1",
+            "NovelAI" to "https://api.novelai.net/v1",
+            "Mancer" to "https://api.mancer.tech/v1",
+            "DreamGen" to "https://dreamgen.com/api/v1"
+        )
+    }
 
     var selectedProvider by remember { mutableStateOf(initialConnection?.provider ?: "") }
     var apiKey by remember { mutableStateOf("") }
@@ -83,7 +87,7 @@ fun ApiConnectionDialog(
     var providerDropdownExpanded by remember { mutableStateOf(false) }
     var modelDropdownExpanded by remember { mutableStateOf(false) }
 
-    val currentBaseUrl = defaultUrls[selectedProvider] ?: ""
+    val currentBaseUrl = remember(selectedProvider) { defaultUrls[selectedProvider] ?: "" }
 
     LaunchedEffect(apiKey, selectedProvider) {
         val keyToTest = apiKey.ifBlank { initialConnection?.apiKey ?: "" }
@@ -183,7 +187,7 @@ fun ApiConnectionDialog(
                         readOnly = true,
                         label = { Text("1. Select Provider") },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = mainProviderExpanded) },
-                        modifier = Modifier.menuAnchor().fillMaxWidth(),
+                        modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable).fillMaxWidth(),
                         singleLine = true
                     )
                     ExposedDropdownMenu(expanded = mainProviderExpanded, onDismissRequest = { mainProviderExpanded = false }) {

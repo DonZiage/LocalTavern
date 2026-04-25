@@ -2,13 +2,13 @@ package chat.donzi.localtavern.data.network
 
 import io.ktor.client.*
 import io.ktor.client.call.*
-import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.utils.io.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 
@@ -20,7 +20,8 @@ data class ModelListResponse(
 @Serializable
 data class ModelData(
     val id: String,
-    val owned_by: String? = null
+    @SerialName("owned_by")
+    val ownedBy: String? = null
 )
 
 data class ModelInfo(
@@ -30,6 +31,19 @@ data class ModelInfo(
 )
 
 class ChatClient(private val httpClient: HttpClient) {
+    private fun JsonObjectBuilder.putChatMessages(isChatCompletion: Boolean, prompt: String) {
+        if (isChatCompletion) {
+            put("messages", buildJsonArray {
+                add(buildJsonObject {
+                    put("role", "user")
+                    put("content", prompt)
+                })
+            })
+        } else {
+            put("prompt", prompt)
+        }
+    }
+
     suspend fun fetchModels(baseUrl: String, apiKey: String): List<ModelInfo> {
         return try {
             val response = httpClient.get("$baseUrl/models") {
@@ -48,7 +62,7 @@ class ChatClient(private val httpClient: HttpClient) {
                     } else {
                         ModelInfo(
                             id = it.id,
-                            provider = it.owned_by ?: "Unknown",
+                            provider = it.ownedBy ?: "Unknown",
                             displayName = it.id
                         )
                     }
@@ -56,7 +70,7 @@ class ChatClient(private val httpClient: HttpClient) {
             } else {
                 emptyList()
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             emptyList()
         }
     }
@@ -67,11 +81,12 @@ class ChatClient(private val httpClient: HttpClient) {
                 header(HttpHeaders.Authorization, "Bearer $apiKey")
             }
             response.status == HttpStatusCode.OK
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             false
         }
     }
 
+    @Suppress("unused")
     suspend fun sendChatRequest(baseUrl: String, apiKey: String, model: String, prompt: String, isChatCompletion: Boolean = true): String {
         val endpoint = if (isChatCompletion) "$baseUrl/chat/completions" else "$baseUrl/completions"
         val response = httpClient.post(endpoint) {
@@ -79,16 +94,7 @@ class ChatClient(private val httpClient: HttpClient) {
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject {
                 put("model", model)
-                if (isChatCompletion) {
-                    put("messages", buildJsonArray {
-                        add(buildJsonObject {
-                            put("role", "user")
-                            put("content", prompt)
-                        })
-                    })
-                } else {
-                    put("prompt", prompt)
-                }
+                putChatMessages(isChatCompletion, prompt)
             })
         }
         
@@ -105,7 +111,7 @@ class ChatClient(private val httpClient: HttpClient) {
             } else {
                 element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("text")?.jsonPrimitive?.content ?: bodyText
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             bodyText
         }
     }
@@ -120,16 +126,7 @@ class ChatClient(private val httpClient: HttpClient) {
                 setBody(buildJsonObject {
                     put("model", model)
                     put("stream", true)
-                    if (isChatCompletion) {
-                        put("messages", buildJsonArray {
-                            add(buildJsonObject {
-                                put("role", "user")
-                                put("content", prompt)
-                            })
-                        })
-                    } else {
-                        put("prompt", prompt)
-                    }
+                    putChatMessages(isChatCompletion, prompt)
                 })
             }.execute { response ->
                 if (response.status != HttpStatusCode.OK) {
@@ -139,6 +136,7 @@ class ChatClient(private val httpClient: HttpClient) {
 
                 val channel: ByteReadChannel = response.bodyAsChannel()
                 while (!channel.isClosedForRead) {
+                    @Suppress("DEPRECATION")
                     val line = channel.readUTF8Line() ?: break
                     if (line.startsWith("data: ")) {
                         val data = line.substring(6)
@@ -155,7 +153,7 @@ class ChatClient(private val httpClient: HttpClient) {
                             if (content != null) {
                                 emit(content)
                             }
-                        } catch (e: Exception) {
+                        } catch (_: Exception) {
                             // Skip invalid lines
                         }
                     }
