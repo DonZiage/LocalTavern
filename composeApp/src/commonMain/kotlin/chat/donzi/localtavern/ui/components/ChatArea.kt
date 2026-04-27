@@ -20,6 +20,7 @@ fun ChatArea(
     messages: List<MessageEntity>,
     onSendMessage: (String) -> Unit,
     onEditMessage: (Long, String) -> Unit,
+    onDeleteMessage: (Long) -> Unit,
     onRegenerate: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -77,7 +78,8 @@ fun ChatArea(
                     MessageBubble(
                         content = message.content,
                         isUser = message.role == "user",
-                        onEdit = { newContent -> onEditMessage(message.id, newContent) }
+                        onEdit = { newContent -> onEditMessage(message.id, newContent) },
+                        onDelete = { onDeleteMessage(message.id) }
                     )
                 }
             }
@@ -86,7 +88,7 @@ fun ChatArea(
         ChatInputBar(
             onSendMessage = onSendMessage,
             onRegenerate = onRegenerate,
-            canRegenerate = messages.lastOrNull()?.role == "assistant"
+            canRegenerate = messages.any { it.role == "user" }
         )
     }
 }

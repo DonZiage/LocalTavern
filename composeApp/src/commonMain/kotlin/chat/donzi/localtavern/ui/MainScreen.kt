@@ -193,18 +193,30 @@ fun MainScreen(
                             refreshMessages()
                         }
                     },
+                    onDeleteMessage = { id ->
+                        coroutineScope.launch {
+                            chatRepository.deleteMessage(id)
+                            refreshMessages()
+                        }
+                    },
                     onRegenerate = {
                         coroutineScope.launch {
-                            val lastMsg = messages.lastOrNull()
-                            if (lastMsg != null && lastMsg.role == "assistant") {
+                            if (messages.isEmpty() || activeSessionId == null) return@launch
+
+                            val lastMsg = messages.last()
+                            val userMsgToUse = if (lastMsg.role == "assistant") {
                                 chatRepository.deleteMessage(lastMsg.id)
+                                messages.dropLast(1).lastOrNull { it.role == "user" }
+                            } else {
+                                messages.lastOrNull { it.role == "user" }
+                            }
+
+                            if (userMsgToUse != null) {
+                                requestAiResponse(activeSessionId!!, userMsgToUse.content)
+                            } else {
+                                // If no user message exists, maybe just prompt with current context?
+                                // For now, we only regenerate if there's a user message to trigger from.
                                 refreshMessages()
-                                
-                                // Find the last user message to regenerate from
-                                val lastUserMsg = messages.dropLast(1).lastOrNull { it.role == "user" }
-                                if (lastUserMsg != null && activeSessionId != null) {
-                                    requestAiResponse(activeSessionId!!, lastUserMsg.content)
-                                }
                             }
                         }
                     }

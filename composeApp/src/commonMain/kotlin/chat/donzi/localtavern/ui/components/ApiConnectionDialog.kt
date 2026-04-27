@@ -18,7 +18,6 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
-import androidx.compose.ui.window.PopupProperties
 import chat.donzi.localtavern.data.database.ApiConnection
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.data.network.ModelInfo
@@ -190,7 +189,11 @@ fun ApiConnectionDialog(
                         modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable).fillMaxWidth(),
                         singleLine = true
                     )
-                    ExposedDropdownMenu(expanded = mainProviderExpanded, onDismissRequest = { mainProviderExpanded = false }) {
+                    ExposedDropdownMenu(
+                        expanded = mainProviderExpanded,
+                        onDismissRequest = { mainProviderExpanded = false },
+                        modifier = Modifier.exposedDropdownSize()
+                    ) {
                         providers.forEach { provider ->
                             DropdownMenuItem(
                                 text = { Text(provider) },
@@ -228,7 +231,10 @@ fun ApiConnectionDialog(
                         )
                         
                         // Model Provider List
-                        Box(modifier = Modifier.fillMaxWidth()) {
+                        ExposedDropdownMenuBox(
+                            expanded = providerDropdownExpanded && (providerSuggestions.isNotEmpty() || modelProviderFilter.isEmpty()),
+                            onExpandedChange = { providerDropdownExpanded = it }
+                        ) {
                             val interactionSource = remember { MutableInteractionSource() }
                             LaunchedEffect(interactionSource) {
                                 interactionSource.interactions.collectLatest { interaction ->
@@ -245,6 +251,7 @@ fun ApiConnectionDialog(
                                 label = { Text("Model Provider") },
                                 placeholder = { Text("All Providers") },
                                 modifier = Modifier
+                                    .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryEditable)
                                     .fillMaxWidth()
                                     .onPreviewKeyEvent { event ->
                                         if (event.type == KeyEventType.KeyUp && (event.key == Key.Enter || event.key == Key.Tab)) {
@@ -262,16 +269,17 @@ fun ApiConnectionDialog(
                                         IconButton(onClick = { modelProviderFilter = "" }) {
                                             Icon(Icons.Default.Clear, "Clear filter")
                                         }
+                                    } else {
+                                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerDropdownExpanded)
                                     }
                                 },
                                 singleLine = true
                             )
                             
-                            DropdownMenu(
+                            ExposedDropdownMenu(
                                 expanded = providerDropdownExpanded && (providerSuggestions.isNotEmpty() || modelProviderFilter.isEmpty()),
                                 onDismissRequest = { providerDropdownExpanded = false },
-                                modifier = Modifier.fillMaxWidth(0.8f).heightIn(max = 200.dp),
-                                properties = PopupProperties(focusable = false)
+                                modifier = Modifier.exposedDropdownSize().heightIn(max = 200.dp)
                             ) {
                                 DropdownMenuItem(
                                     text = { Text("All Providers") },
@@ -293,7 +301,10 @@ fun ApiConnectionDialog(
                         }
 
                         // Model Search & List
-                        Box(modifier = Modifier.fillMaxWidth()) {
+                        ExposedDropdownMenuBox(
+                            expanded = modelDropdownExpanded && filteredModels.isNotEmpty(),
+                            onExpandedChange = { modelDropdownExpanded = it }
+                        ) {
                             val interactionSource = remember { MutableInteractionSource() }
                             LaunchedEffect(interactionSource) {
                                 interactionSource.interactions.collectLatest { interaction ->
@@ -314,6 +325,7 @@ fun ApiConnectionDialog(
                                     }
                                 },
                                 modifier = Modifier
+                                    .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryEditable)
                                     .fillMaxWidth()
                                     .onPreviewKeyEvent { event ->
                                         if (event.type == KeyEventType.KeyUp && (event.key == Key.Enter || event.key == Key.Tab)) {
@@ -332,11 +344,10 @@ fun ApiConnectionDialog(
                                 interactionSource = interactionSource,
                                 singleLine = true
                             )
-                            DropdownMenu(
+                            ExposedDropdownMenu(
                                 expanded = modelDropdownExpanded && filteredModels.isNotEmpty(),
                                 onDismissRequest = { modelDropdownExpanded = false },
-                                modifier = Modifier.fillMaxWidth(0.8f).heightIn(max = 250.dp),
-                                properties = PopupProperties(focusable = false)
+                                modifier = Modifier.exposedDropdownSize().heightIn(max = 250.dp)
                             ) {
                                 filteredModels.forEach { model ->
                                     DropdownMenuItem(
