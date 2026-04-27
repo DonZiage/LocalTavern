@@ -27,11 +27,14 @@ fun ParameterControls(
 
         ParameterSlider(
             label = "Response Limit",
-            value = connection.responseLimit.toFloat(),
-            range = 0f..4096f,
+            value = if (connection.responseLimit == 0L) 4160f else connection.responseLimit.toFloat().coerceAtLeast(64f),
+            range = 64f..4160f,
             steps = 63,
-            format = { if (it < 1f) "Unlimited" else it.toInt().toString() },
-            onValueChange = { onUpdate(connection.copy(responseLimit = it.toLong())) }
+            format = { if (it > 4096f) "Unlimited" else it.toInt().toString() },
+            onValueChange = {
+                val newValue = if (it > 4096f) 0L else it.toLong()
+                onUpdate(connection.copy(responseLimit = newValue))
+            }
         )
 
         Spacer(modifier = Modifier.height(8.dp))

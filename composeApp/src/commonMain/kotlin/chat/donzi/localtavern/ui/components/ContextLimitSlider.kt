@@ -107,9 +107,9 @@ fun ContextLimitSlider(
         Slider(
             value = sliderValue,
             onValueChange = { sliderValue = it },
-            onValueChangeFinished = { 
+            onValueChangeFinished = {
                 val finalIdx = sliderValue.toInt().coerceIn(0, presets.size - 1)
-                onValueChange(presets[finalIdx]) 
+                onValueChange(presets[finalIdx])
             },
             valueRange = 0f..(presets.size - 1).toFloat(),
             steps = presets.size - 2,
@@ -120,12 +120,21 @@ fun ContextLimitSlider(
                     thumbSize = DpSize(12.dp, 12.dp)
                 )
             },
-            track = { sliderState ->
-                SliderDefaults.Track(
-                    sliderState = sliderState,
-                    modifier = Modifier.height(2.dp),
-                    drawStopIndicator = null
-                )
+            track = {
+                val fraction = sliderValue / (presets.size - 1).toFloat()
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
+                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(1.dp))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(fraction.coerceIn(0f, 1f)) // Fills strictly from left to right
+                            .fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(1.dp))
+                    )
+                }
             }
         )
     }

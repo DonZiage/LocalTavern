@@ -92,7 +92,7 @@ fun ParameterSlider(
         }
         Slider(
             value = sliderValue,
-            onValueChange = { 
+            onValueChange = {
                 sliderValue = it
                 textValue = format(it)
             },
@@ -105,12 +105,23 @@ fun ParameterSlider(
                     thumbSize = DpSize(12.dp, 12.dp)
                 )
             },
-            track = { sliderState ->
-                SliderDefaults.Track(
-                    sliderState = sliderState,
-                    modifier = Modifier.height(2.dp),
-                    drawStopIndicator = null
-                )
+            track = {
+                val fraction = if (range.start == range.endInclusive) 0f else {
+                    ((sliderValue - range.start) / (range.endInclusive - range.start)).coerceIn(0f, 1f)
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
+                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(1.dp))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(fraction) // Fills only up to the thumb
+                            .fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(1.dp))
+                    )
+                }
             }
         )
     }
