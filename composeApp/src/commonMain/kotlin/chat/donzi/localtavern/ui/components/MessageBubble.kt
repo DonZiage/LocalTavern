@@ -51,8 +51,9 @@ fun MessageBubble(
     val interactionSource = remember { MutableInteractionSource() }
     val isHovered by interactionSource.collectIsHoveredAsState()
 
-    // Determine if actions should be visible (Hover on desktop or Long Click on mobile)
-    val actionsVisible = (isHovered || showActionsOnMobile) && !isEditing
+    // Determine if actions should be visible
+    // Include showMenu so the actions don't disappear while the menu is open
+    val actionsVisible = (isHovered || showActionsOnMobile || showMenu) && !isEditing
 
     // Auto-focus when entering edit mode
     LaunchedEffect(isEditing) {
@@ -90,11 +91,16 @@ fun MessageBubble(
         if (isUser) {
             MessageActions(
                 visible = actionsVisible,
+                showMenu = showMenu,
+                onShowMenuChange = { showMenu = it },
                 onEdit = { 
                     editedTextValue = TextFieldValue(content, selection = TextRange(content.length))
                     isEditing = true 
                 },
-                onMore = { showMenu = true }
+                onCopy = onCopy,
+                onDelete = onDelete,
+                onAddImage = onAddImage,
+                onBranch = onBranch
             )
         }
 
@@ -169,25 +175,21 @@ fun MessageBubble(
                     fontSize = 16.sp
                 )
             }
-            
-            MessageActionMenu(
-                expanded = showMenu,
-                onDismissRequest = { showMenu = false },
-                onCopy = onCopy,
-                onDelete = onDelete,
-                onAddImage = onAddImage,
-                onBranch = onBranch
-            )
         }
 
         if (!isUser) {
             MessageActions(
                 visible = actionsVisible,
+                showMenu = showMenu,
+                onShowMenuChange = { showMenu = it },
                 onEdit = { 
                     editedTextValue = TextFieldValue(content, selection = TextRange(content.length))
                     isEditing = true 
                 },
-                onMore = { showMenu = true }
+                onCopy = onCopy,
+                onDelete = onDelete,
+                onAddImage = onAddImage,
+                onBranch = onBranch
             )
         }
     }
@@ -196,8 +198,13 @@ fun MessageBubble(
 @Composable
 fun MessageActions(
     visible: Boolean,
+    showMenu: Boolean,
+    onShowMenuChange: (Boolean) -> Unit,
     onEdit: () -> Unit,
-    onMore: () -> Unit
+    onCopy: () -> Unit,
+    onDelete: () -> Unit,
+    onAddImage: () -> Unit,
+    onBranch: () -> Unit
 ) {
     AnimatedVisibility(
         visible = visible,
@@ -216,12 +223,22 @@ fun MessageActions(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                 )
             }
-            IconButton(onClick = onMore, modifier = Modifier.size(32.dp)) {
-                Icon(
-                    Icons.Default.MoreVert,
-                    contentDescription = "More",
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            Box {
+                IconButton(onClick = { onShowMenuChange(true) }, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = "More",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    )
+                }
+                MessageActionMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { onShowMenuChange(false) },
+                    onCopy = onCopy,
+                    onDelete = onDelete,
+                    onAddImage = onAddImage,
+                    onBranch = onBranch
                 )
             }
         }

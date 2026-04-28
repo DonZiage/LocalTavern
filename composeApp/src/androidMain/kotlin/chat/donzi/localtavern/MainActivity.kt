@@ -10,6 +10,9 @@ import chat.donzi.localtavern.ui.App
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Register context for platform-specific operations
+        AndroidAppContext.setContext(applicationContext)
 
         // This gives the Tavern its Android "Keys" to access the local disk
         val driverFactory = DriverFactory(applicationContext)

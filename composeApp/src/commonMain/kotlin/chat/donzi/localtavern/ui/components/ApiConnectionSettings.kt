@@ -121,7 +121,7 @@ fun ApiConnectionSettings(
         ApiConnectionDialog(
             chatClient = chatClient,
             onDismiss = { showAddDialog = false },
-            onSave = { provider, name, baseUrl, apiKey, model ->
+            onSave = { provider, name, baseUrl, apiKey, model, isChatCompletion ->
                 scope.launch {
                     chatRepository.insertApiConnection(
                         provider = provider, 
@@ -130,6 +130,7 @@ fun ApiConnectionSettings(
                         apiKey = apiKey, 
                         model = model,
                         isActive = connections.isEmpty(),
+                        isChatCompletion = isChatCompletion,
                         displayOrder = connections.size.toLong()
                     )
                     showAddDialog = false
@@ -145,7 +146,7 @@ fun ApiConnectionSettings(
             chatClient = chatClient,
             initialConnection = connectionToEdit,
             onDismiss = { editingConnection = null },
-            onSave = { provider, name, baseUrl, apiKey, model ->
+            onSave = { provider, name, baseUrl, apiKey, model, isChatCompletion ->
                 scope.launch {
                     chatRepository.updateApiConnection(
                         id = connectionToEdit.id,
@@ -155,7 +156,7 @@ fun ApiConnectionSettings(
                         apiKey = apiKey.ifBlank { connectionToEdit.apiKey ?: "" },
                         model = model,
                         isActive = connectionToEdit.isActive == 1L,
-                        isChatCompletion = connectionToEdit.isChatCompletion == 1L,
+                        isChatCompletion = isChatCompletion,
                         temperature = connectionToEdit.temperature,
                         topP = connectionToEdit.topP,
                         topK = connectionToEdit.topK,
