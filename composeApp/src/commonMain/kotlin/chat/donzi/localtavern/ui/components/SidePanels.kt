@@ -113,13 +113,42 @@ fun SidePanels(
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .verticalScroll(rememberScrollState())
                     ) {
-                        CollapsibleSettingsSection(title = "API Connection") {
-                            ApiConnectionSettings(
-                                chatRepository = chatRepository,
-                                chatClient = chatClient
+                        var apiExpanded by remember { mutableStateOf(true) }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { apiExpanded = !apiExpanded }
+                                .padding(vertical = 12.dp, horizontal = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "API Connection",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
                             )
+                            Icon(
+                                if (apiExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                contentDescription = null
+                            )
+                        }
+                        AnimatedVisibility(
+                            visible = apiExpanded,
+                            modifier = Modifier.weight(1f),
+                            enter = expandVertically() + fadeIn(),
+                            exit = shrinkVertically() + fadeOut()
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                ApiConnectionSettings(
+                                    chatRepository = chatRepository,
+                                    chatClient = chatClient
+                                )
+                            }
                         }
                     }
                 }
@@ -211,7 +240,7 @@ fun CollapsibleSettingsSection(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                title, 
+                title,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
@@ -220,7 +249,7 @@ fun CollapsibleSettingsSection(
                 contentDescription = null
             )
         }
-        
+
         AnimatedVisibility(
             visible = expanded,
             enter = expandVertically() + fadeIn(),

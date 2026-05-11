@@ -41,45 +41,49 @@ fun ParameterControls(
         HorizontalDivider(modifier = Modifier.alpha(0.3f))
         Spacer(modifier = Modifier.height(8.dp))
 
-        ParameterSlider(
-            label = "Temperature",
-            value = connection.temperature.toFloat(),
-            range = 0f..2f,
-            steps = 20,
-            onValueChange = { onUpdate(connection.copy(temperature = it.toDouble())) }
-        )
+        CollapsibleSettingsSection(title = "Advanced", initialExpanded = false) {
+            Column(modifier = Modifier.padding(horizontal = 24.dp)) {
+                ParameterSlider(
+                    label = "Temperature",
+                    value = connection.temperature.toFloat(),
+                    range = 0f..2f,
+                    steps = 20,
+                    onValueChange = { onUpdate(connection.copy(temperature = it.toDouble())) }
+                )
 
-        ParameterSlider(
-            label = "Top-P",
-            value = connection.topP.toFloat(),
-            range = 0f..1f,
-            steps = 10,
-            onValueChange = { onUpdate(connection.copy(topP = it.toDouble())) }
-        )
+                ParameterSlider(
+                    label = "Top-P",
+                    value = connection.topP.toFloat(),
+                    range = 0f..1f,
+                    steps = 10,
+                    onValueChange = { onUpdate(connection.copy(topP = it.toDouble())) }
+                )
 
-        ParameterSlider(
-            label = "Top-K",
-            value = connection.topK.toFloat(),
-            range = 0f..100f,
-            steps = 100,
-            format = { it.toInt().toString() },
-            onValueChange = { onUpdate(connection.copy(topK = it.toLong())) }
-        )
+                ParameterSlider(
+                    label = "Top-K",
+                    value = connection.topK.toFloat(),
+                    range = 0f..100f,
+                    steps = 100,
+                    format = { it.toInt().toString() },
+                    onValueChange = { onUpdate(connection.copy(topK = it.toLong())) }
+                )
 
-        ParameterSlider(
-            label = "Presence Penalty",
-            value = connection.presencePenalty.toFloat(),
-            range = -2f..2f,
-            steps = 40,
-            onValueChange = { onUpdate(connection.copy(presencePenalty = it.toDouble())) }
-        )
+                ParameterSlider(
+                    label = "Presence Penalty",
+                    value = connection.presencePenalty.toFloat(),
+                    range = -2f..2f,
+                    steps = 40,
+                    onValueChange = { onUpdate(connection.copy(presencePenalty = it.toDouble())) }
+                )
 
-        ParameterSlider(
-            label = "Frequency Penalty",
-            value = connection.frequencyPenalty.toFloat(),
-            range = -2f..2f,
-            steps = 40,
-            onValueChange = { onUpdate(connection.copy(frequencyPenalty = it.toDouble())) }
-        )
+                ParameterSlider(
+                    label = "Frequency Penalty",
+                    value = connection.frequencyPenalty.toFloat(),
+                    range = -2f..2f,
+                    steps = 40,
+                    onValueChange = { onUpdate(connection.copy(frequencyPenalty = it.toDouble())) }
+                )
+            }
+        }
     }
 }

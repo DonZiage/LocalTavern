@@ -47,7 +47,7 @@ fun MainScreen(
     var activeSessionId by remember { mutableStateOf<Long?>(null) }
     var messages by remember { mutableStateOf(emptyList<MessageEntity>()) }
     val coroutineScope = rememberCoroutineScope()
-    
+
     var editingCharacter by remember { mutableStateOf<CharacterEntity?>(null) }
 
     fun refreshMessages() {
@@ -101,7 +101,7 @@ fun MainScreen(
                     } else {
                         fullResponse += token
                     }
-                    
+
                     chatRepository.updateMessageContent(aiMessageId, fullResponse)
                     refreshMessages()
                 }
@@ -116,7 +116,7 @@ fun MainScreen(
     val onSendMessage: (String) -> Unit = { userMessage ->
         coroutineScope.launch {
             var currentActiveCharacter = activeCharacter // Use a local var for the current send operation
-            
+
             if (currentActiveCharacter == null) {
                 // If no character is selected, default to the Assistant
                 var assistant = chatRepository.getAssistant()
@@ -125,7 +125,7 @@ fun MainScreen(
                     assistant = chatRepository.getAssistant()
                     refreshData() // Refresh character list to include new assistant
                 }
-                
+
                 if (assistant != null) {
                     activeCharacter = assistant // Set activeCharacter to assistant for display
                     currentActiveCharacter = assistant
@@ -135,10 +135,10 @@ fun MainScreen(
             if (currentActiveCharacter != null && activePersonaId != null) {
                 val sessionId = chatRepository.getOrCreateSession(currentActiveCharacter.id, activePersonaId)
                 activeSessionId = sessionId
-                
+
                 chatRepository.insertMessage(sessionId, "user", userMessage)
                 refreshMessages() // Refresh messages to show user's message
-                
+
                 requestAiResponse(sessionId, userMessage)
             }
         }

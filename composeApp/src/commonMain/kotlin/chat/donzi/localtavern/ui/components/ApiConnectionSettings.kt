@@ -124,10 +124,10 @@ fun ApiConnectionSettings(
             onSave = { provider, name, baseUrl, apiKey, model, isChatCompletion ->
                 scope.launch {
                     chatRepository.insertApiConnection(
-                        provider = provider, 
-                        name = name, 
-                        baseUrl = baseUrl, 
-                        apiKey = apiKey, 
+                        provider = provider,
+                        name = name,
+                        baseUrl = baseUrl,
+                        apiKey = apiKey,
                         model = model,
                         isActive = connections.isEmpty(),
                         isChatCompletion = isChatCompletion,

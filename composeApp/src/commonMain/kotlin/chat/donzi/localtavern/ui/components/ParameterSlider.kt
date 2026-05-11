@@ -106,21 +106,38 @@ fun ParameterSlider(
                 )
             },
             track = {
-                val fraction = if (range.start == range.endInclusive) 0f else {
-                    ((sliderValue - range.start) / (range.endInclusive - range.start)).coerceIn(0f, 1f)
-                }
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(2.dp)
-                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(1.dp))
+                val activeColor = MaterialTheme.colorScheme.primary
+                val inactiveColor = MaterialTheme.colorScheme.surfaceVariant
+
+                androidx.compose.foundation.Canvas(
+                    modifier = Modifier.fillMaxWidth().height(4.dp)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(fraction) // Fills only up to the thumb
-                            .fillMaxHeight()
-                            .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(1.dp))
+                    val strokeWidth = 2.dp.toPx()
+
+                    // 1. Draw Inactive Track (Full Width)
+                    drawLine(
+                        color = inactiveColor,
+                        start = androidx.compose.ui.geometry.Offset(0f, center.y),
+                        end = androidx.compose.ui.geometry.Offset(size.width, center.y),
+                        strokeWidth = strokeWidth,
+                        cap = androidx.compose.ui.graphics.StrokeCap.Round
                     )
+
+                    // 2. Draw Active Track (Highlighted part)
+                    val fraction = if (range.start == range.endInclusive) 0f else {
+                        ((sliderValue - range.start) / (range.endInclusive - range.start)).coerceIn(0f, 1f)
+                    }
+                    val activeWidth = size.width * fraction
+
+                    if (activeWidth > 0f) {
+                        drawLine(
+                            color = activeColor,
+                            start = androidx.compose.ui.geometry.Offset(0f, center.y),
+                            end = androidx.compose.ui.geometry.Offset(activeWidth, center.y),
+                            strokeWidth = strokeWidth,
+                            cap = androidx.compose.ui.graphics.StrokeCap.Round
+                        )
+                    }
                 }
             }
         )
