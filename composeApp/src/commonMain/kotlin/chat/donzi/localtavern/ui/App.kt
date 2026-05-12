@@ -37,14 +37,12 @@ fun App(driverFactory: DriverFactory) {
     var activePersonaId by remember { mutableStateOf<Long?>(null) }
     var personas by remember { mutableStateOf(emptyList<PersonaEntity>()) }
 
-    // Initial theme state loaded from DB
     var isDarkMode by remember { mutableStateOf(true) }
 
     var activeDrawer by remember { mutableStateOf(ActiveDrawer.None) }
 
     fun refreshData() {
         coroutineScope.launch {
-            // 1. Ensure at least one Persona exists
             var currentPersonas = chatRepository.getAllPersonas()
             if (currentPersonas.isEmpty()) {
                 chatRepository.insertPersona("User", "A mysterious traveler.", null)
@@ -52,7 +50,6 @@ fun App(driverFactory: DriverFactory) {
             }
             personas = currentPersonas
 
-            // 2. Ensure a default API connection exists
             if (chatRepository.getAllApiConnections().isEmpty()) {
                 chatRepository.insertApiConnection(
                     provider = "OpenAI Compatible",
@@ -64,8 +61,6 @@ fun App(driverFactory: DriverFactory) {
                     isChatCompletion = true
                 )
             }
-
-            // 3. Load settings and ensure activePersonaId is set
             val settings = chatRepository.getAppSettings()
             var pId = settings.activePersonaId
             if (pId == null && personas.isNotEmpty()) {
@@ -74,10 +69,8 @@ fun App(driverFactory: DriverFactory) {
             }
             activePersonaId = pId
 
-            // 4. Load characters (includes Assistant if it exists)
             characters = chatRepository.getAllCharacters()
 
-            // 5. Sync the initial theme from the database
             isDarkMode = settings.isDarkMode != 0L
         }
     }
@@ -86,11 +79,9 @@ fun App(driverFactory: DriverFactory) {
         refreshData()
     }
 
-    // Wrap the app using the new, race-condition-proof ThemeTransition
     ThemeTransition(
         initialThemeIsDark = isDarkMode,
         onThemeSaved = { darkMode ->
-            // Fire-and-forget the database update when the animation finishes
             coroutineScope.launch {
                 chatRepository.updateDarkMode(darkMode)
             }
@@ -103,10 +94,8 @@ fun App(driverFactory: DriverFactory) {
             personas = personas,
             activePersonaId = activePersonaId,
 
-            // Pass the perfectly synced theme from the transition controller
             isDarkMode = syncedDarkTheme,
 
-            // Trigger the snapshot lock and animation!
             onToggleDarkMode = { _, centerOffset ->
                 triggerTransition(centerOffset)
             },

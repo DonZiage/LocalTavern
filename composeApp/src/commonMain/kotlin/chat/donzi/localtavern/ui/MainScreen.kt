@@ -50,25 +50,35 @@ fun MainScreen(
 
     var editingCharacter by remember { mutableStateOf<CharacterEntity?>(null) }
 
+    var pendingCreationName by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(characters) {
+        pendingCreationName?.let { name ->
+            // Find the character with the name we just created
+            val newChar = characters.findLast { it.name == name }
+            if (newChar != null) {
+                editingCharacter = newChar
+                pendingCreationName = null // Reset tracking
+            }
+        }
+    }
+
     fun refreshMessages() {
         coroutineScope.launch {
             activeSessionId?.let { sessionId ->
                 messages = chatRepository.getMessagesForSession(sessionId)
             } ?: run {
-                messages = emptyList() // Clear messages if no active session
+                messages = emptyList()
             }
         }
     }
 
-    // Load session and messages when activeCharacter or activePersonaId changes
     LaunchedEffect(activeCharacter, activePersonaId) {
         if (activePersonaId != null) {
-            if (activeCharacter != null) { // Only load messages if a character is explicitly active
+            if (activeCharacter != null) {
                 val sessionId = chatRepository.getOrCreateSession(activeCharacter!!.id, activePersonaId)
                 activeSessionId = sessionId
                 messages = chatRepository.getMessagesForSession(sessionId)
             } else {
-                // No character selected, so clear messages and session
                 activeSessionId = null
                 messages = emptyList()
             }
@@ -115,19 +125,18 @@ fun MainScreen(
 
     val onSendMessage: (String) -> Unit = { userMessage ->
         coroutineScope.launch {
-            var currentActiveCharacter = activeCharacter // Use a local var for the current send operation
+            var currentActiveCharacter = activeCharacter
 
             if (currentActiveCharacter == null) {
-                // If no character is selected, default to the Assistant
                 var assistant = chatRepository.getAssistant()
                 if (assistant == null) {
                     chatRepository.createAssistant()
                     assistant = chatRepository.getAssistant()
-                    refreshData() // Refresh character list to include new assistant
+                    refreshData()
                 }
 
                 if (assistant != null) {
-                    activeCharacter = assistant // Set activeCharacter to assistant for display
+                    activeCharacter = assistant
                     currentActiveCharacter = assistant
                 }
             }
@@ -137,7 +146,7 @@ fun MainScreen(
                 activeSessionId = sessionId
 
                 chatRepository.insertMessage(sessionId, "user", userMessage)
-                refreshMessages() // Refresh messages to show user's message
+                refreshMessages()
 
                 requestAiResponse(sessionId, userMessage)
             }
@@ -214,8 +223,6 @@ fun MainScreen(
                             if (userMsgToUse != null) {
                                 requestAiResponse(activeSessionId!!, userMsgToUse.content)
                             } else {
-                                // If no user message exists, maybe just prompt with current context?
-                                // For now, we only regenerate if there's a user message to trigger from.
                                 refreshMessages()
                             }
                         }
@@ -228,19 +235,16 @@ fun MainScreen(
             activeDrawer = activeDrawer,
             drawerWidth = drawerWidth,
             onClose = { onActiveDrawerChange(ActiveDrawer.None) },
-            // Settings
             chatRepository = chatRepository,
             chatClient = chatClient,
             isDarkMode = isDarkMode,
             onToggleDarkMode = onToggleDarkMode,
-            // Personas
             personas = personas,
             activePersonaId = activePersonaId,
             onPersonaSelect = onPersonaSelect,
             onPersonaAdd = onPersonaAdd,
             onPersonaUpdate = onPersonaUpdate,
             onPersonaDelete = onPersonaDelete,
-            // Characters
             characters = characters,
             onCharacterSelect = { character ->
                 activeCharacter = character
@@ -253,7 +257,11 @@ fun MainScreen(
                 onCharactersDelete(ids)
             },
             onCharacterImport = onCharacterImport,
-            onCharacterCreate = onCharacterCreate,
+            onCharacterCreate = { name ->
+                pendingCreationName = name
+                onCharacterCreate(name)
+                onActiveDrawerChange(ActiveDrawer.None)
+            },
             onCharacterEdit = { character ->
                 editingCharacter = character
                 onActiveDrawerChange(ActiveDrawer.None)
@@ -282,7 +290,6 @@ fun MainScreen(
                                 avatarData
                             )
                             refreshData()
-                            // Update active character reference if it's the one we edited
                             if (activeCharacter?.id == editingCharacter!!.id) {
                                 activeCharacter = chatRepository.getCharacterById(editingCharacter!!.id)
                             }

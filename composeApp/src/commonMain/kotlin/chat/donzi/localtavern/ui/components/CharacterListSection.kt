@@ -62,7 +62,6 @@ fun CharacterListSection(
         }
     }
 
-    // Drop ids that no longer exist (e.g. after deletion).
     LaunchedEffect(characters) {
         val alive = characters.map { it.id }.toSet()
         selectedIds.removeAll { it !in alive }
@@ -75,8 +74,6 @@ fun CharacterListSection(
     }
 
     Column(modifier = modifier.fillMaxWidth()) {
-
-        // ---- Search box and Actions ----
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -155,7 +152,6 @@ fun CharacterListSection(
                         }
                     )
                 } else {
-                    // Collapsed Icon
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -214,7 +210,6 @@ fun CharacterListSection(
             actions()
         }
 
-        // ---- Selection action bar (only shown in selection mode) ----
         if (selectionMode) {
             Row(
                 modifier = Modifier

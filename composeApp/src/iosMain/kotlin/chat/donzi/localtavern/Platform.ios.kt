@@ -15,8 +15,6 @@ actual fun getPlatform(): Platform = IOSPlatform()
 actual fun saveFile(fileName: String, bytes: ByteArray): String? {
     return try {
         val fileManager = NSFileManager.defaultManager
-        // On iOS, we use the Documents directory which is accessible via the "Files" app 
-        // if UIFileSharingEnabled and LSSupportsOpeningDocumentsInPlace are set in Info.plist
         val documentsDir = fileManager.URLsForDirectory(NSDocumentDirectory, NSUserDomainMask).first() as NSURL
         val exportDir = documentsDir.URLByAppendingPathComponent("LocalTavern/ExportedCharacters")!!
         
@@ -41,8 +39,6 @@ actual fun saveFile(fileName: String, bytes: ByteArray): String? {
 }
 
 actual fun openDirectory(path: String) {
-    // On iOS, we can open the "Files" app to the specified folder if it's within our sandbox
-    // and correctly configured. However, a simpler approach is opening the app's documents folder.
     val url = NSURL.URLWithString("shareddocuments://")!!
     if (UIApplication.sharedApplication.canOpenURL(url)) {
         UIApplication.sharedApplication.openURL(url)

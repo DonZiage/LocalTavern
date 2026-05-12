@@ -76,7 +76,6 @@ fun CharacterDefinitionEditor(
     var showImageMenu by remember { mutableStateOf(false) }
     var showFullImage by remember { mutableStateOf(false) }
 
-    // Consistent Red Color for Delete Button (Material 700 Red)
     val deleteRed = Color(0xFFD32F2F)
 
     fun persist() = onSave(name, description, personality, scenario, firstMes, systemPrompt, altGreetings, avatarData)
@@ -136,8 +135,7 @@ fun CharacterDefinitionEditor(
                     style = MaterialTheme.typography.titleLarge,
                     modifier = Modifier.weight(1f)
                 )
-                
-                // Export Button
+
                 OutlinedButton(
                     onClick = { exportCharacter() },
                     modifier = Modifier.height(36.dp),
@@ -148,7 +146,6 @@ fun CharacterDefinitionEditor(
                     Text("Export", style = MaterialTheme.typography.labelLarge)
                 }
 
-                // Delete Button
                 Button(
                     onClick = { confirmDelete = true },
                     modifier = Modifier.height(36.dp),
@@ -163,7 +160,6 @@ fun CharacterDefinitionEditor(
                     Text("Delete", style = MaterialTheme.typography.labelLarge)
                 }
 
-                // Close Button
                 IconButton(
                     onClick = onClose,
                     modifier = Modifier.size(36.dp)
@@ -174,7 +170,6 @@ fun CharacterDefinitionEditor(
 
             Spacer(Modifier.height(16.dp))
 
-            // Character Picture Section
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -376,16 +371,12 @@ fun CharacterDefinitionEditor(
                                     change.consume()
                                     
                                     val zoomFactor = 3.5f
-                                    // The limit is reached when the zoomed image edge hits the 0.7f box boundaries
-                                    // imageSize is already 70% of screen. Zoomed size is imageSize * 3.5
-                                    // The pan limit relative to the box center is:
                                     val maxX = (imageSize.width * zoomFactor - imageSize.width) / 2f
                                     val maxY = (imageSize.height * zoomFactor - imageSize.height) / 2f
                                     
                                     val distX = (abs(panOffset.x) / maxX).coerceIn(0f, 1f)
                                     val distY = (abs(panOffset.y) / maxY).coerceIn(0f, 1f)
-                                    
-                                    // Speed drops to 0 at the border (dist=1) and is 4.0 at the center (dist=0)
+
                                     val speedMultiplierX = 4f * (1f - distX)
                                     val speedMultiplierY = 4f * (1f - distY)
                                     

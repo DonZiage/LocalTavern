@@ -34,19 +34,16 @@ fun SidePanels(
     activeDrawer: ActiveDrawer,
     drawerWidth: Dp,
     onClose: () -> Unit,
-    // Settings Dependencies
     chatRepository: ChatRepository,
     chatClient: ChatClient,
     isDarkMode: Boolean,
     onToggleDarkMode: (Boolean, Offset) -> Unit,
-    // Persona Dependencies
     personas: List<PersonaEntity>,
     activePersonaId: Long?,
     onPersonaSelect: (Long) -> Unit,
     onPersonaAdd: (String, String?, ByteArray?) -> Unit,
     onPersonaUpdate: (Long, String, String?, ByteArray?) -> Unit,
     onPersonaDelete: (Long) -> Unit,
-    // Character Dependencies
     characters: List<CharacterEntity>,
     onCharacterSelect: (CharacterEntity) -> Unit,
     onCharactersDelete: (Set<Long>) -> Unit,
@@ -55,7 +52,6 @@ fun SidePanels(
     onCharacterEdit: (CharacterEntity) -> Unit
 ) {
     Box(modifier = Modifier.fillMaxSize().zIndex(100f)) {
-        // Scrim Overlay
         AnimatedVisibility(
             visible = activeDrawer != ActiveDrawer.None,
             enter = fadeIn(),
@@ -74,7 +70,6 @@ fun SidePanels(
             )
         }
 
-        // Settings Drawer (Left)
         AnimatedVisibility(
             visible = activeDrawer == ActiveDrawer.Settings,
             enter = slideInHorizontally { -it },
@@ -155,7 +150,6 @@ fun SidePanels(
             }
         }
 
-        // Characters and Personas Drawer (Right)
         AnimatedVisibility(
             visible = activeDrawer == ActiveDrawer.Characters,
             enter = slideInHorizontally { it },

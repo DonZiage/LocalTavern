@@ -13,7 +13,7 @@ val ktorVersion = libs.versions.ktor.get()
 
 kotlin {
     // Sets Java 11 for the whole project safely
-    jvmToolchain(11)
+    jvmToolchain(17)
 
     compilerOptions {
         freeCompilerArgs.add("-Xexpect-actual-classes")
