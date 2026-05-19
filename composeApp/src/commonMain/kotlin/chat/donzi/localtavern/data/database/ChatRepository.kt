@@ -287,4 +287,69 @@ class ChatRepository(private val database: LocalTavernDB) {
     suspend fun deleteMessage(id: Long) = withContext(Dispatchers.IO) {
         queries.deleteMessage(id)
     }
+
+    // --- PERSISTENT SYSTEM PROMPT MANAGER DATABASE OPERATIONS ---
+
+    suspend fun getAllPromptBlocks(): List<PromptBlockEntity> = withContext(Dispatchers.IO) {
+        val storedBlocks = queries.selectAllPromptBlocks().executeAsList()
+        storedBlocks.ifEmpty {
+            database.transaction {
+                var initialOrder = 0L
+                queries.insertPromptBlock("system", "System Prompt", "{{system_prompt}}", 1L, 0L, initialOrder++)
+                queries.insertPromptBlock(
+                    "persona",
+                    "User Persona",
+                    "User Persona:\n{{user_persona}}",
+                    1L,
+                    0L,
+                    initialOrder++
+                )
+                queries.insertPromptBlock(
+                    "description",
+                    "Character Description",
+                    "Character Info:\n{{character_description}}",
+                    1L,
+                    0L,
+                    initialOrder++
+                )
+                queries.insertPromptBlock(
+                    "personality",
+                    "Personality",
+                    "Personality:\n{{personality}}",
+                    1L,
+                    0L,
+                    initialOrder++
+                )
+                queries.insertPromptBlock("scenario", "Scenario", "Scenario:\n{{scenario}}", 1L, 0L, initialOrder++)
+                queries.insertPromptBlock("chat_history", "Chat History", "{{chat_history}}", 1L, 0L, initialOrder++)
+            }
+            queries.selectAllPromptBlocks().executeAsList()
+        }
+    }
+
+    suspend fun savePromptBlock(id: String, name: String, template: String, isEnabled: Boolean) = withContext(Dispatchers.IO) {
+        queries.updatePromptBlock(name, template, if (isEnabled) 1L else 0L, id)
+    }
+
+    suspend fun insertCustomPromptBlock(name: String, template: String): String = withContext(Dispatchers.IO) {
+        // Leverages your class's pre-packaged, multiplatform-safe timestamp calculator
+        val uniqueId = "custom_${currentTimeMillis()}"
+        val currentBlocks = queries.selectAllPromptBlocks().executeAsList()
+        val nextOrderPosition = (currentBlocks.maxOfOrNull { it.displayOrder } ?: -1L) + 1L
+
+        queries.insertPromptBlock(uniqueId, name, template, 1L, 1L, nextOrderPosition)
+        uniqueId
+    }
+
+    suspend fun deletePromptBlock(id: String) = withContext(Dispatchers.IO) {
+        queries.deletePromptBlock(id)
+    }
+
+    suspend fun updatePromptBlockDisplayOrders(orderedIds: List<String>): Unit = withContext(Dispatchers.IO) {
+        database.transaction {
+            orderedIds.forEachIndexed { index, id ->
+                queries.updatePromptBlockDisplayOrder(index.toLong(), id)
+            }
+        }
+    }
 }
