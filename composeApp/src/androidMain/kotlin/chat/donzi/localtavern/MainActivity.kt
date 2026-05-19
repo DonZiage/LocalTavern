@@ -13,12 +13,12 @@ class MainActivity : ComponentActivity() {
 
         AndroidAppContext.setContext(applicationContext)
 
-        val driverFactory = DriverFactory(applicationContext)
+        val driverFactory = DriverFactory(this)
 
         enableEdgeToEdge()
 
         setContent {
-            App(driverFactory = DriverFactory(this))
+            App(driverFactory = driverFactory)
         }
     }
 }

@@ -1,5 +1,8 @@
 package chat.donzi.localtavern.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -19,6 +22,9 @@ import chat.donzi.localtavern.ui.components.ChatArea
 import chat.donzi.localtavern.ui.components.CharacterDefinitionEditor
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import androidx.compose.ui.geometry.Offset
+import chat.donzi.localtavern.utils.ContextManager
+import chat.donzi.localtavern.utils.ChatMessage
+import chat.donzi.localtavern.utils.toDomain
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -50,14 +56,21 @@ fun MainScreen(
 
     var editingCharacter by remember { mutableStateOf<CharacterEntity?>(null) }
 
+    // Retain a non-null reference to the character cache data to sustain the view tree safely while sliding out
+    var lastEditingCharacter by remember { mutableStateOf<CharacterEntity?>(null) }
+    LaunchedEffect(editingCharacter) {
+        if (editingCharacter != null) {
+            lastEditingCharacter = editingCharacter
+        }
+    }
+
     var pendingCreationName by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(characters) {
         pendingCreationName?.let { name ->
-            // Find the character with the name we just created
             val newChar = characters.findLast { it.name == name }
             if (newChar != null) {
                 editingCharacter = newChar
-                pendingCreationName = null // Reset tracking
+                pendingCreationName = null
             }
         }
     }
@@ -88,7 +101,7 @@ fun MainScreen(
         }
     }
 
-    fun requestAiResponse(sessionId: Long, userPrompt: String) {
+    fun requestAiResponse(sessionId: Long) {
         coroutineScope.launch {
             val activeConnection = chatRepository.getActiveApiConnection()
             if (activeConnection != null) {
@@ -98,11 +111,35 @@ fun MainScreen(
                 var fullResponse = ""
                 var receivedFirstToken = false
 
+                // 1. Fetch entire history log from DB
+                val dbMessages = chatRepository.getMessagesForSession(sessionId)
+
+                // 2. Filter out the ongoing active placeholder message so it doesn't feed back into context
+                val chatHistory = dbMessages
+                    .filter { it.id != aiMessageId }
+                    .map { ChatMessage(role = it.role, content = it.content) }
+
+                // 3. Load active building blocks configuration
+                val blocks = chatRepository.getAllPromptBlocks().map { it.toDomain() }
+
+                // 4. Resolve the current persona entity
+                val activePersona = personas.find { it.id == activePersonaId }
+
+                // 5. Package the managed, budget-compliant context window sequence
+                val messagesPayload = ContextManager.buildPayload(
+                    blocks = blocks,
+                    character = activeCharacter,
+                    persona = activePersona,
+                    chatHistory = chatHistory,
+                    contextLimit = activeConnection.contextLimit,
+                    responseLimit = activeConnection.responseLimit
+                )
+
                 chatClient.streamChatRequest(
                     baseUrl = activeConnection.baseUrl ?: "",
                     apiKey = activeConnection.apiKey ?: "",
                     model = activeConnection.model ?: "gpt-3.5-turbo",
-                    prompt = userPrompt,
+                    messages = messagesPayload, // FIXED: Correctly passing token budget context payload list
                     isChatCompletion = activeConnection.isChatCompletion == 1L
                 ).collect { token ->
                     if (!receivedFirstToken) {
@@ -148,7 +185,7 @@ fun MainScreen(
                 chatRepository.insertMessage(sessionId, "user", userMessage)
                 refreshMessages()
 
-                requestAiResponse(sessionId, userMessage)
+                requestAiResponse(sessionId)
             }
         }
     }
@@ -221,7 +258,7 @@ fun MainScreen(
                             }
 
                             if (userMsgToUse != null) {
-                                requestAiResponse(activeSessionId!!, userMsgToUse.content)
+                                requestAiResponse(activeSessionId!!)
                             } else {
                                 refreshMessages()
                             }
@@ -268,45 +305,52 @@ fun MainScreen(
             }
         )
 
-        if (editingCharacter != null) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = MaterialTheme.colorScheme.background
-            ) {
-                CharacterDefinitionEditor(
-                    character = editingCharacter!!,
-                    onClose = { editingCharacter = null },
-                    onSave = { name, desc, personality, scenario, firstMes, systemPrompt, altGreetings, avatarData ->
-                        coroutineScope.launch {
-                            chatRepository.updateCharacter(
-                                editingCharacter!!.id,
-                                name,
-                                personality,
-                                scenario,
-                                desc,
-                                firstMes,
-                                systemPrompt,
-                                altGreetings,
-                                avatarData
-                            )
-                            refreshData()
-                            if (activeCharacter?.id == editingCharacter!!.id) {
-                                activeCharacter = chatRepository.getCharacterById(editingCharacter!!.id)
+        AnimatedVisibility(
+            visible = editingCharacter != null,
+            enter = slideInVertically(initialOffsetY = { it }),
+            exit = slideOutVertically(targetOffsetY = { it })
+        ) {
+            lastEditingCharacter?.let { targetCharacter ->
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    CharacterDefinitionEditor(
+                        character = targetCharacter,
+                        onClose = { editingCharacter = null },
+                        onSave = { name, desc, personality, scenario, firstMes, mesExample, altGreetings, avatarData ->
+                            coroutineScope.launch {
+                                // FIXED: Using safe named arguments matching the custom repository parameters order
+                                chatRepository.updateCharacter(
+                                    id = targetCharacter.id,
+                                    name = name,
+                                    personality = personality,
+                                    scenario = scenario,
+                                    description = desc,
+                                    firstMes = firstMes,
+                                    mesExample = mesExample,
+                                    altGreetings = altGreetings,
+                                    avatarData = avatarData
+                                )
+                                refreshData()
+                                if (activeCharacter?.id == targetCharacter.id) {
+                                    activeCharacter = chatRepository.getCharacterById(targetCharacter.id)
+                                }
+                            }
+                        },
+                        onDelete = {
+                            coroutineScope.launch {
+                                val idToDelete = targetCharacter.id
+                                chatRepository.deleteCharacters(setOf(idToDelete))
+                                if (activeCharacter?.id == idToDelete) {
+                                    activeCharacter = null
+                                }
+                                editingCharacter = null
+                                refreshData()
                             }
                         }
-                    },
-                    onDelete = {
-                        coroutineScope.launch {
-                            val idToDelete = editingCharacter!!.id
-                            chatRepository.deleteCharacters(setOf(idToDelete))
-                            if (activeCharacter?.id == idToDelete) {
-                                activeCharacter = null
-                            }
-                            editingCharacter = null
-                            refreshData()
-                        }
-                    }
-                )
+                    )
+                }
             }
         }
     }

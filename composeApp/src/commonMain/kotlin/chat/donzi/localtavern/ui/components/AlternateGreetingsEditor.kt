@@ -1,5 +1,6 @@
 package chat.donzi.localtavern.ui.components
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -17,10 +18,26 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 /**
- * Horizontally-scrollable strip of "alternate greeting" pills.
- * Tap a pill to open a dialog where you can edit or delete the greeting.
- * Tap "+" to add a new one.
+ * Captures desktop mouse wheel scroll events and translates them
+ * into horizontal raw delta adjustments for smooth scrolling.
  */
+fun Modifier.horizontalMouseWheelScroll(scrollState: ScrollState): Modifier = this.pointerInput(Unit) {
+    awaitPointerEventScope {
+        while (true) {
+            val event = awaitPointerEvent()
+            if (event.type == PointerEventType.Scroll) {
+                val delta = event.changes.first().scrollDelta
+                val scrollAmount = (delta.y + delta.x) * 40f
+
+                if (scrollAmount != 0f) {
+                    scrollState.dispatchRawDelta(scrollAmount)
+                    event.changes.forEach { it.consume() }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun AlternateGreetingsStrip(
     greetings: List<String>,
@@ -40,37 +57,18 @@ fun AlternateGreetingsStrip(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .pointerInput(Unit) {
-                    // Handle Mouse Wheel scrolling (Desktop)
-                    awaitPointerEventScope {
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            if (event.type == PointerEventType.Scroll) {
-                                val delta = event.changes.first().scrollDelta
-                                    val scrollAmount = (delta.y + delta.x) * 40f
-                                    
-                                    if (scrollAmount != 0f) {
-                                        scrollState.dispatchRawDelta(scrollAmount)
-                                        // Consume the event so the parent vertical scroll doesn't fight the horizontal movement
-                                        event.changes.forEach { it.consume() }
-                                    }
-                            }
-                        }
-                    }
-                }
+                .horizontalMouseWheelScroll(scrollState) // Clean shared modifier call
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(scrollState)
                     .pointerInput(Unit) {
-                        // Handle Mouse Drag (Swipe on Desktop)
                         detectHorizontalDragGestures { change, dragAmount ->
                             if (change.type == PointerType.Mouse) {
                                 change.consume()
                                 scrollState.dispatchRawDelta(-dragAmount)
                             }
-                            // Touch is handled automatically by horizontalScroll for native fling
                         }
                     }
                     .padding(vertical = 4.dp),
@@ -85,7 +83,6 @@ fun AlternateGreetingsStrip(
                     Spacer(Modifier.width(8.dp))
                 }
 
-                // "+" pill
                 Surface(
                     onClick = {
                         val newList = greetings + ""

@@ -8,9 +8,12 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -19,13 +22,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -36,6 +39,7 @@ import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
+import androidx.compose.ui.geometry.Offset
 import kotlin.math.abs
 
 @Composable
@@ -48,7 +52,7 @@ fun CharacterDefinitionEditor(
         personality: String,
         scenario: String,
         firstMes: String,
-        systemPrompt: String,
+        mesExample: List<String>,
         altGreetings: List<String>,
         avatarData: ByteArray?
     ) -> Unit,
@@ -59,26 +63,24 @@ fun CharacterDefinitionEditor(
     var personality by remember(character.id) { mutableStateOf(character.personality ?: "") }
     var scenario by remember(character.id) { mutableStateOf(character.scenario ?: "") }
     var firstMes by remember(character.id) { mutableStateOf(character.firstMes ?: "") }
-    var systemPrompt by remember(character.id) { mutableStateOf(character.systemPrompt ?: "") }
+    var mesExample by remember(character.id) {
+        mutableStateOf(character.mesExample?.split("|||")?.filter { it.isNotBlank() } ?: emptyList())
+    }
     var altGreetings by remember(character.id) {
-        mutableStateOf(
-            character.altGreetings
-                ?.split("|||")
-                ?: emptyList()
-        )
+        mutableStateOf(character.altGreetings?.split("|||")?.filter { it.isNotBlank() } ?: emptyList())
     }
     var avatarData by remember(character.id) { mutableStateOf(character.avatarData) }
 
     var confirmDelete by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    
+
     var showImageMenu by remember { mutableStateOf(false) }
     var showFullImage by remember { mutableStateOf(false) }
 
     val deleteRed = Color(0xFFD32F2F)
 
-    fun persist() = onSave(name, description, personality, scenario, firstMes, systemPrompt, altGreetings, avatarData)
+    fun persist() = onSave(name, description, personality, scenario, firstMes, mesExample, altGreetings, avatarData)
 
     val exportCharacter = {
         val original = avatarData ?: ByteArray(0)
@@ -86,7 +88,7 @@ fun CharacterDefinitionEditor(
             originalImage = original,
             character = character.copy(avatarData = avatarData)
         )
-        
+
         try {
             val fileName = "${character.name}.png"
             val savedPath = saveFile(fileName, exportedBytes)
@@ -131,7 +133,7 @@ fun CharacterDefinitionEditor(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "Edit Character", 
+                    "Edit Character",
                     style = MaterialTheme.typography.titleLarge,
                     modifier = Modifier.weight(1f)
                 )
@@ -163,8 +165,8 @@ fun CharacterDefinitionEditor(
                 IconButton(
                     onClick = onClose,
                     modifier = Modifier.size(36.dp)
-                ) { 
-                    Icon(Icons.Default.Close, contentDescription = "Close") 
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = "Close")
                 }
             }
 
@@ -290,20 +292,18 @@ fun CharacterDefinitionEditor(
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 3
             )
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(16.dp))
+
+            MessageExamplesStrip(
+                examples = mesExample,
+                onChange = { mesExample = it; persist() }
+            )
+
+            Spacer(Modifier.height(16.dp))
 
             AlternateGreetingsStrip(
                 greetings = altGreetings,
                 onChange = { altGreetings = it; persist() }
-            )
-            Spacer(Modifier.height(12.dp))
-
-            OutlinedTextField(
-                value = systemPrompt,
-                onValueChange = { systemPrompt = it; persist() },
-                label = { Text("System Prompt") },
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 3
             )
             Spacer(Modifier.height(24.dp))
         }
@@ -323,7 +323,7 @@ fun CharacterDefinitionEditor(
             var panOffset by remember { mutableStateOf(Offset.Zero) }
             var imageSize by remember { mutableStateOf(IntSize.Zero) }
             var transformOrigin by remember { mutableStateOf(TransformOrigin.Center) }
-            
+
             val scale by animateFloatAsState(if (isZoomed) 3.5f else 1f)
             val displayOffset by animateOffsetAsState(if (isZoomed) panOffset else Offset.Zero)
 
@@ -339,10 +339,10 @@ fun CharacterDefinitionEditor(
                     contentDescription = "Full Image",
                     contentScale = ContentScale.Fit,
                     modifier = Modifier
-                        .fillMaxSize(0.7f) // 15% margin on each side (total 30% reduction)
+                        .fillMaxSize(0.7f)
                         .onGloballyPositioned { imageSize = it.size }
                         .graphicsLayer(
-                            scaleX = scale, 
+                            scaleX = scale,
                             scaleY = scale,
                             translationX = displayOffset.x,
                             translationY = displayOffset.y,
@@ -359,30 +359,25 @@ fun CharacterDefinitionEditor(
                                     transformOrigin = TransformOrigin(pivotX, pivotY)
                                     isZoomed = true
                                 },
-                                onDragEnd = { 
+                                onDragEnd = {
                                     isZoomed = false
                                     panOffset = Offset.Zero
                                 },
-                                onDragCancel = { 
+                                onDragCancel = {
                                     isZoomed = false
                                     panOffset = Offset.Zero
                                 },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
-                                    
                                     val zoomFactor = 3.5f
                                     val maxX = (imageSize.width * zoomFactor - imageSize.width) / 2f
                                     val maxY = (imageSize.height * zoomFactor - imageSize.height) / 2f
-                                    
                                     val distX = (abs(panOffset.x) / maxX).coerceIn(0f, 1f)
                                     val distY = (abs(panOffset.y) / maxY).coerceIn(0f, 1f)
-
                                     val speedMultiplierX = 4f * (1f - distX)
                                     val speedMultiplierY = 4f * (1f - distY)
-                                    
                                     val newX = (panOffset.x - dragAmount.x * speedMultiplierX).coerceIn(-maxX, maxX)
                                     val newY = (panOffset.y - dragAmount.y * speedMultiplierY).coerceIn(-maxY, maxY)
-                                    
                                     panOffset = Offset(newX, newY)
                                 }
                             )
@@ -407,5 +402,137 @@ fun CharacterDefinitionEditor(
                 TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
             }
         )
+    }
+}
+
+@Composable
+fun MessageExamplesStrip(
+    examples: List<String>,
+    onChange: (List<String>) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val scrollState = rememberScrollState()
+    var editingIndex by remember { mutableStateOf<Int?>(null) }
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        Text(
+            "Message Examples",
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(bottom = 6.dp)
+        )
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalMouseWheelScroll(scrollState) // Applied shared utility modifier here
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(scrollState)
+                    .pointerInput(Unit) {
+                        detectHorizontalDragGestures { change, dragAmount ->
+                            if (change.type == PointerType.Mouse) {
+                                change.consume()
+                                scrollState.dispatchRawDelta(-dragAmount)
+                            }
+                        }
+                    }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                examples.forEachIndexed { index, text ->
+                    Surface(
+                        onClick = { editingIndex = index },
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        modifier = Modifier.height(36.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 12.dp)
+                        ) {
+                            Text(
+                                text = "#${index + 1}  " + text.ifBlank { "(empty)" }.replace('\n', ' '),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.widthIn(max = 220.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                }
+
+                Surface(
+                    onClick = {
+                        val newList = examples + ""
+                        onChange(newList)
+                        editingIndex = newList.size - 1
+                    },
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.height(36.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 12.dp)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Add example")
+                        Spacer(Modifier.width(4.dp))
+                        Text("Add", style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+        }
+
+        if (examples.isEmpty()) {
+            Text(
+                "No message examples yet.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+    }
+
+    editingIndex?.let { idx ->
+        if (idx in examples.indices) {
+            var text by remember(examples[idx]) { mutableStateOf(examples[idx]) }
+            AlertDialog(
+                onDismissRequest = { editingIndex = null },
+                title = { Text("Message Example #${idx + 1}") },
+                text = {
+                    OutlinedTextField(
+                        value = text,
+                        onValueChange = { text = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 5,
+                        label = { Text("Example message text") }
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        onChange(examples.toMutableList().also { it[idx] = text })
+                        editingIndex = null
+                    }) { Text("Save") }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(onClick = {
+                            onChange(examples.toMutableList().also { it.removeAt(idx) })
+                            editingIndex = null
+                        }) {
+                            Icon(Icons.Default.Delete, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Delete")
+                        }
+                        TextButton(onClick = { editingIndex = null }) { Text("Cancel") }
+                    }
+                }
+            )
+        } else {
+            editingIndex = null
+        }
     }
 }

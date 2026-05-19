@@ -7,7 +7,6 @@ CREATE TABLE CharacterEntity (
     firstMes TEXT,
     mesExample TEXT,
     creatorNotes TEXT,
-    systemPrompt TEXT,
     altGreetings TEXT,
     avatarData BLOB,
     isAssistant INTEGER NOT NULL DEFAULT 0
@@ -15,8 +14,8 @@ CREATE TABLE CharacterEntity (
 
 -- Queries
 insertCharacter:
-INSERT INTO CharacterEntity(name, description, personality, scenario, firstMes, mesExample, creatorNotes, systemPrompt, altGreetings, avatarData, isAssistant)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO CharacterEntity(name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 lastInsertId:
 SELECT last_insert_rowid();
@@ -34,7 +33,7 @@ SET name = ?,
     personality = ?,
     scenario = ?,
     firstMes = ?,
-    systemPrompt = ?,
+    mesExample = ?,
     altGreetings = ?,
     avatarData = ?
 WHERE id = ?;
@@ -88,7 +87,8 @@ deletePersona:
 DELETE FROM PersonaEntity WHERE id = ?;
 
 selectMessagesBySession:
-SELECT * FROM MessageEntity WHERE sessionId = ? ORDER BY timestamp ASC;
+SELECT * FROM MessageEntity WHERE sessionId = ?
+ORDER BY timestamp ASC;
 
 insertMessage:
 INSERT INTO MessageEntity(sessionId, role, content, timestamp) VALUES (?, ?, ?, ?);
@@ -108,14 +108,14 @@ INSERT INTO ChatSession(characterId, personaId, title, lastTimestamp) VALUES (?,
 -- API Connections
 CREATE TABLE ApiConnection (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    provider TEXT NOT NULL, -- "OpenAI", "Anthropic", etc.
-    name TEXT NOT NULL,     -- User-defined name for this connection
+    provider TEXT NOT NULL,
+    name TEXT NOT NULL,
     baseUrl TEXT,
     apiKey TEXT,
     model TEXT,
     isActive INTEGER NOT NULL DEFAULT 0,
     isChatCompletion INTEGER NOT NULL DEFAULT 1,
-    lastUsed INTEGER DEFAULT 0, -- Timestamp of last use
+    lastUsed INTEGER DEFAULT 0,
     temperature REAL NOT NULL DEFAULT 1.0,
     topP REAL NOT NULL DEFAULT 1.0,
     topK INTEGER NOT NULL DEFAULT 0,

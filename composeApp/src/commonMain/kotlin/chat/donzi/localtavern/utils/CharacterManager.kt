@@ -112,7 +112,7 @@ object CharacterManager {
             scenario = character.scenario ?: "",
             first_mes = character.firstMes ?: "",
             mes_example = character.mesExample ?: "",
-            system_prompt = character.systemPrompt ?: "",
+            system_prompt = "",
             alternate_greetings = character.altGreetings?.split("|||") ?: emptyList()
         )
         val jsonString = json.encodeToString(card)

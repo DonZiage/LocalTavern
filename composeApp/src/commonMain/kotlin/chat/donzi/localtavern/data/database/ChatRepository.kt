@@ -27,7 +27,6 @@ class ChatRepository(private val database: LocalTavernDB) {
                 firstMes = "Hello! How can I help you today?",
                 mesExample = null,
                 creatorNotes = null,
-                systemPrompt = null,
                 altGreetings = null,
                 avatarData = null,
                 isAssistant = 1L
@@ -37,7 +36,6 @@ class ChatRepository(private val database: LocalTavernDB) {
     }
 
     suspend fun getCharacterById(id: Long): CharacterEntity? = withContext(Dispatchers.IO) {
-        // Fallback or better query if exists, otherwise filter
         (queries.selectAllCharacters().executeAsList() + (queries.selectAssistant().executeAsOneOrNull()?.let { listOf(it) } ?: emptyList())).find { it.id == id }
     }
 
@@ -54,7 +52,6 @@ class ChatRepository(private val database: LocalTavernDB) {
                 firstMes = card.first_mes,
                 mesExample = card.mes_example,
                 creatorNotes = card.creator_notes,
-                systemPrompt = card.system_prompt,
                 altGreetings = card.alternate_greetings.joinToString("|||").ifBlank { null },
                 avatarData = avatarData,
                 isAssistant = 0L
@@ -73,7 +70,6 @@ class ChatRepository(private val database: LocalTavernDB) {
                 firstMes = null,
                 mesExample = null,
                 creatorNotes = null,
-                systemPrompt = null,
                 altGreetings = null,
                 avatarData = null,
                 isAssistant = 0L
@@ -89,7 +85,7 @@ class ChatRepository(private val database: LocalTavernDB) {
         scenario: String,
         description: String?,
         firstMes: String?,
-        systemPrompt: String?,
+        mesExample: List<String> = emptyList(),
         altGreetings: List<String> = emptyList(),
         avatarData: ByteArray? = null
     ) = withContext(Dispatchers.IO) {
@@ -99,7 +95,7 @@ class ChatRepository(private val database: LocalTavernDB) {
             personality = personality,
             scenario = scenario,
             firstMes = firstMes,
-            systemPrompt = systemPrompt,
+            mesExample = mesExample.joinToString("|||").ifBlank { null },
             altGreetings = altGreetings.joinToString("|||").ifBlank { null },
             avatarData = avatarData,
             id = id
@@ -111,25 +107,15 @@ class ChatRepository(private val database: LocalTavernDB) {
         queries.deleteCharactersByIds(ids.toList())
     }
 
-    // Personas
     suspend fun getAllPersonas(): List<PersonaEntity> = withContext(Dispatchers.IO) {
         queries.selectAllPersonas().executeAsList()
     }
 
-    suspend fun insertPersona(
-        name: String,
-        description: String?,
-        avatarData: ByteArray?
-    ) = withContext(Dispatchers.IO) {
+    suspend fun insertPersona(name: String, description: String?, avatarData: ByteArray?) = withContext(Dispatchers.IO) {
         queries.insertPersona(name, description, avatarData)
     }
 
-    suspend fun updatePersona(
-        id: Long,
-        name: String,
-        description: String?,
-        avatarData: ByteArray?
-    ) = withContext(Dispatchers.IO) {
+    suspend fun updatePersona(id: Long, name: String, description: String?, avatarData: ByteArray?) = withContext(Dispatchers.IO) {
         queries.updatePersona(name, description, avatarData, id)
     }
 
@@ -137,89 +123,35 @@ class ChatRepository(private val database: LocalTavernDB) {
         queries.deletePersona(id)
     }
 
-    // API Connections
     suspend fun getAllApiConnections(): List<ApiConnection> = withContext(Dispatchers.IO) {
         queries.selectAllApiConnections().executeAsList()
     }
 
-    private fun currentTimeMillis(): Long {
-        return Clock.System.now().toEpochMilliseconds()
-    }
+    private fun currentTimeMillis(): Long = Clock.System.now().toEpochMilliseconds()
 
     suspend fun insertApiConnection(
-        provider: String,
-        name: String,
-        baseUrl: String?,
-        apiKey: String?,
-        model: String?,
-        isActive: Boolean = false,
-        isChatCompletion: Boolean = true,
-        temperature: Double = 1.0,
-        topP: Double = 1.0,
-        topK: Long = 0,
-        presencePenalty: Double = 0.0,
-        frequencyPenalty: Double = 0.0,
-        contextLimit: Long = 4096,
-        responseLimit: Long = 1024,
-        displayOrder: Long = 0
+        provider: String, name: String, baseUrl: String?, apiKey: String?, model: String?,
+        isActive: Boolean = false, isChatCompletion: Boolean = true, temperature: Double = 1.0,
+        topP: Double = 1.0, topK: Long = 0, presencePenalty: Double = 0.0, frequencyPenalty: Double = 0.0,
+        contextLimit: Long = 4096, responseLimit: Long = 1024, displayOrder: Long = 0
     ) = withContext(Dispatchers.IO) {
         queries.insertApiConnection(
-            provider, 
-            name, 
-            baseUrl, 
-            apiKey, 
-            model, 
-            if (isActive) 1L else 0L,
-            if (isChatCompletion) 1L else 0L,
-            if (isActive) currentTimeMillis() else 0L,
-            temperature,
-            topP,
-            topK,
-            presencePenalty,
-            frequencyPenalty,
-            contextLimit,
-            responseLimit,
-            displayOrder
+            provider, name, baseUrl, apiKey, model, if (isActive) 1L else 0L, if (isChatCompletion) 1L else 0L,
+            if (isActive) currentTimeMillis() else 0L, temperature, topP, topK, presencePenalty, frequencyPenalty,
+            contextLimit, responseLimit, displayOrder
         )
     }
 
     suspend fun updateApiConnection(
-        id: Long,
-        provider: String,
-        name: String,
-        baseUrl: String?,
-        apiKey: String?,
-        model: String?,
-        isActive: Boolean,
-        isChatCompletion: Boolean,
-        lastUsed: Long? = null,
-        temperature: Double,
-        topP: Double,
-        topK: Long,
-        presencePenalty: Double,
-        frequencyPenalty: Double,
-        contextLimit: Long,
-        responseLimit: Long,
-        displayOrder: Long
+        id: Long, provider: String, name: String, baseUrl: String?, apiKey: String?, model: String?,
+        isActive: Boolean, isChatCompletion: Boolean, lastUsed: Long? = null, temperature: Double,
+        topP: Double, topK: Long, presencePenalty: Double, frequencyPenalty: Double, contextLimit: Long,
+        responseLimit: Long, displayOrder: Long
     ) = withContext(Dispatchers.IO) {
         queries.updateApiConnection(
-            provider, 
-            name, 
-            baseUrl, 
-            apiKey, 
-            model, 
-            if (isActive) 1L else 0L, 
-            if (isChatCompletion) 1L else 0L,
-            lastUsed ?: (if (isActive) currentTimeMillis() else null),
-            temperature,
-            topP,
-            topK,
-            presencePenalty,
-            frequencyPenalty,
-            contextLimit,
-            responseLimit,
-            displayOrder,
-            id
+            provider, name, baseUrl, apiKey, model, if (isActive) 1L else 0L, if (isChatCompletion) 1L else 0L,
+            lastUsed ?: (if (isActive) currentTimeMillis() else null), temperature, topP, topK, presencePenalty,
+            frequencyPenalty, contextLimit, responseLimit, displayOrder, id
         )
     }
 
@@ -245,7 +177,6 @@ class ChatRepository(private val database: LocalTavernDB) {
         }
     }
 
-    // App Settings
     suspend fun getAppSettings(): AppSettings = withContext(Dispatchers.IO) {
         queries.insertDefaultSettings()
         queries.getAppSettings().executeAsOne()
@@ -259,14 +190,12 @@ class ChatRepository(private val database: LocalTavernDB) {
         queries.updateDarkMode(if (isDarkMode) 1L else 0L)
     }
 
-    // Sessions and Messages
     suspend fun getOrCreateSession(characterId: Long, personaId: Long): Long = withContext(Dispatchers.IO) {
         val session = queries.selectLastSessionForCharacter(characterId).executeAsOneOrNull()
-        session?.id
-            ?: database.transactionWithResult {
-                queries.insertChatSession(characterId, personaId, null, currentTimeMillis())
-                queries.lastInsertId().executeAsOne()
-            }
+        session?.id ?: database.transactionWithResult {
+            queries.insertChatSession(characterId, personaId, null, currentTimeMillis())
+            queries.lastInsertId().executeAsOne()
+        }
     }
 
     suspend fun getMessagesForSession(sessionId: Long): List<MessageEntity> = withContext(Dispatchers.IO) {
@@ -288,38 +217,16 @@ class ChatRepository(private val database: LocalTavernDB) {
         queries.deleteMessage(id)
     }
 
-    // --- PERSISTENT SYSTEM PROMPT MANAGER DATABASE OPERATIONS ---
-
     suspend fun getAllPromptBlocks(): List<PromptBlockEntity> = withContext(Dispatchers.IO) {
         val storedBlocks = queries.selectAllPromptBlocks().executeAsList()
         storedBlocks.ifEmpty {
             database.transaction {
                 var initialOrder = 0L
-                queries.insertPromptBlock("system", "System Prompt", "{{system_prompt}}", 1L, 0L, initialOrder++)
-                queries.insertPromptBlock(
-                    "persona",
-                    "User Persona",
-                    "User Persona:\n{{user_persona}}",
-                    1L,
-                    0L,
-                    initialOrder++
-                )
-                queries.insertPromptBlock(
-                    "description",
-                    "Character Description",
-                    "Character Info:\n{{character_description}}",
-                    1L,
-                    0L,
-                    initialOrder++
-                )
-                queries.insertPromptBlock(
-                    "personality",
-                    "Personality",
-                    "Personality:\n{{personality}}",
-                    1L,
-                    0L,
-                    initialOrder++
-                )
+                // Centralized global default instruction instead of a transparent placeholder mapping to a single character field
+                queries.insertPromptBlock("system", "System Prompt", "You are roleplaying. Stay in character, describe actions vividly, and adapt seamlessly to the story scenario.", 1L, 0L, initialOrder++)
+                queries.insertPromptBlock("persona", "User Persona", "User Persona:\n{{user_persona}}", 1L, 0L, initialOrder++)
+                queries.insertPromptBlock("description", "Character Description", "Character Info:\n{{character_description}}", 1L, 0L, initialOrder++)
+                queries.insertPromptBlock("personality", "Personality", "Personality:\n{{personality}}", 1L, 0L, initialOrder++)
                 queries.insertPromptBlock("scenario", "Scenario", "Scenario:\n{{scenario}}", 1L, 0L, initialOrder++)
                 queries.insertPromptBlock("chat_history", "Chat History", "{{chat_history}}", 1L, 0L, initialOrder++)
             }
@@ -332,11 +239,9 @@ class ChatRepository(private val database: LocalTavernDB) {
     }
 
     suspend fun insertCustomPromptBlock(name: String, template: String): String = withContext(Dispatchers.IO) {
-        // Leverages your class's pre-packaged, multiplatform-safe timestamp calculator
         val uniqueId = "custom_${currentTimeMillis()}"
         val currentBlocks = queries.selectAllPromptBlocks().executeAsList()
         val nextOrderPosition = (currentBlocks.maxOfOrNull { it.displayOrder } ?: -1L) + 1L
-
         queries.insertPromptBlock(uniqueId, name, template, 1L, 1L, nextOrderPosition)
         uniqueId
     }

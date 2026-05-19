@@ -1,5 +1,6 @@
 package chat.donzi.localtavern.data.network
 
+import chat.donzi.localtavern.utils.ChatMessage
 import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.request.*
@@ -31,16 +32,30 @@ data class ModelInfo(
 )
 
 class ChatClient(private val httpClient: HttpClient) {
-    private fun JsonObjectBuilder.putChatMessages(isChatCompletion: Boolean, prompt: String) {
+    private fun JsonObjectBuilder.putChatMessages(isChatCompletion: Boolean, messages: List<ChatMessage>) {
         if (isChatCompletion) {
             put("messages", buildJsonArray {
-                add(buildJsonObject {
-                    put("role", "user")
-                    put("content", prompt)
-                })
+                messages.forEach { msg ->
+                    add(buildJsonObject {
+                        put("role", msg.role)
+                        put("content", msg.content)
+                    })
+                }
             })
         } else {
-            put("prompt", prompt)
+            // Text Completion Format: Combines everything into a script-like string
+            val promptBuilder = StringBuilder()
+            messages.forEach { msg ->
+                when (msg.role) {
+                    "system" -> promptBuilder.append(msg.content).append("\n\n")
+                    "user" -> promptBuilder.append("User: ").append(msg.content).append("\n")
+                    "assistant", "character" -> promptBuilder.append("Character: ").append(msg.content).append("\n")
+                    else -> promptBuilder.append(msg.content).append("\n")
+                }
+            }
+            // Prime the AI to answer as the character
+            promptBuilder.append("Character:")
+            put("prompt", promptBuilder.toString())
         }
     }
 
@@ -51,7 +66,7 @@ class ChatClient(private val httpClient: HttpClient) {
             }
             if (response.status == HttpStatusCode.OK) {
                 val body: ModelListResponse = response.body()
-                body.data.map { 
+                body.data.map {
                     val parts = it.id.split("/")
                     if (parts.size > 1) {
                         ModelInfo(
@@ -87,17 +102,23 @@ class ChatClient(private val httpClient: HttpClient) {
     }
 
     @Suppress("unused")
-    suspend fun sendChatRequest(baseUrl: String, apiKey: String, model: String, prompt: String, isChatCompletion: Boolean = true): String {
+    suspend fun sendChatRequest(
+        baseUrl: String,
+        apiKey: String,
+        model: String,
+        messages: List<ChatMessage>,
+        isChatCompletion: Boolean = true
+    ): String {
         val endpoint = if (isChatCompletion) "$baseUrl/chat/completions" else "$baseUrl/completions"
         val response = httpClient.post(endpoint) {
             header(HttpHeaders.Authorization, "Bearer $apiKey")
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject {
                 put("model", model)
-                putChatMessages(isChatCompletion, prompt)
+                putChatMessages(isChatCompletion, messages)
             })
         }
-        
+
         if (response.status != HttpStatusCode.OK) {
             return "Error: ${response.status.description}"
         }
@@ -116,9 +137,16 @@ class ChatClient(private val httpClient: HttpClient) {
         }
     }
 
-    fun streamChatRequest(baseUrl: String, apiKey: String, model: String, prompt: String, isChatCompletion: Boolean = true): Flow<String> = flow {
+    // FIXED: Changed `prompt: String` parameter to `messages: List<ChatMessage>`
+    fun streamChatRequest(
+        baseUrl: String,
+        apiKey: String,
+        model: String,
+        messages: List<ChatMessage>,
+        isChatCompletion: Boolean = true
+    ): Flow<String> = flow {
         val endpoint = if (isChatCompletion) "$baseUrl/chat/completions" else "$baseUrl/completions"
-        
+
         try {
             httpClient.preparePost(endpoint) {
                 header(HttpHeaders.Authorization, "Bearer $apiKey")
@@ -126,7 +154,7 @@ class ChatClient(private val httpClient: HttpClient) {
                 setBody(buildJsonObject {
                     put("model", model)
                     put("stream", true)
-                    putChatMessages(isChatCompletion, prompt)
+                    putChatMessages(isChatCompletion, messages) // FIXED: Passing messages list here
                 })
             }.execute { response ->
                 if (response.status != HttpStatusCode.OK) {
@@ -141,7 +169,7 @@ class ChatClient(private val httpClient: HttpClient) {
                     if (line.startsWith("data: ")) {
                         val data = line.substring(6)
                         if (data == "[DONE]") break
-                        
+
                         try {
                             val json = Json { ignoreUnknownKeys = true }
                             val element = json.parseToJsonElement(data)
