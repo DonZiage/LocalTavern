@@ -1,5 +1,6 @@
 package chat.donzi.localtavern.ui.components
 
+import chat.donzi.localtavern.utils.DefaultTokenizer
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
@@ -17,10 +18,6 @@ import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
-/**
- * Captures desktop mouse wheel scroll events and translates them
- * into horizontal raw delta adjustments for smooth scrolling.
- */
 fun Modifier.horizontalMouseWheelScroll(scrollState: ScrollState): Modifier = this.pointerInput(Unit) {
     awaitPointerEventScope {
         while (true) {
@@ -57,7 +54,7 @@ fun AlternateGreetingsStrip(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalMouseWheelScroll(scrollState) // Clean shared modifier call
+                .horizontalMouseWheelScroll(scrollState)
         ) {
             Row(
                 modifier = Modifier
@@ -173,13 +170,18 @@ private fun GreetingEditDialog(
         onDismissRequest = onDismiss,
         title = { Text("Greeting #$indexLabel") },
         text = {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 5,
-                label = { Text("Greeting text") }
-            )
+            Column {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    Text("${DefaultTokenizer.countTokens(text)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 5,
+                    label = { Text("Greeting text") }
+                )
+            }
         },
         confirmButton = { TextButton(onClick = { onSave(text) }) { Text("Save") } },
         dismissButton = {

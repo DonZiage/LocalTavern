@@ -1,14 +1,13 @@
 package chat.donzi.localtavern.ui.components
 
 import chat.donzi.localtavern.utils.CharacterManager
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.animateOffsetAsState
+import chat.donzi.localtavern.utils.DefaultTokenizer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -23,13 +22,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -40,7 +36,6 @@ import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
 import androidx.compose.ui.geometry.Offset
-import kotlin.math.abs
 
 @Composable
 fun CharacterDefinitionEditor(
@@ -81,6 +76,33 @@ fun CharacterDefinitionEditor(
     val deleteRed = Color(0xFFD32F2F)
 
     fun persist() = onSave(name, description, personality, scenario, firstMes, mesExample, altGreetings, avatarData)
+
+    val baseTokens = remember(name, description, personality, scenario, firstMes, mesExample) {
+        DefaultTokenizer.countTokens(name) +
+                DefaultTokenizer.countTokens(description) +
+                DefaultTokenizer.countTokens(personality) +
+                DefaultTokenizer.countTokens(scenario) +
+                DefaultTokenizer.countTokens(firstMes) +
+                mesExample.sumOf { DefaultTokenizer.countTokens(it) }
+    }
+
+    val altGreetingTokens = remember(altGreetings) {
+        altGreetings.map { DefaultTokenizer.countTokens(it) }
+    }
+
+    val totalTokenDisplay = remember(baseTokens, altGreetingTokens) {
+        if (altGreetingTokens.isEmpty()) {
+            "$baseTokens Tokens"
+        } else {
+            val minAlt = altGreetingTokens.minOrNull() ?: 0
+            val maxAlt = altGreetingTokens.maxOrNull() ?: 0
+            if (minAlt == maxAlt) {
+                "${baseTokens + minAlt} Tokens"
+            } else {
+                "${baseTokens + minAlt}-${baseTokens + maxAlt} Tokens"
+            }
+        }
+    }
 
     val exportCharacter = {
         val original = avatarData ?: ByteArray(0)
@@ -170,7 +192,14 @@ fun CharacterDefinitionEditor(
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(4.dp))
+
+            Text(
+                text = "Total: $totalTokenDisplay",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
 
             Box(
                 modifier = Modifier
@@ -204,52 +233,25 @@ fun CharacterDefinitionEditor(
                         }
                     }
 
-                    DropdownMenu(
+                    AvatarDropdownMenu(
                         expanded = showImageMenu,
-                        onDismissRequest = { showImageMenu = false }
-                    ) {
-                        if (avatarData == null) {
-                            DropdownMenuItem(
-                                text = { Text("Add Photo") },
-                                leadingIcon = { Icon(Icons.Default.AddAPhoto, null) },
-                                onClick = {
-                                    showImageMenu = false
-                                    pickImage()
-                                }
-                            )
-                        } else {
-                            DropdownMenuItem(
-                                text = { Text("View Photo") },
-                                leadingIcon = { Icon(Icons.Default.Visibility, null) },
-                                onClick = {
-                                    showImageMenu = false
-                                    showFullImage = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Update Photo") },
-                                leadingIcon = { Icon(Icons.Default.Refresh, null) },
-                                onClick = {
-                                    showImageMenu = false
-                                    pickImage()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Remove Photo") },
-                                leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
-                                onClick = {
-                                    showImageMenu = false
-                                    avatarData = null
-                                    persist()
-                                }
-                            )
+                        onDismissRequest = { showImageMenu = false },
+                        hasAvatar = avatarData != null,
+                        onAddOrUpdate = { pickImage() },
+                        onView = { showFullImage = true },
+                        onRemove = {
+                            avatarData = null
+                            persist()
                         }
-                    }
+                    )
                 }
             }
 
             Spacer(Modifier.height(16.dp))
 
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Text("${DefaultTokenizer.countTokens(name)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it; persist() },
@@ -258,6 +260,9 @@ fun CharacterDefinitionEditor(
             )
             Spacer(Modifier.height(12.dp))
 
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Text("${DefaultTokenizer.countTokens(description)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             OutlinedTextField(
                 value = description,
                 onValueChange = { description = it; persist() },
@@ -267,6 +272,9 @@ fun CharacterDefinitionEditor(
             )
             Spacer(Modifier.height(12.dp))
 
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Text("${DefaultTokenizer.countTokens(personality)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             OutlinedTextField(
                 value = personality,
                 onValueChange = { personality = it; persist() },
@@ -276,6 +284,9 @@ fun CharacterDefinitionEditor(
             )
             Spacer(Modifier.height(12.dp))
 
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Text("${DefaultTokenizer.countTokens(scenario)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             OutlinedTextField(
                 value = scenario,
                 onValueChange = { scenario = it; persist() },
@@ -285,6 +296,9 @@ fun CharacterDefinitionEditor(
             )
             Spacer(Modifier.height(12.dp))
 
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Text("${DefaultTokenizer.countTokens(firstMes)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             OutlinedTextField(
                 value = firstMes,
                 onValueChange = { firstMes = it; persist() },
@@ -314,77 +328,9 @@ fun CharacterDefinitionEditor(
         )
     }
 
-    if (showFullImage && avatarData != null) {
-        Dialog(
-            onDismissRequest = { showFullImage = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
-        ) {
-            var isZoomed by remember { mutableStateOf(false) }
-            var panOffset by remember { mutableStateOf(Offset.Zero) }
-            var imageSize by remember { mutableStateOf(IntSize.Zero) }
-            var transformOrigin by remember { mutableStateOf(TransformOrigin.Center) }
-
-            val scale by animateFloatAsState(if (isZoomed) 3.5f else 1f)
-            val displayOffset by animateOffsetAsState(if (isZoomed) panOffset else Offset.Zero)
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.6f))
-                    .clickable { showFullImage = false },
-                contentAlignment = Alignment.Center
-            ) {
-                AsyncImage(
-                    model = avatarData,
-                    contentDescription = "Full Image",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .fillMaxSize(0.7f)
-                        .onGloballyPositioned { imageSize = it.size }
-                        .graphicsLayer(
-                            scaleX = scale,
-                            scaleY = scale,
-                            translationX = displayOffset.x,
-                            translationY = displayOffset.y,
-                            transformOrigin = transformOrigin
-                        )
-                        .pointerInput(Unit) {
-                            detectTapGestures(onTap = { showFullImage = false })
-                        }
-                        .pointerInput(Unit) {
-                            detectDragGesturesAfterLongPress(
-                                onDragStart = { offset ->
-                                    val pivotX = if (imageSize.width > 0) offset.x / imageSize.width else 0.5f
-                                    val pivotY = if (imageSize.height > 0) offset.y / imageSize.height else 0.5f
-                                    transformOrigin = TransformOrigin(pivotX, pivotY)
-                                    isZoomed = true
-                                },
-                                onDragEnd = {
-                                    isZoomed = false
-                                    panOffset = Offset.Zero
-                                },
-                                onDragCancel = {
-                                    isZoomed = false
-                                    panOffset = Offset.Zero
-                                },
-                                onDrag = { change, dragAmount ->
-                                    change.consume()
-                                    val zoomFactor = 3.5f
-                                    val maxX = (imageSize.width * zoomFactor - imageSize.width) / 2f
-                                    val maxY = (imageSize.height * zoomFactor - imageSize.height) / 2f
-                                    val distX = (abs(panOffset.x) / maxX).coerceIn(0f, 1f)
-                                    val distY = (abs(panOffset.y) / maxY).coerceIn(0f, 1f)
-                                    val speedMultiplierX = 4f * (1f - distX)
-                                    val speedMultiplierY = 4f * (1f - distY)
-                                    val newX = (panOffset.x - dragAmount.x * speedMultiplierX).coerceIn(-maxX, maxX)
-                                    val newY = (panOffset.y - dragAmount.y * speedMultiplierY).coerceIn(-maxY, maxY)
-                                    panOffset = Offset(newX, newY)
-                                }
-                            )
-                        }
-                )
-            }
-        }
+    val currentAvatar = avatarData
+    if (showFullImage && currentAvatar != null) {
+        FullscreenImageViewer(avatarData = currentAvatar, onDismiss = { showFullImage = false })
     }
 
     if (confirmDelete) {
@@ -402,6 +348,138 @@ fun CharacterDefinitionEditor(
                 TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
             }
         )
+    }
+}
+
+@Composable
+fun AvatarDropdownMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    hasAvatar: Boolean,
+    onAddOrUpdate: () -> Unit,
+    onView: () -> Unit,
+    onRemove: () -> Unit
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismissRequest) {
+        if (!hasAvatar) {
+            DropdownMenuItem(
+                text = { Text("Add") },
+                leadingIcon = { Icon(Icons.Default.AddAPhoto, null) },
+                onClick = {
+                    onDismissRequest()
+                    onAddOrUpdate()
+                }
+            )
+        } else {
+            DropdownMenuItem(
+                text = { Text("View") },
+                leadingIcon = { Icon(Icons.Default.Visibility, null) },
+                onClick = {
+                    onDismissRequest()
+                    onView()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Update") },
+                leadingIcon = { Icon(Icons.Default.Refresh, null) },
+                onClick = {
+                    onDismissRequest()
+                    onAddOrUpdate()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Remove") },
+                leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
+                onClick = {
+                    onDismissRequest()
+                    onRemove()
+                }
+            )
+        }
+    }
+}
+
+@Composable
+fun FullscreenImageViewer(
+    avatarData: ByteArray,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        var scale by remember { mutableStateOf(1f) }
+        var offset by remember { mutableStateOf(Offset.Zero) }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.85f))
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { onDismiss() },
+                        onDoubleTap = {
+                            if (scale > 1f) {
+                                scale = 1f
+                                offset = Offset.Zero
+                            } else {
+                                scale = 3f
+                            }
+                        }
+                    )
+                }
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        scale = (scale * zoom).coerceIn(1f, 5f)
+                        if (scale > 1f) {
+                            offset += pan
+                        } else {
+                            offset = Offset.Zero
+                        }
+                    }
+                }
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.type == PointerEventType.Scroll) {
+                                val scrollDelta = event.changes.first().scrollDelta.y
+                                val zoomFactor = if (scrollDelta < 0) 1.1f else 0.9f
+                                scale = (scale * zoomFactor).coerceIn(1f, 5f)
+                                if (scale == 1f) {
+                                    offset = Offset.Zero
+                                }
+                                event.changes.forEach { it.consume() }
+                            }
+                        }
+                    }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            AsyncImage(
+                model = avatarData,
+                contentDescription = "Full Screen Image",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize(0.85f)
+                    .graphicsLayer(
+                        scaleX = scale,
+                        scaleY = scale,
+                        translationX = offset.x,
+                        translationY = offset.y
+                    )
+            )
+
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(16.dp)
+                    .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+            ) {
+                Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+            }
+        }
     }
 }
 
@@ -424,7 +502,7 @@ fun MessageExamplesStrip(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalMouseWheelScroll(scrollState) // Applied shared utility modifier here
+                .horizontalMouseWheelScroll(scrollState)
         ) {
             Row(
                 modifier = Modifier
@@ -494,13 +572,18 @@ fun MessageExamplesStrip(
                 onDismissRequest = { editingIndex = null },
                 title = { Text("Message Example #${idx + 1}") },
                 text = {
-                    OutlinedTextField(
-                        value = text,
-                        onValueChange = { text = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 5,
-                        label = { Text("Example message text") }
-                    )
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            Text("${DefaultTokenizer.countTokens(text)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        OutlinedTextField(
+                            value = text,
+                            onValueChange = { text = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 5,
+                            label = { Text("Example message text") }
+                        )
+                    }
                 },
                 confirmButton = {
                     TextButton(onClick = {

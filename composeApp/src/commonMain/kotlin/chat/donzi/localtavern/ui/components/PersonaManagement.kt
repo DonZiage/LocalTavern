@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.donzi.localtavern.data.database.PersonaEntity
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
+import chat.donzi.localtavern.utils.DefaultTokenizer
 import coil3.compose.AsyncImage
 
 @Composable
@@ -135,11 +136,11 @@ fun PersonaCard(
 
                 Column(modifier = Modifier.weight(1f).padding(start = 14.dp)) {
                     Text(
-                        persona.name, 
+                        persona.name,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp,
-                        maxLines = 1, 
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     if (!persona.description.isNullOrBlank()) {
@@ -153,14 +154,14 @@ fun PersonaCard(
                     }
                 }
             }
-            
+
             Row(
                 modifier = Modifier.align(Alignment.TopEnd),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = onEdit, modifier = Modifier.size(28.dp)) {
                     Icon(
-                        Icons.Default.Edit, 
+                        Icons.Default.Edit,
                         null,
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
@@ -168,8 +169,8 @@ fun PersonaCard(
                 }
                 IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
                     Icon(
-                        Icons.Default.Delete, 
-                        null, 
+                        Icons.Default.Delete,
+                        null,
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.error.copy(alpha = 0.6f)
                     )
@@ -190,11 +191,16 @@ fun PersonaEditDialog(
     var name by remember { mutableStateOf(initialName) }
     var description by remember { mutableStateOf(initialDescription) }
     var avatarData by remember { mutableStateOf(initialAvatar) }
-    
+
     var showImageMenu by remember { mutableStateOf(false) }
+    var showFullImage by remember { mutableStateOf(false) }
 
     val pickImage = rememberImagePickerLauncher { bytes ->
         avatarData = bytes
+    }
+
+    val totalPersonaTokens = remember(name, description) {
+        DefaultTokenizer.countTokens(name) + DefaultTokenizer.countTokens(description)
     }
 
     AlertDialog(
@@ -231,59 +237,71 @@ fun PersonaEditDialog(
                         }
                     }
 
-                    DropdownMenu(
+                    AvatarDropdownMenu(
                         expanded = showImageMenu,
-                        onDismissRequest = { showImageMenu = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text(if (avatarData == null) "Add Photo" else "Update Photo") },
-                            leadingIcon = { Icon(if (avatarData == null) Icons.Default.AddAPhoto else Icons.Default.Refresh, null) },
-                            onClick = {
-                                showImageMenu = false
-                                pickImage()
-                            }
-                        )
-                        if (avatarData != null) {
-                            DropdownMenuItem(
-                                text = { Text("Remove Photo") },
-                                leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
-                                onClick = {
-                                    showImageMenu = false
-                                    avatarData = null
-                                }
-                            )
-                        }
-                    }
+                        onDismissRequest = { showImageMenu = false },
+                        hasAvatar = avatarData != null,
+                        onAddOrUpdate = { pickImage() },
+                        onView = { showFullImage = true },
+                        onRemove = { avatarData = null }
+                    )
                 }
 
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(4.dp))
 
-                TextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Name") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                TextField(
-                    value = description,
-                    onValueChange = { description = it },
-                    label = { Text("Description") },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 3
-                )
+                Column {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        Text("${DefaultTokenizer.countTokens(name)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Name") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
+
+                Column {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        Text("${DefaultTokenizer.countTokens(description)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextField(
+                        value = description,
+                        onValueChange = { description = it },
+                        label = { Text("Description") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 3
+                    )
+                }
             }
         },
         confirmButton = {
-            TextButton(
-                onClick = { onSave(name, description.ifBlank { null }, avatarData) },
-                enabled = name.isNotBlank()
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Save")
+                Text(
+                    text = "Total: $totalPersonaTokens Tokens",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+                TextButton(
+                    onClick = { onSave(name, description.ifBlank { null }, avatarData) },
+                    enabled = name.isNotBlank()
+                ) {
+                    Text("Save")
+                }
             }
         },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        }
+        dismissButton = null
     )
+
+    val currentAvatar = avatarData
+    if (showFullImage && currentAvatar != null) {
+        FullscreenImageViewer(avatarData = currentAvatar, onDismiss = { showFullImage = false })
+    }
 }
