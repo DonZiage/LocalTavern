@@ -84,6 +84,19 @@ fun MainScreen(
     var selectedMessageIds by remember { mutableStateOf(setOf<Long>()) }
     var editingCharacter by remember { mutableStateOf<CharacterEntity?>(null) }
 
+    var hasApiProfile by remember { mutableStateOf(false) }
+
+    // Automated trigger tokens for interactive setup flow configurations
+    var autoEditPersonaTrigger by remember { mutableStateOf(false) }
+    var autoShowCharacterMenuTrigger by remember { mutableStateOf(false) }
+
+    val hasPersona = remember(personas) {
+        personas.any { it.name != "User" || !it.description.isNullOrBlank() || it.avatarData != null }
+    }
+    val hasCharacter = remember(characters) {
+        characters.isNotEmpty()
+    }
+
     var lastEditingCharacter by remember { mutableStateOf<CharacterEntity?>(null) }
     LaunchedEffect(editingCharacter) {
         if (editingCharacter != null) {
@@ -108,6 +121,8 @@ fun MainScreen(
 
     fun refreshMessages() {
         coroutineScope.launch {
+            hasApiProfile = chatRepository.getAllApiConnections().isNotEmpty()
+
             activeSessionId?.let { sessionId ->
                 val activeTimeline = chatRepository.getMessagesForSession(sessionId)
                 messages = activeTimeline
@@ -132,7 +147,7 @@ fun MainScreen(
         }
     }
 
-    LaunchedEffect(activeCharacter, activePersonaId) {
+    LaunchedEffect(activeCharacter, activePersonaId, characters, personas) {
         isSelectMode = false
         selectedMessageIds = emptySet()
         if (activePersonaId != null && activeCharacter != null) {
@@ -148,6 +163,7 @@ fun MainScreen(
             activeSessionId = null
             messages = emptyList()
             siblingsMap = emptyMap()
+            hasApiProfile = chatRepository.getAllApiConnections().isNotEmpty()
         }
     }
 
@@ -194,12 +210,9 @@ fun MainScreen(
                         messages = messages.map { msg ->
                             if (msg.id == aiMessageId) msg.copy(content = fullResponse) else msg
                         }
-
                         chatRepository.updateMessageContent(aiMessageId, fullResponse)
                     }
-
                     refreshMessages()
-
                 } catch (e: Exception) {
                     val errorText = "Error: ${e.message}"
                     messages = messages.map { msg ->
@@ -319,11 +332,22 @@ fun MainScreen(
                     activePersonaAvatar = activePersona?.avatarData,
                     messages = messages,
                     siblingsMap = siblingsMap,
+                    hasApiProfile = hasApiProfile,
+                    hasPersona = hasPersona,
+                    hasCharacter = hasCharacter,
+                    onNavigateToSettings = { onActiveDrawerChange(ActiveDrawer.Settings) },
+                    onNavigateToPersonas = {
+                        autoEditPersonaTrigger = true
+                        onActiveDrawerChange(ActiveDrawer.Characters)
+                    },
+                    onNavigateToCharacters = {
+                        autoShowCharacterMenuTrigger = true
+                        onActiveDrawerChange(ActiveDrawer.Characters)
+                    },
                     onSendMessage = onSendMessage,
                     onEditMessage = { id, content ->
                         coroutineScope.launch {
                             chatRepository.updateMessageContent(id, content)
-
                             messages = messages.map { msg ->
                                 if (msg.id == id) msg.copy(content = content) else msg
                             }
@@ -403,7 +427,11 @@ fun MainScreen(
             onCharactersDelete = { ids -> if (activeCharacter?.id in ids) activeCharacter = null; onCharactersDelete(ids) },
             onCharacterImport = onCharacterImport,
             onCharacterCreate = { name -> pendingCreationName = name; onCharacterCreate(name); onActiveDrawerChange(ActiveDrawer.None) },
-            onCharacterEdit = { character -> editingCharacter = character; onActiveDrawerChange(ActiveDrawer.None) }
+            onCharacterEdit = { character -> editingCharacter = character; onActiveDrawerChange(ActiveDrawer.None) },
+            autoEditDefaultPersona = autoEditPersonaTrigger,
+            onAutoEditConsumed = { autoEditPersonaTrigger = false },
+            autoShowNewCharacterMenu = autoShowCharacterMenuTrigger,
+            onAutoShowMenuConsumed = { autoShowCharacterMenuTrigger = false }
         )
 
         AnimatedVisibility(

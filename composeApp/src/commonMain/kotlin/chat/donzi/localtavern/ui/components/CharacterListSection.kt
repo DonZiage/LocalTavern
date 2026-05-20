@@ -36,7 +36,9 @@ fun CharacterListSection(
     onImportCharacter: (SillyTavernCardV2, ByteArray?) -> Unit,
     onCreateCharacter: (String) -> Unit,
     onEditCharacter: (CharacterEntity) -> Unit,
-    actions: @Composable RowScope.() -> Unit = {}
+    actions: @Composable RowScope.() -> Unit = {},
+    autoShowNewCharacterMenu: Boolean = false,
+    onAutoShowMenuConsumed: () -> Unit = {}
 ) {
     var query by remember { mutableStateOf("") }
     var selectionMode by remember { mutableStateOf(false) }
@@ -59,6 +61,14 @@ fun CharacterListSection(
             imported?.let {
                 onImportCharacter(it.card, it.avatarData)
             }
+        }
+    }
+
+    // Automatically extends the character context options list when navigated via quickstart links
+    LaunchedEffect(autoShowNewCharacterMenu) {
+        if (autoShowNewCharacterMenu) {
+            showCharacterMenu = true
+            onAutoShowMenuConsumed()
         }
     }
 
@@ -93,7 +103,6 @@ fun CharacterListSection(
                 label = "SearchTransition"
             ) { active ->
                 if (active) {
-                    // Expanded Search Bar
                     LaunchedEffect(Unit) {
                         focusRequester.requestFocus()
                     }

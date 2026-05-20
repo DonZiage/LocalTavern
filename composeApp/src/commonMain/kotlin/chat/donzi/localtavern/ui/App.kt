@@ -61,17 +61,6 @@ fun App(driverFactory: DriverFactory) {
             }
             personas = currentPersonas
 
-            if (chatRepository.getAllApiConnections().isEmpty()) {
-                chatRepository.insertApiConnection(
-                    provider = "OpenAI Compatible",
-                    name = "Local Model",
-                    baseUrl = "http://localhost:11434/v1",
-                    apiKey = "ollama",
-                    model = "llama3",
-                    isActive = true,
-                    isChatCompletion = true
-                )
-            }
             val settings = chatRepository.getAppSettings()
             var pId = settings.activePersonaId
             if (pId == null && personas.isNotEmpty()) {
@@ -122,13 +111,10 @@ fun App(driverFactory: DriverFactory) {
                 characters = characters,
                 personas = personas,
                 activePersonaId = activePersonaId,
-
                 isDarkMode = syncedDarkTheme,
-
                 onToggleDarkMode = { _, centerOffset ->
                     triggerTransition(centerOffset)
                 },
-
                 activeDrawer = activeDrawer,
                 onActiveDrawerChange = { activeDrawer = it },
                 refreshData = ::refreshData,

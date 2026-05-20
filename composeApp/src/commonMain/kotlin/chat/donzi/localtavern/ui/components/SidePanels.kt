@@ -27,7 +27,12 @@ import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.data.network.ChatClient
 import androidx.compose.ui.geometry.Offset
 
-enum class ActiveDrawer { None, Settings, Characters }
+// Explicitly defining the missing enum here fixes the unresolved references globally
+enum class ActiveDrawer {
+    None,
+    Settings,
+    Characters
+}
 
 @Composable
 fun SidePanels(
@@ -49,7 +54,11 @@ fun SidePanels(
     onCharactersDelete: (Set<Long>) -> Unit,
     onCharacterImport: (SillyTavernCardV2, ByteArray?) -> Unit,
     onCharacterCreate: (String) -> Unit,
-    onCharacterEdit: (CharacterEntity) -> Unit
+    onCharacterEdit: (CharacterEntity) -> Unit,
+    autoEditDefaultPersona: Boolean = false,
+    onAutoEditConsumed: () -> Unit = {},
+    autoShowNewCharacterMenu: Boolean = false,
+    onAutoShowMenuConsumed: () -> Unit = {}
 ) {
     Box(modifier = Modifier.fillMaxSize().zIndex(100f)) {
         AnimatedVisibility(
@@ -105,10 +114,7 @@ fun SidePanels(
                         )
                     }
 
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                    ) {
+                    Column(modifier = Modifier.fillMaxSize()) {
                         var apiExpanded by remember { mutableStateOf(true) }
                         Row(
                             modifier = Modifier
@@ -192,7 +198,9 @@ fun SidePanels(
                                 onSelect = onPersonaSelect,
                                 onAdd = onPersonaAdd,
                                 onUpdate = onPersonaUpdate,
-                                onDelete = onPersonaDelete
+                                onDelete = onPersonaDelete,
+                                autoEditDefaultPersona = autoEditDefaultPersona,
+                                onAutoEditConsumed = onAutoEditConsumed
                             )
                         }
 
@@ -206,7 +214,9 @@ fun SidePanels(
                                 onDeleteSelected = onCharactersDelete,
                                 onImportCharacter = onCharacterImport,
                                 onCreateCharacter = onCharacterCreate,
-                                onEditCharacter = onCharacterEdit
+                                onEditCharacter = onCharacterEdit,
+                                autoShowNewCharacterMenu = autoShowNewCharacterMenu,
+                                onAutoShowMenuConsumed = onAutoShowMenuConsumed
                             )
                         }
                     }

@@ -1,8 +1,10 @@
 package chat.donzi.localtavern.ui.components
 
+import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -13,11 +15,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import chat.donzi.localtavern.data.database.PersonaEntity
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import chat.donzi.localtavern.utils.DefaultTokenizer
@@ -30,13 +34,22 @@ fun PersonaManagement(
     onPersonaSelect: (Long) -> Unit,
     onPersonaAdd: (String, String?, ByteArray?) -> Unit,
     onPersonaUpdate: (Long, String, String?, ByteArray?) -> Unit,
-    onPersonaDelete: (Long) -> Unit
+    onPersonaDelete: (Long) -> Unit,
+    autoEditDefaultPersona: Boolean = false,
+    onAutoEditConsumed: () -> Unit = {}
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
     var editingPersona by remember { mutableStateOf<PersonaEntity?>(null) }
 
     val activeIndex = remember(personas, activePersonaId) {
         personas.indexOfFirst { it.id == activePersonaId }.coerceAtLeast(0)
+    }
+
+    LaunchedEffect(autoEditDefaultPersona, personas) {
+        if (autoEditDefaultPersona && personas.isNotEmpty()) {
+            editingPersona = personas.firstOrNull()
+            onAutoEditConsumed()
+        }
     }
 
     CardCarousel(
@@ -62,28 +75,199 @@ fun PersonaManagement(
         }
     )
 
-    if (showAddDialog) {
-        PersonaEditDialog(
-            onDismiss = { showAddDialog = false },
-            onSave = { name, desc, avatar ->
-                onPersonaAdd(name, desc, avatar)
-                showAddDialog = false
-            }
-        )
-    }
+    AnimatedPersonaEditOverlay(
+        visible = showAddDialog,
+        title = "Add Persona",
+        initialName = "",
+        initialDescription = "",
+        initialAvatar = null,
+        onDismiss = { showAddDialog = false },
+        onSave = { name, desc, avatar ->
+            onPersonaAdd(name, desc, avatar)
+            showAddDialog = false
+        }
+    )
 
-    if (editingPersona != null) {
-        val persona = editingPersona!!
-        PersonaEditDialog(
-            initialName = persona.name,
-            initialDescription = persona.description ?: "",
-            initialAvatar = persona.avatarData,
-            onDismiss = { editingPersona = null },
-            onSave = { name, desc, avatar ->
-                onPersonaUpdate(persona.id, name, desc, avatar)
-                editingPersona = null
+    AnimatedPersonaEditOverlay(
+        visible = editingPersona != null,
+        title = "Edit Persona",
+        initialName = editingPersona?.name ?: "",
+        initialDescription = editingPersona?.description ?: "",
+        initialAvatar = editingPersona?.avatarData,
+        onDismiss = { editingPersona = null },
+        onSave = { name, desc, avatar ->
+            editingPersona?.let { onPersonaUpdate(it.id, name, desc, avatar) }
+            editingPersona = null
+        }
+    )
+}
+
+@Composable
+private fun AnimatedPersonaEditOverlay(
+    visible: Boolean,
+    title: String,
+    initialName: String,
+    initialDescription: String,
+    initialAvatar: ByteArray?,
+    onDismiss: () -> Unit,
+    onSave: (String, String?, ByteArray?) -> Unit
+) {
+    Box(modifier = Modifier.fillMaxSize().zIndex(200f)) {
+        AnimatedVisibility(
+            visible = visible,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.4f))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onDismiss
+                    )
+            )
+        }
+
+        AnimatedVisibility(
+            visible = visible,
+            enter = slideInVertically(initialOffsetY = { it / 2 }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it / 2 }) + fadeOut(),
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(24.dp)
+                .wrapContentSize()
+        ) {
+            var name by remember(visible) { mutableStateOf(initialName) }
+            var description by remember(visible) { mutableStateOf(initialDescription) }
+            var avatarData by remember(visible) { mutableStateOf(initialAvatar) }
+
+            var showImageMenu by remember { mutableStateOf(false) }
+            var showFullImage by remember { mutableStateOf(false) }
+
+            val pickImage = rememberImagePickerLauncher { bytes ->
+                avatarData = bytes
             }
-        )
+
+            val totalPersonaTokens = remember(name, description) {
+                DefaultTokenizer.countTokens(name) + DefaultTokenizer.countTokens(description)
+            }
+
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp,
+                modifier = Modifier.widthIn(max = 480.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Start
+                    )
+
+                    Box {
+                        Box(
+                            modifier = Modifier
+                                .size(96.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f), CircleShape)
+                                .clickable { showImageMenu = true }
+                        ) {
+                            if (avatarData != null) {
+                                AsyncImage(
+                                    model = avatarData,
+                                    contentDescription = "Avatar",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.AddAPhoto,
+                                    contentDescription = "Add Avatar Photo",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(28.dp).align(Alignment.Center)
+                                )
+                            }
+                        }
+
+                        AvatarDropdownMenu(
+                            expanded = showImageMenu,
+                            onDismissRequest = { showImageMenu = false },
+                            hasAvatar = avatarData != null,
+                            onAddOrUpdate = { pickImage() },
+                            onView = { showFullImage = true },
+                            onRemove = { avatarData = null }
+                        )
+                    }
+
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Name", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                            Text("${DefaultTokenizer.countTokens(name)} tokens", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        OutlinedTextField(
+                            value = name,
+                            onValueChange = { name = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                    }
+
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Description", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                            Text("${DefaultTokenizer.countTokens(description)} tokens", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        OutlinedTextField(
+                            value = description,
+                            onValueChange = { description = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 3,
+                            maxLines = 5,
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Total: $totalPersonaTokens Tokens",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.weight(1f))
+                        TextButton(onClick = onDismiss) { Text("Cancel") }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = { onSave(name, description.ifBlank { null }, avatarData) },
+                            enabled = name.isNotBlank(),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("Save")
+                        }
+                    }
+                }
+            }
+
+            if (showFullImage && avatarData != null) {
+                FullscreenImageViewer(avatarData = avatarData!!, onDismiss = { showFullImage = false })
+            }
+        }
     }
 }
 
@@ -177,131 +361,5 @@ fun PersonaCard(
                 }
             }
         }
-    }
-}
-
-@Composable
-fun PersonaEditDialog(
-    initialName: String = "",
-    initialDescription: String = "",
-    initialAvatar: ByteArray? = null,
-    onDismiss: () -> Unit,
-    onSave: (String, String?, ByteArray?) -> Unit
-) {
-    var name by remember { mutableStateOf(initialName) }
-    var description by remember { mutableStateOf(initialDescription) }
-    var avatarData by remember { mutableStateOf(initialAvatar) }
-
-    var showImageMenu by remember { mutableStateOf(false) }
-    var showFullImage by remember { mutableStateOf(false) }
-
-    val pickImage = rememberImagePickerLauncher { bytes ->
-        avatarData = bytes
-    }
-
-    val totalPersonaTokens = remember(name, description) {
-        DefaultTokenizer.countTokens(name) + DefaultTokenizer.countTokens(description)
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (initialName.isEmpty()) "Add Persona" else "Edit Persona") },
-        text = {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Box {
-                    Box(
-                        modifier = Modifier
-                            .size(100.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                            .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f), CircleShape)
-                            .clickable { showImageMenu = true }
-                    ) {
-                        if (avatarData != null) {
-                            AsyncImage(
-                                model = avatarData,
-                                contentDescription = "Persona Avatar",
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.AddAPhoto,
-                                contentDescription = "Add Photo",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(32.dp).align(Alignment.Center)
-                            )
-                        }
-                    }
-
-                    AvatarDropdownMenu(
-                        expanded = showImageMenu,
-                        onDismissRequest = { showImageMenu = false },
-                        hasAvatar = avatarData != null,
-                        onAddOrUpdate = { pickImage() },
-                        onView = { showFullImage = true },
-                        onRemove = { avatarData = null }
-                    )
-                }
-
-                Spacer(Modifier.height(4.dp))
-
-                Column {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        Text("${DefaultTokenizer.countTokens(name)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    TextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        label = { Text("Name") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
-                }
-
-                Column {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        Text("${DefaultTokenizer.countTokens(description)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    TextField(
-                        value = description,
-                        onValueChange = { description = it },
-                        label = { Text("Description") },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 3
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Total: $totalPersonaTokens Tokens",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(modifier = Modifier.weight(1f))
-                TextButton(onClick = onDismiss) { Text("Cancel") }
-                TextButton(
-                    onClick = { onSave(name, description.ifBlank { null }, avatarData) },
-                    enabled = name.isNotBlank()
-                ) {
-                    Text("Save")
-                }
-            }
-        },
-        dismissButton = null
-    )
-
-    val currentAvatar = avatarData
-    if (showFullImage && currentAvatar != null) {
-        FullscreenImageViewer(avatarData = currentAvatar, onDismiss = { showFullImage = false })
     }
 }

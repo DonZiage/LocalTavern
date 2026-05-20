@@ -14,7 +14,9 @@ fun PersonaManagementSection(
     onAdd: (String, String?, ByteArray?) -> Unit,
     onUpdate: (Long, String, String?, ByteArray?) -> Unit,
     onDelete: (Long) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    autoEditDefaultPersona: Boolean = false,
+    onAutoEditConsumed: () -> Unit = {}
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
         PersonaManagement(
@@ -23,7 +25,9 @@ fun PersonaManagementSection(
             onPersonaSelect = onSelect,
             onPersonaAdd = onAdd,
             onPersonaUpdate = onUpdate,
-            onPersonaDelete = onDelete
+            onPersonaDelete = onDelete,
+            autoEditDefaultPersona = autoEditDefaultPersona,
+            onAutoEditConsumed = onAutoEditConsumed
         )
     }
 }

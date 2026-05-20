@@ -1,11 +1,15 @@
 package chat.donzi.localtavern.ui.components
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.AccountBox
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -17,12 +21,22 @@ import androidx.compose.ui.unit.sp
 import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.data.database.MessageEntity
 
+private enum class OnboardingStep {
+    API, PERSONA, CHARACTER
+}
+
 @Composable
 fun ChatArea(
     activeCharacter: CharacterEntity?,
     activePersonaAvatar: ByteArray?,
     messages: List<MessageEntity>,
     siblingsMap: Map<Long, List<MessageEntity>>,
+    hasApiProfile: Boolean,
+    hasPersona: Boolean,
+    hasCharacter: Boolean,
+    onNavigateToSettings: () -> Unit,
+    onNavigateToPersonas: () -> Unit,
+    onNavigateToCharacters: () -> Unit,
     onSendMessage: (String) -> Unit,
     onEditMessage: (Long, String) -> Unit,
     onDeleteMessage: (Long) -> Unit,
@@ -40,41 +54,115 @@ fun ChatArea(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(32.dp),
+                    .padding(24.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
-                    modifier = Modifier.fillMaxWidth(0.8f)
+                    modifier = Modifier.fillMaxWidth(0.85f)
                 ) {
                     Text(
                         text = "Welcome to LocalTavern",
-                        style = MaterialTheme.typography.displaySmall.copy(
+                        style = MaterialTheme.typography.headlineMedium.copy(
                             fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp
+                            letterSpacing = 0.5.sp
                         ),
                         textAlign = TextAlign.Center,
                         color = MaterialTheme.colorScheme.primary
                     )
 
-                    Spacer(modifier = Modifier.height(24.dp))
-
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        shape = MaterialTheme.shapes.large
-                    ) {
-                        Column(modifier = Modifier.padding(24.dp)) {
-                            Text(
-                                text = "Select a character from the menu to begin your journey, or simply type below to talk with the Assistant.",
-                                style = MaterialTheme.typography.bodyLarge.copy(
-                                    lineHeight = 28.sp
-                                ),
-                                textAlign = TextAlign.Center,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                    // Build a dynamic real-time structural list of unsatisfied steps
+                    val visibleSteps = remember(hasApiProfile, hasPersona, hasCharacter) {
+                        mutableListOf<OnboardingStep>().apply {
+                            if (!hasApiProfile) add(OnboardingStep.API)
+                            if (!hasPersona) add(OnboardingStep.PERSONA)
+                            if (!hasCharacter) add(OnboardingStep.CHARACTER)
                         }
                     }
+
+                    if (visibleSteps.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(24.dp))
+
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            visibleSteps.forEachIndexed { index, step ->
+                                val stepDisplayNumber = index + 1
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = "$stepDisplayNumber - ",
+                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(end = 6.dp)
+                                    )
+
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                        shape = MaterialTheme.shapes.medium,
+                                        tonalElevation = 1.dp,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clickable {
+                                                when (step) {
+                                                    OnboardingStep.API -> onNavigateToSettings()
+                                                    OnboardingStep.PERSONA -> onNavigateToPersonas()
+                                                    OnboardingStep.CHARACTER -> onNavigateToCharacters()
+                                                }
+                                            }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = when (step) {
+                                                    OnboardingStep.API -> "Add an API connection in Settings"
+                                                    OnboardingStep.PERSONA -> "Introduce yourself in Personas"
+                                                    OnboardingStep.CHARACTER -> "Meet your first Character"
+                                                },
+                                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.9f),
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Icon(
+                                                imageVector = when (step) {
+                                                    OnboardingStep.API -> Icons.Default.Settings
+                                                    OnboardingStep.PERSONA -> Icons.Default.Person
+                                                    OnboardingStep.CHARACTER -> Icons.Default.AccountBox
+                                                },
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.outline,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Select a character from the menu side panel to begin your conversation.",
+                            style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 24.sp),
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(36.dp))
+
+                    Text(
+                        text = "Or type below to talk with the Assistant",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.75f),
+                        textAlign = TextAlign.Center
+                    )
                 }
             }
         } else {
