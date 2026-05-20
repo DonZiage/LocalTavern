@@ -17,6 +17,7 @@ import chat.donzi.localtavern.data.database.MessageEntity
 @Composable
 fun ChatArea(
     activeCharacter: CharacterEntity?,
+    activePersonaAvatar: ByteArray?, // Added parameter for user persona avatar data
     messages: List<MessageEntity>,
     onSendMessage: (String) -> Unit,
     onEditMessage: (Long, String) -> Unit,
@@ -46,9 +47,9 @@ fun ChatArea(
                         textAlign = TextAlign.Center,
                         color = MaterialTheme.colorScheme.primary
                     )
-                    
+
                     Spacer(modifier = Modifier.height(24.dp))
-                    
+
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                         shape = MaterialTheme.shapes.large
@@ -75,11 +76,20 @@ fun ChatArea(
                 reverseLayout = true
             ) {
                 items(messages.reversed()) { message ->
+                    val isUserMessage = message.role == "user"
+                    // Resolve avatar selection depending on whether the role is "user" or "assistant"
+                    val currentAvatar = if (isUserMessage) {
+                        activePersonaAvatar
+                    } else {
+                        activeCharacter?.avatarData
+                    }
+
                     MessageBubble(
                         content = message.content,
-                        isUser = message.role == "user",
+                        isUser = isUserMessage,
                         onEdit = { newContent -> onEditMessage(message.id, newContent) },
-                        onDelete = { onDeleteMessage(message.id) }
+                        onDelete = { onDeleteMessage(message.id) },
+                        avatarData = currentAvatar // Passed resolved picture down here
                     )
                 }
             }

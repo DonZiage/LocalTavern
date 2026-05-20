@@ -6,11 +6,13 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -19,14 +21,85 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.*
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil3.compose.AsyncImage
+
+@Composable
+fun parseMarkdownToAnnotatedString(text: String, defaultColor: Color): AnnotatedString {
+    // Resolve the Composable theme value safely here outside the text building block
+    val codeBackgroundColor = MaterialTheme.colorScheme.surfaceVariant
+
+    return remember(text, defaultColor, codeBackgroundColor) {
+        buildAnnotatedString {
+            // Sequential Markdown token matching (Inline Code, Bold Italic, Bold, Italic/Narration)
+            val pattern = """(`[^`\n]+`|\*\*\*[^*]+\*\*\*|\*\*[^*]+\*\*|\*[^*]+\*|_[^_]+_)""".toRegex()
+            var lastIndex = 0
+
+            pattern.findAll(text).forEach { matchResult ->
+                if (matchResult.range.first > lastIndex) {
+                    append(text.substring(lastIndex, matchResult.range.first))
+                }
+
+                val token = matchResult.value
+                when {
+                    token.startsWith("`") && token.endsWith("`") -> {
+                        withStyle(
+                            SpanStyle(
+                                fontFamily = FontFamily.Monospace,
+                                background = codeBackgroundColor,
+                                fontSize = 14.sp
+                            )
+                        ) {
+                            append(token.removeSurrounding("`"))
+                        }
+                    }
+                    token.startsWith("***") && token.endsWith("***") -> {
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)) {
+                            append(token.removeSurrounding("***"))
+                        }
+                    }
+                    token.startsWith("**") && token.endsWith("**") -> {
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                            append(token.removeSurrounding("**"))
+                        }
+                    }
+                    token.startsWith("*") && token.endsWith("*") -> {
+                        withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = defaultColor.copy(alpha = 0.85f))) {
+                            append(token.removeSurrounding("*"))
+                        }
+                    }
+                    token.startsWith("_") && token.endsWith("_") -> {
+                        withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
+                            append(token.removeSurrounding("_"))
+                        }
+                    }
+                    else -> append(token)
+                }
+                lastIndex = matchResult.range.last + 1
+            }
+            if (lastIndex < text.length) {
+                append(text.substring(lastIndex))
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -37,25 +110,24 @@ fun MessageBubble(
     onCopy: () -> Unit = {},
     onDelete: () -> Unit = {},
     onAddImage: () -> Unit = {},
-    onBranch: () -> Unit = {}
+    onBranch: () -> Unit = {},
+    avatarData: ByteArray? = null
 ) {
     var isEditing by remember { mutableStateOf(false) }
     var editedTextValue by remember(content) {
         mutableStateOf(TextFieldValue(content, selection = TextRange(content.length)))
     }
     val focusRequester = remember { FocusRequester() }
-    
+
     var showActionsOnMobile by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
-    
+    var showFullImage by remember { mutableStateOf(false) }
+
     val interactionSource = remember { MutableInteractionSource() }
     val isHovered by interactionSource.collectIsHoveredAsState()
 
-    // Determine if actions should be visible
-    // Include showMenu so the actions don't disappear while the menu is open
     val actionsVisible = (isHovered || showActionsOnMobile || showMenu) && !isEditing
 
-    // Auto-focus when entering edit mode
     LaunchedEffect(isEditing) {
         if (isEditing) {
             focusRequester.requestFocus()
@@ -74,6 +146,8 @@ fun MessageBubble(
         MaterialTheme.colorScheme.onSecondaryContainer
     }
 
+    val annotatedContent = parseMarkdownToAnnotatedString(text = content, defaultColor = textColor)
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -82,7 +156,7 @@ fun MessageBubble(
             .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-                onClick = { showActionsOnMobile = false }, // Close on tap away
+                onClick = { showActionsOnMobile = false },
                 onLongClick = { showActionsOnMobile = !showActionsOnMobile }
             ),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
@@ -93,15 +167,41 @@ fun MessageBubble(
                 visible = actionsVisible,
                 showMenu = showMenu,
                 onShowMenuChange = { showMenu = it },
-                onEdit = { 
+                onEdit = {
                     editedTextValue = TextFieldValue(content, selection = TextRange(content.length))
-                    isEditing = true 
+                    isEditing = true
                 },
                 onCopy = onCopy,
                 onDelete = onDelete,
                 onAddImage = onAddImage,
                 onBranch = onBranch
             )
+        } else {
+            Box(
+                modifier = Modifier
+                    .padding(end = 6.dp)
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable { if (avatarData != null) showFullImage = true },
+                contentAlignment = Alignment.Center
+            ) {
+                if (avatarData != null) {
+                    AsyncImage(
+                        model = avatarData,
+                        contentDescription = "Character Avatar",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Person,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
         }
 
         Box(
@@ -113,7 +213,7 @@ fun MessageBubble(
                 )
                 .animateContentSize()
                 .padding(12.dp)
-                .widthIn(max = 400.dp)
+                .widthIn(max = 460.dp)
         ) {
             if (content == "...") {
                 AnimatedEllipsis(color = textColor)
@@ -170,21 +270,48 @@ fun MessageBubble(
                 }
             } else {
                 Text(
-                    text = content,
+                    text = annotatedContent,
                     color = textColor,
-                    fontSize = 16.sp
+                    fontSize = 16.sp,
+                    lineHeight = 22.sp
                 )
             }
         }
 
-        if (!isUser) {
+        if (isUser) {
+            Box(
+                modifier = Modifier
+                    .padding(start = 6.dp)
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable { if (avatarData != null) showFullImage = true },
+                contentAlignment = Alignment.Center
+            ) {
+                if (avatarData != null) {
+                    AsyncImage(
+                        model = avatarData,
+                        contentDescription = "User Avatar",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Person,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        } else {
             MessageActions(
                 visible = actionsVisible,
                 showMenu = showMenu,
                 onShowMenuChange = { showMenu = it },
-                onEdit = { 
+                onEdit = {
                     editedTextValue = TextFieldValue(content, selection = TextRange(content.length))
-                    isEditing = true 
+                    isEditing = true
                 },
                 onCopy = onCopy,
                 onDelete = onDelete,
@@ -192,6 +319,12 @@ fun MessageBubble(
                 onBranch = onBranch
             )
         }
+    }
+
+    // Direct image viewer overlay mapping exactly to the custom viewer implementation
+    val currentAvatar = avatarData
+    if (showFullImage && currentAvatar != null) {
+        FullscreenImageViewer(avatarData = currentAvatar, onDismiss = { showFullImage = false })
     }
 }
 

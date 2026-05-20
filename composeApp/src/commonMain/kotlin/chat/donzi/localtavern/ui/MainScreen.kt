@@ -75,6 +75,11 @@ fun MainScreen(
         }
     }
 
+    // Resolve the active persona entity to extract its image payload safely
+    val activePersona = remember(personas, activePersonaId) {
+        personas.find { it.id == activePersonaId }
+    }
+
     fun refreshMessages() {
         coroutineScope.launch {
             activeSessionId?.let { sessionId ->
@@ -122,9 +127,6 @@ fun MainScreen(
                 // 3. Load active building blocks configuration
                 val blocks = chatRepository.getAllPromptBlocks().map { it.toDomain() }
 
-                // 4. Resolve the current persona entity
-                val activePersona = personas.find { it.id == activePersonaId }
-
                 // 5. Package the managed, budget-compliant context window sequence
                 val messagesPayload = ContextManager.buildPayload(
                     blocks = blocks,
@@ -139,7 +141,7 @@ fun MainScreen(
                     baseUrl = activeConnection.baseUrl ?: "",
                     apiKey = activeConnection.apiKey ?: "",
                     model = activeConnection.model ?: "gpt-3.5-turbo",
-                    messages = messagesPayload, // FIXED: Correctly passing token budget context payload list
+                    messages = messagesPayload,
                     isChatCompletion = activeConnection.isChatCompletion == 1L
                 ).collect { token ->
                     if (!receivedFirstToken) {
@@ -231,6 +233,7 @@ fun MainScreen(
             Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
                 ChatArea(
                     activeCharacter = activeCharacter,
+                    activePersonaAvatar = activePersona?.avatarData, // Passed user persona avatar data
                     messages = messages,
                     onSendMessage = onSendMessage,
                     onEditMessage = { id, newContent ->
@@ -320,7 +323,6 @@ fun MainScreen(
                         onClose = { editingCharacter = null },
                         onSave = { name, desc, personality, scenario, firstMes, mesExample, altGreetings, avatarData ->
                             coroutineScope.launch {
-                                // FIXED: Using safe named arguments matching the custom repository parameters order
                                 chatRepository.updateCharacter(
                                     id = targetCharacter.id,
                                     name = name,
