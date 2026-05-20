@@ -3,6 +3,9 @@ package chat.donzi.localtavern.ui.components
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -19,10 +22,13 @@ fun ChatArea(
     activeCharacter: CharacterEntity?,
     activePersonaAvatar: ByteArray?,
     messages: List<MessageEntity>,
+    siblingsMap: Map<Long, List<MessageEntity>>,
     onSendMessage: (String) -> Unit,
     onEditMessage: (Long, String) -> Unit,
     onDeleteMessage: (Long) -> Unit,
     onRegenerate: () -> Unit,
+    onSelectVariation: (Long) -> Unit,
+    onGenerateNewVariation: (Long) -> Unit,
     isSelectMode: Boolean = false,
     selectedMessageIds: Set<Long> = emptySet(),
     onSelectMessageToggle: (Long) -> Unit = {},
@@ -87,43 +93,91 @@ fun ChatArea(
                         activeCharacter?.avatarData
                     }
 
-                    val isFirstMessage = activeCharacter != null && messages.firstOrNull()?.id == message.id && !isUserMessage
+                    val isLastMessage = messages.lastOrNull()?.id == message.id
+                    val isSwipeable = !isUserMessage && isLastMessage
 
-                    val greetings = remember(activeCharacter) {
-                        val list = mutableListOf<String>()
-                        activeCharacter?.let {
-                            if (!it.firstMes.isNullOrBlank()) list.add(it.firstMes)
-                            it.altGreetings?.split("|||")?.filter { g -> g.isNotBlank() }?.let { alt ->
-                                list.addAll(alt)
+                    val siblings = siblingsMap[message.id] ?: listOf(message)
+                    val currentIndex = siblings.indexOfFirst { it.id == message.id }.coerceAtLeast(0)
+                    val totalCount = siblings.size
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = if (isUserMessage) Alignment.End else Alignment.Start
+                    ) {
+                        MessageBubble(
+                            content = message.content,
+                            isUser = isUserMessage,
+                            onEdit = { newContent -> onEditMessage(message.id, newContent) },
+                            onDelete = { onDeleteMessage(message.id) },
+                            avatarData = currentAvatar,
+                            isSelectMode = isSelectMode,
+                            isSelected = selectedMessageIds.contains(message.id),
+                            onSelectToggle = { onSelectMessageToggle(message.id) },
+                            isSwipeable = isSwipeable,
+                            onSwipeRight = {
+                                if (currentIndex > 0) {
+                                    onSelectVariation(siblings[currentIndex - 1].id)
+                                }
+                            },
+                            onSwipeLeft = {
+                                if (currentIndex < totalCount - 1) {
+                                    onSelectVariation(siblings[currentIndex + 1].id)
+                                } else {
+                                    onGenerateNewVariation(message.id)
+                                }
+                            }
+                        )
+
+                        if (isSwipeable) {
+                            Row(
+                                modifier = Modifier
+                                    .padding(start = 54.dp, top = 2.dp, bottom = 6.dp)
+                                    .widthIn(max = 460.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        if (currentIndex > 0) {
+                                            onSelectVariation(siblings[currentIndex - 1].id)
+                                        }
+                                    },
+                                    enabled = currentIndex > 0,
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                        contentDescription = "Previous variation",
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+
+                                Text(
+                                    text = "${currentIndex + 1} / $totalCount",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                )
+
+                                IconButton(
+                                    onClick = {
+                                        if (currentIndex < totalCount - 1) {
+                                            onSelectVariation(siblings[currentIndex + 1].id)
+                                        } else {
+                                            onGenerateNewVariation(message.id)
+                                        }
+                                    },
+                                    enabled = true,
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                        contentDescription = "Next variation",
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
                             }
                         }
-                        if (list.isEmpty()) list.add("")
-                        list
                     }
-
-                    val currentGreetingIndex = if (isFirstMessage) {
-                        val idx = greetings.indexOf(message.content)
-                        if (idx != -1) idx else 0
-                    } else 0
-
-                    MessageBubble(
-                        content = message.content,
-                        isUser = isUserMessage,
-                        onEdit = { newContent -> onEditMessage(message.id, newContent) },
-                        onDelete = { onDeleteMessage(message.id) },
-                        avatarData = currentAvatar,
-                        isSelectMode = isSelectMode,
-                        isSelected = selectedMessageIds.contains(message.id),
-                        onSelectToggle = { onSelectMessageToggle(message.id) },
-                        isFirstMessage = isFirstMessage,
-                        currentGreetingIndex = currentGreetingIndex,
-                        totalGreetingsCount = greetings.size,
-                        onGreetingSwipe = { index ->
-                            if (index in greetings.indices) {
-                                onEditMessage(message.id, greetings[index])
-                            }
-                        }
-                    )
                 }
             }
         }

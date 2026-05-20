@@ -190,21 +190,51 @@ class ChatRepository(private val database: LocalTavernDB) {
         queries.updateDarkMode(if (isDarkMode) 1L else 0L)
     }
 
+    suspend fun getSessionById(id: Long): ChatSession? = withContext(Dispatchers.IO) {
+        queries.selectSessionById(id).executeAsOneOrNull()
+    }
+
     suspend fun getOrCreateSession(characterId: Long, personaId: Long): Long = withContext(Dispatchers.IO) {
         val session = queries.selectLastSessionForCharacter(characterId).executeAsOneOrNull()
         session?.id ?: database.transactionWithResult {
-            queries.insertChatSession(characterId, personaId, null, currentTimeMillis())
+            queries.insertChatSession(characterId, personaId, null, currentTimeMillis(), null)
             queries.lastInsertId().executeAsOne()
         }
     }
 
     suspend fun getMessagesForSession(sessionId: Long): List<MessageEntity> = withContext(Dispatchers.IO) {
-        queries.selectMessagesBySession(sessionId).executeAsList()
+        queries.selectActiveTimeline(sessionId).executeAsList()
     }
 
-    suspend fun insertMessage(sessionId: Long, role: String, content: String): Long = withContext(Dispatchers.IO) {
+    suspend fun getMessageSiblings(sessionId: Long, parentId: Long?): List<MessageEntity> = withContext(Dispatchers.IO) {
+        queries.selectSiblings(sessionId, parentId).executeAsList()
+    }
+
+    suspend fun updateSessionCurrentMessage(sessionId: Long, messageId: Long) = withContext(Dispatchers.IO) {
+        queries.updateSessionCurrentMessage(messageId, currentTimeMillis(), sessionId)
+    }
+
+    suspend fun selectVariation(sessionId: Long, messageId: Long, parentId: Long?) = withContext(Dispatchers.IO) {
+        database.transaction {
+            queries.activateMessage(messageId)
+            queries.deactivateSiblings(sessionId, parentId, messageId)
+            queries.updateSessionCurrentMessage(messageId, currentTimeMillis(), sessionId)
+        }
+    }
+
+    suspend fun insertMessage(sessionId: Long, role: String, content: String, parentId: Long?): Long = withContext(Dispatchers.IO) {
         database.transactionWithResult {
-            queries.insertMessage(sessionId, role, content, currentTimeMillis())
+            queries.insertMessageWithParent(sessionId, role, content, currentTimeMillis(), parentId, 1L)
+            val newId = queries.lastInsertId().executeAsOne()
+            queries.deactivateSiblings(sessionId, parentId, newId)
+            queries.updateSessionCurrentMessage(newId, currentTimeMillis(), sessionId)
+            newId
+        }
+    }
+
+    suspend fun insertMessageRaw(sessionId: Long, role: String, content: String, parentId: Long?, isActivePath: Boolean): Long = withContext(Dispatchers.IO) {
+        database.transactionWithResult {
+            queries.insertMessageWithParent(sessionId, role, content, currentTimeMillis(), parentId, if (isActivePath) 1L else 0L)
             queries.lastInsertId().executeAsOne()
         }
     }
@@ -227,7 +257,7 @@ class ChatRepository(private val database: LocalTavernDB) {
                 queries.insertPromptBlock("description", "Character Description", "Character Info:\n{{character_description}}", 1L, 0L, initialOrder++)
                 queries.insertPromptBlock("personality", "Personality", "Personality:\n{{personality}}", 1L, 0L, initialOrder++)
                 queries.insertPromptBlock("scenario", "Scenario", "Scenario:\n{{scenario}}", 1L, 0L, initialOrder++)
-                queries.insertPromptBlock("chat_history", "Chat History", "{{chat_history}}", 1L, 0L, initialOrder++)
+                queries.insertPromptBlock("chat_history", "Chat History", "{{chat_history}}", 1L, 0L, initialOrder)
             }
             queries.selectAllPromptBlocks().executeAsList()
         }

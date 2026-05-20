@@ -12,6 +12,8 @@ CREATE TABLE CharacterEntity (
     isAssistant INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE INDEX IF NOT EXISTS idx_character_assistant ON CharacterEntity(isAssistant);
+
 insertCharacter:
 INSERT INTO CharacterEntity(name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
@@ -47,28 +49,13 @@ CREATE TABLE PersonaEntity (
     avatarData BLOB
 );
 
-CREATE TABLE ChatSession (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    characterId INTEGER NOT NULL,
-    personaId INTEGER NOT NULL,
-    title TEXT,
-    lastTimestamp INTEGER NOT NULL
-);
-
-CREATE TABLE MessageEntity (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sessionId INTEGER NOT NULL,
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    timestamp INTEGER NOT NULL
-);
-
 insertPersona:
 INSERT INTO PersonaEntity(name, description, avatarData) VALUES (?, ?, ?);
 
 selectAllPersonas:
 SELECT * FROM PersonaEntity ORDER BY name ASC;
 
+selectPersonaById:
 SELECT * FROM PersonaEntity WHERE id = ?;
 
 updatePersona:
@@ -81,24 +68,63 @@ WHERE id = ?;
 deletePersona:
 DELETE FROM PersonaEntity WHERE id = ?;
 
-selectMessagesBySession:
-SELECT * FROM MessageEntity WHERE sessionId = ?
-ORDER BY timestamp ASC;
+CREATE TABLE ChatSession (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    characterId INTEGER NOT NULL,
+    personaId INTEGER NOT NULL,
+    title TEXT,
+    lastTimestamp INTEGER NOT NULL,
+    currentMessageId INTEGER
+);
 
-insertMessage:
-INSERT INTO MessageEntity(sessionId, role, content, timestamp) VALUES (?, ?, ?, ?);
+CREATE INDEX IF NOT EXISTS idx_session_character_time ON ChatSession(characterId, lastTimestamp DESC);
+
+selectSessionById:
+SELECT * FROM ChatSession WHERE id = ?;
+
+insertChatSession:
+INSERT INTO ChatSession(characterId, personaId, title, lastTimestamp, currentMessageId) VALUES (?, ?, ?, ?, ?);
+
+updateSessionCurrentMessage:
+UPDATE ChatSession SET currentMessageId = ?, lastTimestamp = ? WHERE id = ?;
+
+selectLastSessionForCharacter:
+SELECT * FROM ChatSession WHERE characterId = ? ORDER BY lastTimestamp DESC LIMIT 1;
+
+CREATE TABLE MessageEntity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sessionId INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    parentId INTEGER,
+    isActivePath INTEGER NOT NULL DEFAULT 1
+);
+
+-- Targeted compound indices for sub-millisecond timeline rendering and sibling fetching
+CREATE INDEX IF NOT EXISTS idx_message_active_timeline ON MessageEntity(sessionId, isActivePath, timestamp ASC);
+CREATE INDEX IF NOT EXISTS idx_message_siblings ON MessageEntity(sessionId, parentId, timestamp ASC);
+
+selectActiveTimeline:
+SELECT * FROM MessageEntity WHERE sessionId = ? AND isActivePath = 1 ORDER BY timestamp ASC;
+
+selectSiblings:
+SELECT * FROM MessageEntity WHERE sessionId = ? AND parentId IS ? ORDER BY timestamp ASC;
+
+insertMessageWithParent:
+INSERT INTO MessageEntity(sessionId, role, content, timestamp, parentId, isActivePath) VALUES (?, ?, ?, ?, ?, ?);
+
+deactivateSiblings:
+UPDATE MessageEntity SET isActivePath = 0 WHERE sessionId = ? AND parentId IS ? AND id != ?;
+
+activateMessage:
+UPDATE MessageEntity SET isActivePath = 1 WHERE id = ?;
 
 updateMessageContent:
 UPDATE MessageEntity SET content = ? WHERE id = ?;
 
 deleteMessage:
 DELETE FROM MessageEntity WHERE id = ?;
-
-selectLastSessionForCharacter:
-SELECT * FROM ChatSession WHERE characterId = ? ORDER BY lastTimestamp DESC LIMIT 1;
-
-insertChatSession:
-INSERT INTO ChatSession(characterId, personaId, title, lastTimestamp) VALUES (?, ?, ?, ?);
 
 CREATE TABLE ApiConnection (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,7 +194,6 @@ SELECT * FROM ApiConnection ORDER BY lastUsed DESC LIMIT 1;
 updateApiConnectionDisplayOrder:
 UPDATE ApiConnection SET displayOrder = ? WHERE id = ?;
 
--- App Settings
 CREATE TABLE AppSettings (
     id INTEGER PRIMARY KEY CHECK (id = 1) DEFAULT 1,
     isDarkMode INTEGER NOT NULL DEFAULT 1,

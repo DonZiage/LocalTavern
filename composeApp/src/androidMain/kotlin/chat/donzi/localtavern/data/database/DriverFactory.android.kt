@@ -6,6 +6,12 @@ import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 
 actual class DriverFactory(private val context: Context) {
     actual fun createDriver(): SqlDriver {
-        return AndroidSqliteDriver(LocalTavernDB.Schema, context, "localtavern.db")
+        val driver = AndroidSqliteDriver(LocalTavernDB.Schema, context, "localtavern.db")
+
+        driver.execute(null, "PRAGMA journal_mode=WAL;", 0)
+
+        driver.execute(null, "PRAGMA busy_timeout=5000;", 0)
+
+        return driver
     }
 }

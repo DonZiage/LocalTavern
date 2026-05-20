@@ -5,6 +5,12 @@ import app.cash.sqldelight.driver.native.NativeSqliteDriver
 
 actual class DriverFactory {
     actual fun createDriver(): SqlDriver {
-        return NativeSqliteDriver(LocalTavernDB.Schema, "localtavern.db")
+        val driver = NativeSqliteDriver(LocalTavernDB.Schema, "localtavern.db")
+
+        driver.execute(null, "PRAGMA journal_mode=WAL;", 0)
+
+        driver.execute(null, "PRAGMA busy_timeout=5000;", 0)
+
+        return driver
     }
 }

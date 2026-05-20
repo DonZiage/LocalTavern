@@ -17,8 +17,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
@@ -121,10 +119,9 @@ fun MessageBubble(
     isSelectMode: Boolean = false,
     isSelected: Boolean = false,
     onSelectToggle: () -> Unit = {},
-    isFirstMessage: Boolean = false,
-    currentGreetingIndex: Int = 0,
-    totalGreetingsCount: Int = 1,
-    onGreetingSwipe: (Int) -> Unit = {}
+    isSwipeable: Boolean = false,
+    onSwipeLeft: () -> Unit = {},
+    onSwipeRight: () -> Unit = {}
 ) {
     var isEditing by remember { mutableStateOf(false) }
     var editedTextValue by remember(content) {
@@ -251,17 +248,15 @@ fun MessageBubble(
                 )
                 .let { modifier -> if (!isUser) modifier.animateContentSize() else modifier }
                 .let { modifier ->
-                    if (isFirstMessage && totalGreetingsCount > 1) {
-                        modifier.pointerInput(currentGreetingIndex, totalGreetingsCount) {
+                    if (isSwipeable) {
+                        modifier.pointerInput(Unit) {
                             var totalDrag = 0f
                             detectHorizontalDragGestures(
                                 onDragEnd = {
-                                    if (totalDrag > 100f) { // Swiped Right
-                                        val prevIdx = if (currentGreetingIndex <= 0) totalGreetingsCount - 1 else currentGreetingIndex - 1
-                                        onGreetingSwipe(prevIdx)
-                                    } else if (totalDrag < -100f) { // Swiped Left
-                                        val nextIdx = if (currentGreetingIndex >= totalGreetingsCount - 1) 0 else currentGreetingIndex + 1
-                                        onGreetingSwipe(nextIdx)
+                                    if (totalDrag > 80f) {
+                                        onSwipeRight()
+                                    } else if (totalDrag < -80f) {
+                                        onSwipeLeft()
                                     }
                                     totalDrag = 0f
                                 },
@@ -330,60 +325,12 @@ fun MessageBubble(
                     }
                 }
             } else {
-                Column {
-                    Text(
-                        text = annotatedContent,
-                        color = textColor,
-                        fontSize = 16.sp,
-                        lineHeight = 22.sp
-                    )
-
-                    if (isFirstMessage && totalGreetingsCount > 1) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            IconButton(
-                                onClick = {
-                                    val prevIdx = if (currentGreetingIndex <= 0) totalGreetingsCount - 1 else currentGreetingIndex - 1
-                                    onGreetingSwipe(prevIdx)
-                                },
-                                modifier = Modifier.size(24.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "Previous Greeting",
-                                    tint = textColor.copy(alpha = 0.7f),
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-
-                            Text(
-                                text = "${currentGreetingIndex + 1} / $totalGreetingsCount",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = textColor.copy(alpha = 0.7f),
-                                modifier = Modifier.padding(horizontal = 8.dp)
-                            )
-
-                            IconButton(
-                                onClick = {
-                                    val nextIdx = if (currentGreetingIndex >= totalGreetingsCount - 1) 0 else currentGreetingIndex + 1
-                                    onGreetingSwipe(nextIdx)
-                                },
-                                modifier = Modifier.size(24.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                    contentDescription = "Next Greeting",
-                                    tint = textColor.copy(alpha = 0.7f),
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                        }
-                    }
-                }
+                Text(
+                    text = annotatedContent,
+                    color = textColor,
+                    fontSize = 16.sp,
+                    lineHeight = 22.sp
+                )
             }
         }
 

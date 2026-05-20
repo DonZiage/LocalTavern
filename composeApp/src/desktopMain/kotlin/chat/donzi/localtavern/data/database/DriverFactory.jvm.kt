@@ -16,6 +16,11 @@ actual class DriverFactory {
             LocalTavernDB.Schema.create(driver)
         } catch (_: Exception) {
         }
+
+        driver.execute(null, "PRAGMA journal_mode=WAL;", 0)
+
+        driver.execute(null, "PRAGMA busy_timeout=5000;", 0)
+
         return driver
     }
 }
