@@ -17,12 +17,16 @@ import chat.donzi.localtavern.data.database.MessageEntity
 @Composable
 fun ChatArea(
     activeCharacter: CharacterEntity?,
-    activePersonaAvatar: ByteArray?, // Added parameter for user persona avatar data
+    activePersonaAvatar: ByteArray?,
     messages: List<MessageEntity>,
     onSendMessage: (String) -> Unit,
     onEditMessage: (Long, String) -> Unit,
     onDeleteMessage: (Long) -> Unit,
-    onRegenerate: () -> Unit
+    onRegenerate: () -> Unit,
+    isSelectMode: Boolean = false,
+    selectedMessageIds: Set<Long> = emptySet(),
+    onSelectMessageToggle: (Long) -> Unit = {},
+    onEnterSelectMode: () -> Unit = {}
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         if (activeCharacter == null && messages.isEmpty()) {
@@ -77,7 +81,6 @@ fun ChatArea(
             ) {
                 items(messages.reversed()) { message ->
                     val isUserMessage = message.role == "user"
-                    // Resolve avatar selection depending on whether the role is "user" or "assistant"
                     val currentAvatar = if (isUserMessage) {
                         activePersonaAvatar
                     } else {
@@ -89,16 +92,23 @@ fun ChatArea(
                         isUser = isUserMessage,
                         onEdit = { newContent -> onEditMessage(message.id, newContent) },
                         onDelete = { onDeleteMessage(message.id) },
-                        avatarData = currentAvatar // Passed resolved picture down here
+                        avatarData = currentAvatar,
+                        isSelectMode = isSelectMode,
+                        isSelected = selectedMessageIds.contains(message.id),
+                        onSelectToggle = { onSelectMessageToggle(message.id) }
                     )
                 }
             }
         }
 
-        ChatInputBar(
-            onSendMessage = onSendMessage,
-            onRegenerate = onRegenerate,
-            canRegenerate = messages.any { it.role == "user" }
-        )
+        if (!isSelectMode) {
+            ChatInputBar(
+                onSendMessage = onSendMessage,
+                onRegenerate = onRegenerate,
+                canRegenerate = messages.any { it.role == "user" },
+                onEnterSelectMode = onEnterSelectMode,
+                canDelete = messages.isNotEmpty()
+            )
+        }
     }
 }

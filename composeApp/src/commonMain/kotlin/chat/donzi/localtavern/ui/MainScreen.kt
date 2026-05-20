@@ -10,6 +10,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.data.database.ChatRepository
 import chat.donzi.localtavern.data.database.CharacterEntity
@@ -54,9 +55,11 @@ fun MainScreen(
     var messages by remember { mutableStateOf(emptyList<MessageEntity>()) }
     val coroutineScope = rememberCoroutineScope()
 
+    var isSelectMode by remember { mutableStateOf(false) }
+    var selectedMessageIds by remember { mutableStateOf(setOf<Long>()) }
+
     var editingCharacter by remember { mutableStateOf<CharacterEntity?>(null) }
 
-    // Retain a non-null reference to the character cache data to sustain the view tree safely while sliding out
     var lastEditingCharacter by remember { mutableStateOf<CharacterEntity?>(null) }
     LaunchedEffect(editingCharacter) {
         if (editingCharacter != null) {
@@ -75,7 +78,6 @@ fun MainScreen(
         }
     }
 
-    // Resolve the active persona entity to extract its image payload safely
     val activePersona = remember(personas, activePersonaId) {
         personas.find { it.id == activePersonaId }
     }
@@ -91,6 +93,8 @@ fun MainScreen(
     }
 
     LaunchedEffect(activeCharacter, activePersonaId) {
+        isSelectMode = false
+        selectedMessageIds = emptySet()
         if (activePersonaId != null) {
             if (activeCharacter != null) {
                 val sessionId = chatRepository.getOrCreateSession(activeCharacter!!.id, activePersonaId)
@@ -116,18 +120,13 @@ fun MainScreen(
                 var fullResponse = ""
                 var receivedFirstToken = false
 
-                // 1. Fetch entire history log from DB
                 val dbMessages = chatRepository.getMessagesForSession(sessionId)
-
-                // 2. Filter out the ongoing active placeholder message so it doesn't feed back into context
                 val chatHistory = dbMessages
                     .filter { it.id != aiMessageId }
                     .map { ChatMessage(role = it.role, content = it.content) }
 
-                // 3. Load active building blocks configuration
                 val blocks = chatRepository.getAllPromptBlocks().map { it.toDomain() }
 
-                // 5. Package the managed, budget-compliant context window sequence
                 val messagesPayload = ContextManager.buildPayload(
                     blocks = blocks,
                     character = activeCharacter,
@@ -195,45 +194,109 @@ fun MainScreen(
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             topBar = {
-                TopAppBar(
-                    title = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(activeCharacter?.name ?: "LocalTavern")
-                            if (activeCharacter != null) {
-                                IconButton(onClick = { editingCharacter = activeCharacter }) {
-                                    Icon(
-                                        Icons.Default.Edit,
-                                        contentDescription = "Edit Character",
-                                        modifier = Modifier.size(18.dp)
-                                    )
+                if (isSelectMode) {
+                    TopAppBar(
+                        title = {
+                            Text(
+                                text = if (selectedMessageIds.isEmpty()) "Select Messages" else "${selectedMessageIds.size} Selected",
+                                style = MaterialTheme.typography.titleLarge
+                            )
+                        },
+                        actions = {
+                            OutlinedButton(
+                                onClick = {
+                                    isSelectMode = false
+                                    selectedMessageIds = emptySet()
+                                },
+                                modifier = Modifier.height(36.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                            ) {
+                                Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Cancel", style = MaterialTheme.typography.labelLarge)
+                            }
+
+                            Spacer(modifier = Modifier.width(12.dp))
+
+                            Button(
+                                onClick = {
+                                    coroutineScope.launch {
+                                        for (id in selectedMessageIds) {
+                                            chatRepository.deleteMessage(id)
+                                        }
+                                        isSelectMode = false
+                                        selectedMessageIds = emptySet()
+                                        refreshMessages()
+                                    }
+                                },
+                                enabled = selectedMessageIds.isNotEmpty(),
+                                modifier = Modifier.height(36.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFD32F2F),
+                                    contentColor = Color.White
+                                ),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Delete", style = MaterialTheme.typography.labelLarge)
+                            }
+
+                            Spacer(modifier = Modifier.width(12.dp))
+
+                            IconButton(
+                                onClick = {
+                                    isSelectMode = false
+                                    selectedMessageIds = emptySet()
+                                },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Close")
+                            }
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                    )
+                } else {
+                    TopAppBar(
+                        title = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(activeCharacter?.name ?: "LocalTavern")
+                                if (activeCharacter != null) {
+                                    IconButton(onClick = { editingCharacter = activeCharacter }) {
+                                        Icon(
+                                            Icons.Default.Edit,
+                                            contentDescription = "Edit Character",
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
                                 }
                             }
-                        }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = { onActiveDrawerChange(ActiveDrawer.Settings) }) {
-                            Icon(Icons.Filled.Menu, contentDescription = "Settings")
-                        }
-                    },
-                    actions = {
-                        if (activeCharacter != null) {
-                            IconButton(onClick = {
-                                activeCharacter = null
-                            }) {
-                                Icon(Icons.Filled.Close, contentDescription = "Close Chat")
+                        },
+                        navigationIcon = {
+                            IconButton(onClick = { onActiveDrawerChange(ActiveDrawer.Settings) }) {
+                                Icon(Icons.Filled.Menu, contentDescription = "Settings")
+                            }
+                        },
+                        actions = {
+                            if (activeCharacter != null) {
+                                IconButton(onClick = {
+                                    activeCharacter = null
+                                }) {
+                                    Icon(Icons.Filled.Close, contentDescription = "Close Chat")
+                                }
+                            }
+                            IconButton(onClick = { onActiveDrawerChange(ActiveDrawer.Characters) }) {
+                                Icon(Icons.Filled.Person, contentDescription = "Characters")
                             }
                         }
-                        IconButton(onClick = { onActiveDrawerChange(ActiveDrawer.Characters) }) {
-                            Icon(Icons.Filled.Person, contentDescription = "Characters")
-                        }
-                    }
-                )
+                    )
+                }
             }
         ) { paddingValues ->
             Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
                 ChatArea(
                     activeCharacter = activeCharacter,
-                    activePersonaAvatar = activePersona?.avatarData, // Passed user persona avatar data
+                    activePersonaAvatar = activePersona?.avatarData,
                     messages = messages,
                     onSendMessage = onSendMessage,
                     onEditMessage = { id, newContent ->
@@ -266,6 +329,18 @@ fun MainScreen(
                                 refreshMessages()
                             }
                         }
+                    },
+                    isSelectMode = isSelectMode,
+                    selectedMessageIds = selectedMessageIds,
+                    onSelectMessageToggle = { id ->
+                        val index = messages.indexOfFirst { it.id == id }
+                        if (index != -1) {
+                            selectedMessageIds = messages.subList(index, messages.size).map { it.id }.toSet()
+                        }
+                    },
+                    onEnterSelectMode = {
+                        isSelectMode = true
+                        selectedMessageIds = emptySet()
                     }
                 )
             }

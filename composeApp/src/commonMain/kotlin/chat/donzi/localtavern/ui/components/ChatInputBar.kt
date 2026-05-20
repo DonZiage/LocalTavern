@@ -17,7 +17,9 @@ import androidx.compose.ui.unit.dp
 fun ChatInputBar(
     onSendMessage: (String) -> Unit,
     onRegenerate: () -> Unit,
-    canRegenerate: Boolean
+    canRegenerate: Boolean,
+    onEnterSelectMode: () -> Unit,
+    canDelete: Boolean
 ) {
     var text by remember { mutableStateOf("") }
     var showMenu by remember { mutableStateOf(false) }
@@ -43,7 +45,9 @@ fun ChatInputBar(
                 expanded = showMenu,
                 onDismissRequest = { showMenu = false },
                 onRegenerate = onRegenerate,
-                canRegenerate = canRegenerate
+                canRegenerate = canRegenerate,
+                onEnterSelectMode = onEnterSelectMode,
+                canDelete = canDelete
             )
         }
 
@@ -54,13 +58,13 @@ fun ChatInputBar(
             modifier = Modifier
                 .weight(1f)
                 .onPreviewKeyEvent { event ->
-                    if (event.type == KeyEventType.KeyDown && 
+                    if (event.type == KeyEventType.KeyDown &&
                         (event.key == Key.Enter || event.key == Key.NumPadEnter)) {
                         if (event.isShiftPressed) {
-                            false // Allow newline
+                            false
                         } else {
                             handleSend()
-                            true // Consumed
+                            true
                         }
                     } else {
                         false

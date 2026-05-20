@@ -43,12 +43,10 @@ import coil3.compose.AsyncImage
 
 @Composable
 fun parseMarkdownToAnnotatedString(text: String, defaultColor: Color): AnnotatedString {
-    // Resolve the Composable theme value safely here outside the text building block
     val codeBackgroundColor = MaterialTheme.colorScheme.surfaceVariant
 
     return remember(text, defaultColor, codeBackgroundColor) {
         buildAnnotatedString {
-            // Sequential Markdown token matching (Inline Code, Bold Italic, Bold, Italic/Narration)
             val pattern = """(`[^`\n]+`|\*\*\*[^*]+\*\*\*|\*\*[^*]+\*\*|\*[^*]+\*|_[^_]+_)""".toRegex()
             var lastIndex = 0
 
@@ -111,7 +109,10 @@ fun MessageBubble(
     onDelete: () -> Unit = {},
     onAddImage: () -> Unit = {},
     onBranch: () -> Unit = {},
-    avatarData: ByteArray? = null
+    avatarData: ByteArray? = null,
+    isSelectMode: Boolean = false,
+    isSelected: Boolean = false,
+    onSelectToggle: () -> Unit = {}
 ) {
     var isEditing by remember { mutableStateOf(false) }
     var editedTextValue by remember(content) {
@@ -126,7 +127,7 @@ fun MessageBubble(
     val interactionSource = remember { MutableInteractionSource() }
     val isHovered by interactionSource.collectIsHoveredAsState()
 
-    val actionsVisible = (isHovered || showActionsOnMobile || showMenu) && !isEditing
+    val actionsVisible = (isHovered || showActionsOnMobile || showMenu) && !isEditing && !isSelectMode
 
     LaunchedEffect(isEditing) {
         if (isEditing) {
@@ -148,20 +149,45 @@ fun MessageBubble(
 
     val annotatedContent = parseMarkdownToAnnotatedString(text = content, defaultColor = textColor)
 
+    val rowBgColor = if (isSelectMode && isSelected) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+    } else {
+        Color.Transparent
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .background(rowBgColor)
             .padding(horizontal = 8.dp, vertical = 4.dp)
             .hoverable(interactionSource)
             .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-                onClick = { showActionsOnMobile = false },
-                onLongClick = { showActionsOnMobile = !showActionsOnMobile }
+                onClick = {
+                    if (isSelectMode) {
+                        onSelectToggle()
+                    } else {
+                        showActionsOnMobile = false
+                    }
+                },
+                onLongClick = {
+                    if (!isSelectMode) {
+                        showActionsOnMobile = !showActionsOnMobile
+                    }
+                }
             ),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (isSelectMode) {
+            Checkbox(
+                checked = isSelected,
+                onCheckedChange = { onSelectToggle() },
+                modifier = Modifier.padding(end = 8.dp)
+            )
+        }
+
         if (isUser) {
             MessageActions(
                 visible = actionsVisible,
@@ -211,7 +237,8 @@ fun MessageBubble(
                     color = bubbleColor,
                     shape = RoundedCornerShape(16.dp)
                 )
-                .animateContentSize()
+                // Fix: Only animate size transitions for streaming character/assistant responses
+                .let { if (!isUser) it.animateContentSize() else it }
                 .padding(12.dp)
                 .widthIn(max = 460.dp)
         ) {
@@ -321,7 +348,6 @@ fun MessageBubble(
         }
     }
 
-    // Direct image viewer overlay mapping exactly to the custom viewer implementation
     val currentAvatar = avatarData
     if (showFullImage && currentAvatar != null) {
         FullscreenImageViewer(avatarData = currentAvatar, onDismiss = { showFullImage = false })
