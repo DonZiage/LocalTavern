@@ -8,6 +8,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -16,7 +17,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,6 +34,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.*
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -112,7 +120,11 @@ fun MessageBubble(
     avatarData: ByteArray? = null,
     isSelectMode: Boolean = false,
     isSelected: Boolean = false,
-    onSelectToggle: () -> Unit = {}
+    onSelectToggle: () -> Unit = {},
+    isFirstMessage: Boolean = false,
+    currentGreetingIndex: Int = 0,
+    totalGreetingsCount: Int = 1,
+    onGreetingSwipe: (Int) -> Unit = {}
 ) {
     var isEditing by remember { mutableStateOf(false) }
     var editedTextValue by remember(content) {
@@ -237,7 +249,30 @@ fun MessageBubble(
                     color = bubbleColor,
                     shape = RoundedCornerShape(16.dp)
                 )
-                .let { if (!isUser) it.animateContentSize() else it }
+                .let { modifier -> if (!isUser) modifier.animateContentSize() else modifier }
+                .let { modifier ->
+                    if (isFirstMessage && totalGreetingsCount > 1) {
+                        modifier.pointerInput(currentGreetingIndex, totalGreetingsCount) {
+                            var totalDrag = 0f
+                            detectHorizontalDragGestures(
+                                onDragEnd = {
+                                    if (totalDrag > 100f) { // Swiped Right
+                                        val prevIdx = if (currentGreetingIndex <= 0) totalGreetingsCount - 1 else currentGreetingIndex - 1
+                                        onGreetingSwipe(prevIdx)
+                                    } else if (totalDrag < -100f) { // Swiped Left
+                                        val nextIdx = if (currentGreetingIndex >= totalGreetingsCount - 1) 0 else currentGreetingIndex + 1
+                                        onGreetingSwipe(nextIdx)
+                                    }
+                                    totalDrag = 0f
+                                },
+                                onDragCancel = { totalDrag = 0f },
+                                onHorizontalDrag = { _, dragAmount ->
+                                    totalDrag += dragAmount
+                                }
+                            )
+                        }
+                    } else modifier
+                }
                 .padding(12.dp)
                 .widthIn(max = 460.dp)
         ) {
@@ -295,12 +330,60 @@ fun MessageBubble(
                     }
                 }
             } else {
-                Text(
-                    text = annotatedContent,
-                    color = textColor,
-                    fontSize = 16.sp,
-                    lineHeight = 22.sp
-                )
+                Column {
+                    Text(
+                        text = annotatedContent,
+                        color = textColor,
+                        fontSize = 16.sp,
+                        lineHeight = 22.sp
+                    )
+
+                    if (isFirstMessage && totalGreetingsCount > 1) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            IconButton(
+                                onClick = {
+                                    val prevIdx = if (currentGreetingIndex <= 0) totalGreetingsCount - 1 else currentGreetingIndex - 1
+                                    onGreetingSwipe(prevIdx)
+                                },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "Previous Greeting",
+                                    tint = textColor.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+
+                            Text(
+                                text = "${currentGreetingIndex + 1} / $totalGreetingsCount",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = textColor.copy(alpha = 0.7f),
+                                modifier = Modifier.padding(horizontal = 8.dp)
+                            )
+
+                            IconButton(
+                                onClick = {
+                                    val nextIdx = if (currentGreetingIndex >= totalGreetingsCount - 1) 0 else currentGreetingIndex + 1
+                                    onGreetingSwipe(nextIdx)
+                                },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                    contentDescription = "Next Greeting",
+                                    tint = textColor.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -347,9 +430,8 @@ fun MessageBubble(
         }
     }
 
-    val currentAvatar = avatarData
-    if (showFullImage && currentAvatar != null) {
-        FullscreenImageViewer(avatarData = currentAvatar, onDismiss = { showFullImage = false })
+    if (showFullImage && avatarData != null) {
+        FullscreenImageViewer(avatarData = avatarData, onDismiss = { showFullImage = false })
     }
 }
 

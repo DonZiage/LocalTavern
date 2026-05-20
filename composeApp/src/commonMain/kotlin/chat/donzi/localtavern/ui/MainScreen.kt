@@ -99,6 +99,14 @@ fun MainScreen(
             if (activeCharacter != null) {
                 val sessionId = chatRepository.getOrCreateSession(activeCharacter!!.id, activePersonaId)
                 activeSessionId = sessionId
+
+                val currentMessages = chatRepository.getMessagesForSession(sessionId)
+                if (currentMessages.isEmpty()) {
+                    val firstMsg = activeCharacter!!.firstMes
+                    if (!firstMsg.isNullOrBlank()) {
+                        chatRepository.insertMessage(sessionId, "assistant", firstMsg)
+                    }
+                }
                 messages = chatRepository.getMessagesForSession(sessionId)
             } else {
                 activeSessionId = null
@@ -183,9 +191,16 @@ fun MainScreen(
                 val sessionId = chatRepository.getOrCreateSession(currentActiveCharacter.id, activePersonaId)
                 activeSessionId = sessionId
 
+                val currentMessages = chatRepository.getMessagesForSession(sessionId)
+                if (currentMessages.isEmpty()) {
+                    val firstMsg = currentActiveCharacter.firstMes
+                    if (!firstMsg.isNullOrBlank()) {
+                        chatRepository.insertMessage(sessionId, "assistant", firstMsg)
+                    }
+                }
+
                 chatRepository.insertMessage(sessionId, "user", userMessage)
                 refreshMessages()
-
                 requestAiResponse(sessionId)
             }
         }
@@ -398,6 +413,13 @@ fun MainScreen(
                         onClose = { editingCharacter = null },
                         onSave = { name, desc, personality, scenario, firstMes, mesExample, altGreetings, avatarData ->
                             coroutineScope.launch {
+                                val oldCharacter = chatRepository.getCharacterById(targetCharacter.id)
+                                val oldGreetings = mutableListOf<String>()
+                                if (oldCharacter != null) {
+                                    if (!oldCharacter.firstMes.isNullOrBlank()) oldGreetings.add(oldCharacter.firstMes)
+                                    oldCharacter.altGreetings?.split("|||")?.filter { it.isNotBlank() }?.let { oldGreetings.addAll(it) }
+                                }
+
                                 chatRepository.updateCharacter(
                                     id = targetCharacter.id,
                                     name = name,
@@ -410,9 +432,34 @@ fun MainScreen(
                                     avatarData = avatarData
                                 )
                                 refreshData()
+
+                                val newCharacter = chatRepository.getCharacterById(targetCharacter.id)
                                 if (activeCharacter?.id == targetCharacter.id) {
-                                    activeCharacter = chatRepository.getCharacterById(targetCharacter.id)
+                                    activeCharacter = newCharacter
                                 }
+
+                                activeSessionId?.let { sessionId ->
+                                    val sessionMessages = chatRepository.getMessagesForSession(sessionId)
+                                    if (sessionMessages.isNotEmpty()) {
+                                        val firstMsg = sessionMessages.first()
+                                        if (firstMsg.role == "assistant" && newCharacter != null) {
+                                            val newGreetings = mutableListOf<String>()
+                                            if (firstMes.isNotBlank()) newGreetings.add(firstMes)
+                                            newGreetings.addAll(altGreetings.filter { it.isNotBlank() })
+                                            if (newGreetings.isEmpty()) newGreetings.add("")
+
+                                            val oldIdx = oldGreetings.indexOf(firstMsg.content)
+                                            if (oldIdx != -1 && oldIdx < newGreetings.size) {
+                                                chatRepository.updateMessageContent(firstMsg.id, newGreetings[oldIdx])
+                                            } else if (oldIdx == -1) {
+                                                if (firstMsg.content == oldCharacter?.firstMes) {
+                                                    chatRepository.updateMessageContent(firstMsg.id, newGreetings.first())
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                refreshMessages()
                             }
                         },
                         onDelete = {

@@ -87,6 +87,25 @@ fun ChatArea(
                         activeCharacter?.avatarData
                     }
 
+                    val isFirstMessage = activeCharacter != null && messages.firstOrNull()?.id == message.id && !isUserMessage
+
+                    val greetings = remember(activeCharacter) {
+                        val list = mutableListOf<String>()
+                        activeCharacter?.let {
+                            if (!it.firstMes.isNullOrBlank()) list.add(it.firstMes)
+                            it.altGreetings?.split("|||")?.filter { g -> g.isNotBlank() }?.let { alt ->
+                                list.addAll(alt)
+                            }
+                        }
+                        if (list.isEmpty()) list.add("")
+                        list
+                    }
+
+                    val currentGreetingIndex = if (isFirstMessage) {
+                        val idx = greetings.indexOf(message.content)
+                        if (idx != -1) idx else 0
+                    } else 0
+
                     MessageBubble(
                         content = message.content,
                         isUser = isUserMessage,
@@ -95,7 +114,15 @@ fun ChatArea(
                         avatarData = currentAvatar,
                         isSelectMode = isSelectMode,
                         isSelected = selectedMessageIds.contains(message.id),
-                        onSelectToggle = { onSelectMessageToggle(message.id) }
+                        onSelectToggle = { onSelectMessageToggle(message.id) },
+                        isFirstMessage = isFirstMessage,
+                        currentGreetingIndex = currentGreetingIndex,
+                        totalGreetingsCount = greetings.size,
+                        onGreetingSwipe = { index ->
+                            if (index in greetings.indices) {
+                                onEditMessage(message.id, greetings[index])
+                            }
+                        }
                     )
                 }
             }
