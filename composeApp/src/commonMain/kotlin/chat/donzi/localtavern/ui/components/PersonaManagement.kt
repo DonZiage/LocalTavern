@@ -1,10 +1,8 @@
 package chat.donzi.localtavern.ui.components
 
-import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -15,13 +13,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.zIndex
+import androidx.compose.ui.window.Dialog // Added for full screen modal popup behavior
 import chat.donzi.localtavern.data.database.PersonaEntity
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import chat.donzi.localtavern.utils.DefaultTokenizer
@@ -75,36 +72,38 @@ fun PersonaManagement(
         }
     )
 
-    AnimatedPersonaEditOverlay(
-        visible = showAddDialog,
-        title = "Add Persona",
-        initialName = "",
-        initialDescription = "",
-        initialAvatar = null,
-        onDismiss = { showAddDialog = false },
-        onSave = { name, desc, avatar ->
-            onPersonaAdd(name, desc, avatar)
-            showAddDialog = false
-        }
-    )
+    // Conditional rendering matching ApiConnectionDialog patterns
+    if (showAddDialog) {
+        PersonaEditDialog(
+            title = "Add Persona",
+            initialName = "",
+            initialDescription = "",
+            initialAvatar = null,
+            onDismiss = { showAddDialog = false },
+            onSave = { name, desc, avatar ->
+                onPersonaAdd(name, desc, avatar)
+                showAddDialog = false
+            }
+        )
+    }
 
-    AnimatedPersonaEditOverlay(
-        visible = editingPersona != null,
-        title = "Edit Persona",
-        initialName = editingPersona?.name ?: "",
-        initialDescription = editingPersona?.description ?: "",
-        initialAvatar = editingPersona?.avatarData,
-        onDismiss = { editingPersona = null },
-        onSave = { name, desc, avatar ->
-            editingPersona?.let { onPersonaUpdate(it.id, name, desc, avatar) }
-            editingPersona = null
-        }
-    )
+    if (editingPersona != null) {
+        PersonaEditDialog(
+            title = "Edit Persona",
+            initialName = editingPersona?.name ?: "",
+            initialDescription = editingPersona?.description ?: "",
+            initialAvatar = editingPersona?.avatarData,
+            onDismiss = { editingPersona = null },
+            onSave = { name, desc, avatar ->
+                editingPersona?.let { onPersonaUpdate(it.id, name, desc, avatar) }
+                editingPersona = null
+            }
+        )
+    }
 }
 
 @Composable
-private fun AnimatedPersonaEditOverlay(
-    visible: Boolean,
+private fun PersonaEditDialog(
     title: String,
     initialName: String,
     initialDescription: String,
@@ -112,161 +111,137 @@ private fun AnimatedPersonaEditOverlay(
     onDismiss: () -> Unit,
     onSave: (String, String?, ByteArray?) -> Unit
 ) {
-    Box(modifier = Modifier.fillMaxSize().zIndex(200f)) {
-        AnimatedVisibility(
-            visible = visible,
-            enter = fadeIn(),
-            exit = fadeOut()
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.4f))
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = onDismiss
-                    )
-            )
-        }
+    var name by remember { mutableStateOf(initialName) }
+    var description by remember { mutableStateOf(initialDescription) }
+    var avatarData by remember { mutableStateOf(initialAvatar) }
 
-        AnimatedVisibility(
-            visible = visible,
-            enter = slideInVertically(initialOffsetY = { it / 2 }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { it / 2 }) + fadeOut(),
+    var showImageMenu by remember { mutableStateOf(false) }
+    var showFullImage by remember { mutableStateOf(false) }
+
+    // Initialized cleanly inside the dialog context
+    val pickImage = rememberImagePickerLauncher { bytes ->
+        avatarData = bytes
+    }
+
+    val totalPersonaTokens = remember(name, description) {
+        DefaultTokenizer.countTokens(name) + DefaultTokenizer.countTokens(description)
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
             modifier = Modifier
-                .align(Alignment.Center)
                 .padding(24.dp)
+                .widthIn(max = 480.dp)
                 .wrapContentSize()
         ) {
-            var name by remember(visible) { mutableStateOf(initialName) }
-            var description by remember(visible) { mutableStateOf(initialDescription) }
-            var avatarData by remember(visible) { mutableStateOf(initialAvatar) }
-
-            var showImageMenu by remember { mutableStateOf(false) }
-            var showFullImage by remember { mutableStateOf(false) }
-
-            val pickImage = rememberImagePickerLauncher { bytes ->
-                avatarData = bytes
-            }
-
-            val totalPersonaTokens = remember(name, description) {
-                DefaultTokenizer.countTokens(name) + DefaultTokenizer.countTokens(description)
-            }
-
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 6.dp,
-                modifier = Modifier.widthIn(max = 480.dp)
+            Column(
+                modifier = Modifier.padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Column(
-                    modifier = Modifier.padding(24.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Box {
+                    Box(
+                        modifier = Modifier
+                            .size(96.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f), CircleShape)
+                            .clickable { showImageMenu = true }
+                    ) {
+                        if (avatarData != null) {
+                            AsyncImage(
+                                model = avatarData,
+                                contentDescription = "Avatar",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.AddAPhoto,
+                                contentDescription = "Add Avatar Photo",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(28.dp).align(Alignment.Center)
+                            )
+                        }
+                    }
+
+                    AvatarDropdownMenu(
+                        expanded = showImageMenu,
+                        onDismissRequest = { showImageMenu = false },
+                        hasAvatar = avatarData != null,
+                        onAddOrUpdate = { pickImage() },
+                        onView = { showFullImage = true },
+                        onRemove = { avatarData = null }
+                    )
+                }
+
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Name", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        Text("${DefaultTokenizer.countTokens(name)} tokens", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                }
+
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Description", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        Text("${DefaultTokenizer.countTokens(description)} tokens", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedTextField(
+                        value = description,
+                        onValueChange = { description = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 3,
+                        maxLines = 5,
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.fillMaxWidth(),
-                        textAlign = TextAlign.Start
+                        text = "Total: $totalPersonaTokens Tokens",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
                     )
-
-                    Box {
-                        Box(
-                            modifier = Modifier
-                                .size(96.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.surfaceVariant)
-                                .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f), CircleShape)
-                                .clickable { showImageMenu = true }
-                        ) {
-                            if (avatarData != null) {
-                                AsyncImage(
-                                    model = avatarData,
-                                    contentDescription = "Avatar",
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Default.AddAPhoto,
-                                    contentDescription = "Add Avatar Photo",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(28.dp).align(Alignment.Center)
-                                )
-                            }
-                        }
-
-                        AvatarDropdownMenu(
-                            expanded = showImageMenu,
-                            onDismissRequest = { showImageMenu = false },
-                            hasAvatar = avatarData != null,
-                            onAddOrUpdate = { pickImage() },
-                            onView = { showFullImage = true },
-                            onRemove = { avatarData = null }
-                        )
-                    }
-
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Name", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                            Text("${DefaultTokenizer.countTokens(name)} tokens", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        OutlinedTextField(
-                            value = name,
-                            onValueChange = { name = it },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            shape = RoundedCornerShape(10.dp)
-                        )
-                    }
-
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Description", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                            Text("${DefaultTokenizer.countTokens(description)} tokens", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        OutlinedTextField(
-                            value = description,
-                            onValueChange = { description = it },
-                            modifier = Modifier.fillMaxWidth(),
-                            minLines = 3,
-                            maxLines = 5,
-                            shape = RoundedCornerShape(10.dp)
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    Spacer(modifier = Modifier.weight(1f))
+                    TextButton(onClick = onDismiss) { Text("Cancel") }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = { onSave(name, description.ifBlank { null }, avatarData) },
+                        enabled = name.isNotBlank(),
+                        shape = RoundedCornerShape(8.dp)
                     ) {
-                        Text(
-                            text = "Total: $totalPersonaTokens Tokens",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(modifier = Modifier.weight(1f))
-                        TextButton(onClick = onDismiss) { Text("Cancel") }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Button(
-                            onClick = { onSave(name, description.ifBlank { null }, avatarData) },
-                            enabled = name.isNotBlank(),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("Save")
-                        }
+                        Text("Save")
                     }
                 }
             }
+        }
 
-            if (showFullImage && avatarData != null) {
-                FullscreenImageViewer(avatarData = avatarData!!, onDismiss = { showFullImage = false })
-            }
+        if (showFullImage && avatarData != null) {
+            FullscreenImageViewer(avatarData = avatarData!!, onDismiss = { showFullImage = false })
         }
     }
 }
