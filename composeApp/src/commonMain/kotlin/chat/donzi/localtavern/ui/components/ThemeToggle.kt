@@ -39,7 +39,6 @@ fun ThemeToggle(
             checked = isDarkMode,
             onCheckedChange = { onToggleDarkMode(it, toggleOffset) },
             thumbContent = {
-                // Custom thumb content to keep the size constant
                 Box(modifier = Modifier.size(24.dp).background(Color.Transparent))
             },
             modifier = Modifier.onGloballyPositioned {

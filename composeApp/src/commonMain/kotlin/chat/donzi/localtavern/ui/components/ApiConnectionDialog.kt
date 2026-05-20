@@ -142,7 +142,6 @@ fun ApiConnectionDialog(
         }
     }
 
-    // Load initial model's provider into filter when models are loaded
     LaunchedEffect(allModels) {
         if (initialConnection != null && modelProviderFilter.isEmpty() && selectedModelFullId.isNotEmpty()) {
             val currentModel = allModels.find { it.id == selectedModelFullId }
@@ -152,12 +151,10 @@ fun ApiConnectionDialog(
         }
     }
 
-    // Reset model selection if provider filter changes and doesn't match
     LaunchedEffect(modelProviderFilter) {
         if (selectedModelFullId.isNotEmpty()) {
             val currentModel = allModels.find { it.id == selectedModelFullId }
             if (currentModel != null) {
-                // If filter is not "All" and doesn't match current model's provider
                 if (modelProviderFilter.isNotEmpty() && modelProviderFilter != currentModel.provider) {
                     selectedModelFullId = ""
                     modelSearch = ""
@@ -367,7 +364,6 @@ fun ApiConnectionDialog(
                                 }
                             }
 
-                            // Model Search & List
                             ExposedDropdownMenuBox(
                                 expanded = modelDropdownExpanded && filteredModels.isNotEmpty(),
                                 onExpandedChange = { modelDropdownExpanded = it }
@@ -457,7 +453,6 @@ fun ApiConnectionDialog(
             Button(
                 onClick = { 
                     val effectiveBaseUrl = if (isCloudInference) defaultUrls[selectedProvider] ?: baseUrl else baseUrl
-                    // Default Local to Text (isChatCompletion = false) and Cloud to Chat (isChatCompletion = true)
                     val defaultChatCompletion = isCloudInference
                     onSave(selectedProvider, name, effectiveBaseUrl, apiKey, selectedModelFullId, initialConnection?.isChatCompletion == 1L || (initialConnection == null && defaultChatCompletion))
                 },

@@ -15,7 +15,6 @@ import androidx.compose.ui.unit.dp
 fun AnimatedEllipsis(color: Color) {
     val infiniteTransition = rememberInfiniteTransition(label = "ellipsis")
 
-    // Helper component to avoid repeating the animation code for all three dots
     @Composable
     fun Dot(delayMillis: Int) {
         val offset by infiniteTransition.animateFloat(

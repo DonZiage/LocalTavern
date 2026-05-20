@@ -46,7 +46,6 @@ fun App(driverFactory: DriverFactory) {
     var activePersonaId by remember { mutableStateOf<Long?>(null) }
     var personas by remember { mutableStateOf(emptyList<PersonaEntity>()) }
 
-    // Use system theme configuration as a smart fallback to prevent initial layout flashing
     val systemDark = isSystemInDarkTheme()
     var isDarkMode by remember { mutableStateOf(systemDark) }
     var isInitialized by remember { mutableStateOf(false) }
@@ -57,7 +56,7 @@ fun App(driverFactory: DriverFactory) {
         coroutineScope.launch {
             var currentPersonas = chatRepository.getAllPersonas()
             if (currentPersonas.isEmpty()) {
-                chatRepository.insertPersona("User", "A mysterious traveler.", null)
+                chatRepository.insertPersona("User", "", null)
                 currentPersonas = chatRepository.getAllPersonas()
             }
             personas = currentPersonas
@@ -93,7 +92,6 @@ fun App(driverFactory: DriverFactory) {
     }
 
     if (!isInitialized) {
-        // Render a clean themed layout shell to eliminate unstyled system window blank frames
         LocalTavernTheme(darkTheme = isDarkMode) {
             Surface(
                 modifier = Modifier.fillMaxSize(),

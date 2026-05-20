@@ -237,7 +237,6 @@ fun MessageBubble(
                     color = bubbleColor,
                     shape = RoundedCornerShape(16.dp)
                 )
-                // Fix: Only animate size transitions for streaming character/assistant responses
                 .let { if (!isUser) it.animateContentSize() else it }
                 .padding(12.dp)
                 .widthIn(max = 460.dp)

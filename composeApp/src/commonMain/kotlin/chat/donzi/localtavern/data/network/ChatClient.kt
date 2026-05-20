@@ -137,7 +137,6 @@ class ChatClient(private val httpClient: HttpClient) {
         }
     }
 
-    // FIXED: Changed `prompt: String` parameter to `messages: List<ChatMessage>`
     fun streamChatRequest(
         baseUrl: String,
         apiKey: String,
@@ -154,7 +153,7 @@ class ChatClient(private val httpClient: HttpClient) {
                 setBody(buildJsonObject {
                     put("model", model)
                     put("stream", true)
-                    putChatMessages(isChatCompletion, messages) // FIXED: Passing messages list here
+                    putChatMessages(isChatCompletion, messages)
                 })
             }.execute { response ->
                 if (response.status != HttpStatusCode.OK) {
@@ -182,7 +181,6 @@ class ChatClient(private val httpClient: HttpClient) {
                                 emit(content)
                             }
                         } catch (_: Exception) {
-                            // Skip invalid lines
                         }
                     }
                 }

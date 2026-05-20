@@ -10,7 +10,6 @@ fun main() = application {
         onCloseRequest = ::exitApplication,
         title = "LocalTavern"
     ) {
-        // Creates the Desktop database driver
         val driverFactory = DriverFactory()
 
         App(driverFactory)

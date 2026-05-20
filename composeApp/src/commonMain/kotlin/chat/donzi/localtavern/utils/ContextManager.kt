@@ -23,7 +23,6 @@ object ContextManager {
         val activeBlocks = blocks.filter { it.isEnabled }
         val promptBuilder = StringBuilder()
 
-        // Turn the structural text list layout blocks back into human-readable raw contexts
         val parsedExamples = character?.mesExample?.split("|||")?.joinToString("\n") ?: ""
 
         for (block in activeBlocks) {

@@ -89,7 +89,6 @@ fun ApiConnectionSettings(
         activeConnection?.let { currentActive ->
             Spacer(modifier = Modifier.height(24.dp))
 
-            // PASS THE CHAT REPOSITORY INSTANCE HERE
             ParameterControls(
                 connection = currentActive,
                 repository = chatRepository,

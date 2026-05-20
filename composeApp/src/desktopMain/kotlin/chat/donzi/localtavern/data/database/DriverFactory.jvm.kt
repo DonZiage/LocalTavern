@@ -15,7 +15,6 @@ actual class DriverFactory {
         try {
             LocalTavernDB.Schema.create(driver)
         } catch (_: Exception) {
-            // Replaced 'e' with underscore to eliminate the unused variable warning
         }
         return driver
     }

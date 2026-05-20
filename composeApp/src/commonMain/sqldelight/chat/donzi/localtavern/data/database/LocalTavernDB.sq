@@ -12,7 +12,6 @@ CREATE TABLE CharacterEntity (
     isAssistant INTEGER NOT NULL DEFAULT 0
 );
 
--- Queries
 insertCharacter:
 INSERT INTO CharacterEntity(name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
@@ -41,7 +40,6 @@ WHERE id = ?;
 deleteCharactersByIds:
 DELETE FROM CharacterEntity WHERE id IN ?;
 
--- Your Personas (User profiles)
 CREATE TABLE PersonaEntity (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -49,7 +47,6 @@ CREATE TABLE PersonaEntity (
     avatarData BLOB
 );
 
--- Chat Sessions (Groups messages together)
 CREATE TABLE ChatSession (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     characterId INTEGER NOT NULL,
@@ -58,11 +55,10 @@ CREATE TABLE ChatSession (
     lastTimestamp INTEGER NOT NULL
 );
 
--- The Messages
 CREATE TABLE MessageEntity (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sessionId INTEGER NOT NULL,
-    role TEXT NOT NULL, -- "user" or "assistant"
+    role TEXT NOT NULL,
     content TEXT NOT NULL,
     timestamp INTEGER NOT NULL
 );
@@ -73,7 +69,6 @@ INSERT INTO PersonaEntity(name, description, avatarData) VALUES (?, ?, ?);
 selectAllPersonas:
 SELECT * FROM PersonaEntity ORDER BY name ASC;
 
-selectPersonaById:
 SELECT * FROM PersonaEntity WHERE id = ?;
 
 updatePersona:
@@ -105,7 +100,6 @@ SELECT * FROM ChatSession WHERE characterId = ? ORDER BY lastTimestamp DESC LIMI
 insertChatSession:
 INSERT INTO ChatSession(characterId, personaId, title, lastTimestamp) VALUES (?, ?, ?, ?);
 
--- API Connections
 CREATE TABLE ApiConnection (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     provider TEXT NOT NULL,
@@ -193,7 +187,6 @@ UPDATE AppSettings SET activePersonaId = ? WHERE id = 1;
 insertDefaultSettings:
 INSERT OR IGNORE INTO AppSettings(id, isDarkMode, activePersonaId) VALUES (1, 1, NULL);
 
--- System Prompt Structure Blocks Persistence
 CREATE TABLE PromptBlockEntity (
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,

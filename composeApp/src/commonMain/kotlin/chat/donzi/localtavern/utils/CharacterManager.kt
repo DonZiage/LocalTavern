@@ -64,7 +64,6 @@ object CharacterManager {
             } else if (isJson) {
                 bytes.decodeToString()
             } else {
-                // Try PNG anyway if unknown
                 PngParser.extractSillyTavernCard(bytes)
             }
 
@@ -134,32 +133,26 @@ object CharacterManager {
         val chunkTotalSize = 4 + 4 + data.size + 4 // length + type + data + crc
         
         val result = ByteArray(pngBytes.size + chunkTotalSize)
-        
-        // Copy signature + IHDR
+
         pngBytes.copyInto(result, 0, 0, 8 + ihdrTotalSize)
         
         var offset = 8 + ihdrTotalSize
-        
-        // Length
+
         writeInt(result, offset, data.size)
         offset += 4
-        
-        // Type
+
         type.copyInto(result, offset)
         offset += type.size
-        
-        // Data
+
         data.copyInto(result, offset)
         offset += data.size
-        
-        // CRC
+
         val crc = CommonCRC32()
         crc.update(type)
         crc.update(data)
         writeInt(result, offset, crc.value.toInt())
         offset += 4
-        
-        // Remaining
+
         val remainingOffset = 8 + ihdrTotalSize
         if (pngBytes.size > remainingOffset) {
             pngBytes.copyInto(result, offset, remainingOffset, pngBytes.size)

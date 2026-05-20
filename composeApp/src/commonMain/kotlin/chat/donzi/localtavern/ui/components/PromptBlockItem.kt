@@ -42,7 +42,6 @@ fun PromptBlockItem(
             color = if (block.isEnabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
         )
 
-        // Ultra-low profile edit action element
         IconButton(
             onClick = onEdit,
             modifier = Modifier.size(28.dp)
@@ -55,7 +54,6 @@ fun PromptBlockItem(
             )
         }
 
-        // Scaled-down layout switch
         Switch(
             checked = block.isEnabled,
             onCheckedChange = onToggle,

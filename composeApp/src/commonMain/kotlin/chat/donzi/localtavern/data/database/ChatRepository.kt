@@ -222,7 +222,6 @@ class ChatRepository(private val database: LocalTavernDB) {
         storedBlocks.ifEmpty {
             database.transaction {
                 var initialOrder = 0L
-                // Centralized global default instruction instead of a transparent placeholder mapping to a single character field
                 queries.insertPromptBlock("system", "System Prompt", "You are roleplaying. Stay in character, describe actions vividly, and adapt seamlessly to the story scenario.", 1L, 0L, initialOrder++)
                 queries.insertPromptBlock("persona", "User Persona", "User Persona:\n{{user_persona}}", 1L, 0L, initialOrder++)
                 queries.insertPromptBlock("description", "Character Description", "Character Info:\n{{character_description}}", 1L, 0L, initialOrder++)

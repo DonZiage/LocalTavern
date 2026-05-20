@@ -15,7 +15,6 @@ data class SillyTavernCardV2(
     val alternate_greetings: List<String> = emptyList()
 )
 
-// This "Wrapper" allows us to catch V2 cards that put everything inside 'data'
 @Serializable
 data class SillyTavernWrapper(
     val data: SillyTavernCardV2? = null

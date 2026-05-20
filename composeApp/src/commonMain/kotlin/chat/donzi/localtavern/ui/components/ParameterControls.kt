@@ -18,13 +18,12 @@ import kotlinx.coroutines.launch
 @Composable
 fun ParameterControls(
     connection: ApiConnection,
-    repository: ChatRepository, // Injected repository access layer instance
+    repository: ChatRepository,
     onUpdate: (ApiConnection) -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
     var promptBlocks by remember { mutableStateOf<List<PromptBlock>>(emptyList()) }
 
-    // Read blocks safely from storage upon startup mounting
     LaunchedEffect(Unit) {
         promptBlocks = repository.getAllPromptBlocks().map { it.toDomain() }
     }
@@ -61,7 +60,6 @@ fun ParameterControls(
                     blocks = promptBlocks,
                     onBlocksChange = { updatedList ->
                         promptBlocks = updatedList
-                        // Asynchronously synchronize positions and changes directly back into the DB
                         coroutineScope.launch {
                             repository.updatePromptBlockDisplayOrders(updatedList.map { it.id })
                         }

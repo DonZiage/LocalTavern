@@ -29,7 +29,7 @@ fun MessageActionMenu(
             onClick = {
                 onDismissRequest()
                 coroutineScope.launch {
-                    delay(50.milliseconds) // Small delay to allow menu to dismiss visually
+                    delay(50.milliseconds)
                     onCopy()
                 }
             },
@@ -40,7 +40,7 @@ fun MessageActionMenu(
             onClick = {
                 onDismissRequest()
                 coroutineScope.launch {
-                    delay(50.milliseconds) // Small delay to allow menu to dismiss visually
+                    delay(50.milliseconds)
                     onAddImage()
                 }
             },
@@ -51,7 +51,7 @@ fun MessageActionMenu(
             onClick = {
                 onDismissRequest()
                 coroutineScope.launch {
-                    delay(50.milliseconds) // Small delay to allow menu to dismiss visually
+                    delay(50.milliseconds)
                     onBranch()
                 }
             },
@@ -63,7 +63,7 @@ fun MessageActionMenu(
             onClick = {
                 onDismissRequest()
                 coroutineScope.launch {
-                    delay(50.milliseconds) // Small delay to allow menu to dismiss visually
+                    delay(50.milliseconds)
                     onDelete()
                 }
             },

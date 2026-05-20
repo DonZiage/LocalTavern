@@ -114,7 +114,6 @@ fun ParameterSlider(
                 ) {
                     val strokeWidth = 2.dp.toPx()
 
-                    // 1. Draw Inactive Track (Full Width)
                     drawLine(
                         color = inactiveColor,
                         start = androidx.compose.ui.geometry.Offset(0f, center.y),
@@ -123,7 +122,6 @@ fun ParameterSlider(
                         cap = androidx.compose.ui.graphics.StrokeCap.Round
                     )
 
-                    // 2. Draw Active Track (Highlighted part)
                     val fraction = if (range.start == range.endInclusive) 0f else {
                         ((sliderValue - range.start) / (range.endInclusive - range.start)).coerceIn(0f, 1f)
                     }

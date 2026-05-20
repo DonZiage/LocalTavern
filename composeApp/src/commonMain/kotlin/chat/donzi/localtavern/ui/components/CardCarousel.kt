@@ -60,17 +60,14 @@ fun <T> CardCarousel(
     var dragDisplacement by remember { mutableFloatStateOf(0f) }
     var lastInteractionTime by remember { mutableLongStateOf(0L) }
 
-    // Centering new items logic added here
     LaunchedEffect(items) {
-        // Find if there is a new item that wasn't in the list before
         val newlyAddedItemIndex = items.indexOfFirst { !reorderableItems.contains(it) }
 
         reorderableItems.clear()
         reorderableItems.addAll(items)
 
-        // If a new item was added, wait a moment for layout, then center it
         if (newlyAddedItemIndex != -1) {
-            delay(50.milliseconds) // Give Compose a frame to render the new item
+            delay(50.milliseconds)
             try {
                 isCentering = true
                 listState.animateScrollToItem(newlyAddedItemIndex, 0)
@@ -303,7 +300,6 @@ fun <T> CardCarousel(
                         scope.launch { scrollToIndexCentered(index) }
                     }
 
-                    // FIX: Lambda moved out of parentheses
                     itemContent(
                         item,
                         isDragging,
@@ -335,8 +331,6 @@ fun <T> CardCarousel(
                     OutlinedCard(
                         onClick = {
                             if (!isCentering) {
-                                // Just fire the callback. The LaunchedEffect(items) will handle
-                                // the scroll once the parent provides the updated list.
                                 onAddClick()
                             }
                         },

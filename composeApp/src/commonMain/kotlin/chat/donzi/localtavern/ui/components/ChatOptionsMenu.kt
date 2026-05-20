@@ -8,6 +8,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.time.Duration.Companion.milliseconds
 
 @Composable
 fun ChatOptionsMenu(
@@ -29,7 +30,7 @@ fun ChatOptionsMenu(
             onClick = {
                 onDismissRequest()
                 coroutineScope.launch {
-                    delay(50) // Small delay to allow menu to dismiss visually
+                    delay(50.milliseconds)
                     onEnterSelectMode()
                 }
             },
@@ -41,7 +42,7 @@ fun ChatOptionsMenu(
             onClick = {
                 onDismissRequest()
                 coroutineScope.launch {
-                    delay(50) // Small delay to allow menu to dismiss visually
+                    delay(50.milliseconds)
                     onRegenerate()
                 }
             },

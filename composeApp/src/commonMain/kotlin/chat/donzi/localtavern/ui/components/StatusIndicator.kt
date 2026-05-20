@@ -10,9 +10,9 @@ import androidx.compose.ui.graphics.Color
 @Composable
 fun StatusIndicator(isAlive: Boolean?, modifier: Modifier = Modifier) {
     val color = when (isAlive) {
-        true -> Color(0xFF1B5E20) // Darker Green
-        false -> Color(0xFFB71C1C) // Darker Red
-        null -> Color(0xFF616161) // Darker Grey
+        true -> Color(0xFF1B5E20)
+        false -> Color(0xFFB71C1C)
+        null -> Color(0xFF616161)
     }
     Box(
         modifier = modifier

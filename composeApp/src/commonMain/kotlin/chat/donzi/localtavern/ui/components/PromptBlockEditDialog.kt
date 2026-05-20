@@ -59,7 +59,6 @@ fun PromptBlockEditDialog(
                 TextButton(onClick = onDismiss) {
                     Text("Cancel")
                 }
-                // Renders destructive button solely on user-instantiated blocks
                 if (block.isCustom && onDelete != null) {
                     Spacer(modifier = Modifier.width(8.dp))
                     TextButton(

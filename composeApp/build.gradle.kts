@@ -2,17 +2,14 @@ plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.jetbrainsCompose)
-    // Change 'composeCompiler' to 'compose.compiler'
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.sqlDelight)
     alias(libs.plugins.kotlin.serialization)
 }
 
-// Define this only ONCE at the top level
 val ktorVersion = libs.versions.ktor.get()
 
 kotlin {
-    // Sets Java 11 for the whole project safely
     jvmToolchain(17)
 
     compilerOptions {
@@ -32,7 +29,6 @@ kotlin {
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.kotlinx.datetime)
 
-            // Swapped from compose.* to your libs.versions.toml definitions
             implementation(libs.compose.runtime)
             implementation(libs.compose.foundation)
             implementation(libs.compose.material3)
@@ -40,21 +36,17 @@ kotlin {
             implementation(libs.compose.components.resources)
             implementation(libs.compose.uiToolingPreview)
 
-            // Pinned to the last supported version as requested by the warning
             implementation(libs.compose.materialIconsExtended)
 
-            // Foundation Dependencies
             implementation(libs.sqldelight.runtime)
 
             implementation(libs.ktor.client.core)
             implementation(libs.ktor.client.content.negotiation)
             implementation(libs.ktor.serialization.json)
 
-            // Coil3 for image loading
             implementation(libs.coil3.coil.compose)
         }
 
-        // Modern syntax: directly accessing androidMain.dependencies
         androidMain.dependencies {
             implementation(libs.sqldelight.driver.android)
             implementation(libs.androidx.activity.compose)
@@ -62,13 +54,11 @@ kotlin {
         }
 
 
-        // Modern syntax: directly accessing desktopMain.dependencies
         getByName("desktopMain") {
             dependencies {
                 implementation(compose.desktop.currentOs)
                 implementation(libs.sqldelight.driver.desktop)
 
-                // Networking engine and logging for Desktop
                 implementation("io.ktor:ktor-client-java:$ktorVersion")
                 implementation(libs.logback.classic)
             }
@@ -100,7 +90,6 @@ android {
 
 compose.desktop {
     application {
-        // Change the placeholder to your actual package and class name
         mainClass = "chat.donzi.localtavern.MainKt"
 
         nativeDistributions {
@@ -109,12 +98,11 @@ compose.desktop {
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Exe
             )
             packageName = "LocalTavern"
-            packageVersion = "1.0.0"
+            packageVersion = "0.1.5"
         }
     }
 }
 
-// Ensure this block is at the VERY BOTTOM
 sqldelight {
     databases {
         create("LocalTavernDB") {

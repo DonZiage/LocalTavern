@@ -130,7 +130,7 @@ fun ContextLimitSlider(
                 ) {
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth(fraction.coerceIn(0f, 1f)) // Fills strictly from left to right
+                            .fillMaxWidth(fraction.coerceIn(0f, 1f))
                             .fillMaxHeight()
                             .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(1.dp))
                     )
