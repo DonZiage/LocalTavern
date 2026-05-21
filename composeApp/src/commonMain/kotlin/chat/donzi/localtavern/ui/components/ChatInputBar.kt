@@ -21,8 +21,8 @@ fun ChatInputBar(
     canRegenerate: Boolean,
     onEnterSelectMode: () -> Unit,
     canDelete: Boolean,
-    isGenerating: Boolean = false, // Added generation state tracking
-    onStopGeneration: () -> Unit = {} // Added cancel handling trigger hook
+    isGenerating: Boolean = false,
+    onStopGeneration: () -> Unit = {}
 ) {
     var text by remember { mutableStateOf("") }
     var showMenu by remember { mutableStateOf(false) }
@@ -58,7 +58,7 @@ fun ChatInputBar(
             value = text,
             onValueChange = { text = it },
             placeholder = { Text("Message...") },
-            enabled = !isGenerating, // Block text box edit manipulation fields during active streams
+            enabled = !isGenerating,
             modifier = Modifier
                 .weight(1f)
                 .onPreviewKeyEvent { event ->

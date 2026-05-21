@@ -361,7 +361,6 @@ fun ChatArea(
                                 Text("Swipe")
                             }
                             Spacer(modifier = Modifier.width(6.dp))
-                            // Changed: Set container color to matching purple theme
                             Button(
                                 onClick = {
                                     onDeleteMessages(siblings.map { it.id })

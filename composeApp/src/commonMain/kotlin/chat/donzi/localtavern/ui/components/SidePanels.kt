@@ -27,7 +27,6 @@ import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.data.network.ChatClient
 import androidx.compose.ui.geometry.Offset
 
-// Explicitly defining the missing enum here fixes the unresolved references globally
 enum class ActiveDrawer {
     None,
     Settings,

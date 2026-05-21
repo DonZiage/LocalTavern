@@ -64,7 +64,6 @@ fun CharacterListSection(
         }
     }
 
-    // Automatically extends the character context options list when navigated via quickstart links
     LaunchedEffect(autoShowNewCharacterMenu) {
         if (autoShowNewCharacterMenu) {
             showCharacterMenu = true

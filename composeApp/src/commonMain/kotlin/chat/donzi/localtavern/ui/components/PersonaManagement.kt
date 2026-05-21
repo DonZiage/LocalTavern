@@ -229,7 +229,7 @@ private fun PersonaEditDialog(
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
                         onClick = { onSave(name, description.ifBlank { null }, avatarData) },
-                        enabled = name.isNotBlank() // Fixed: Shape removed to inherit standard pill/oval shape style
+                        enabled = name.isNotBlank()
                     ) {
                         Text("Save")
                     }
