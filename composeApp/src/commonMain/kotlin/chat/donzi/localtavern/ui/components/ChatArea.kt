@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.data.database.MessageEntity
+import chat.donzi.localtavern.utils.ContextManager
 
 private enum class OnboardingStep {
     API, PERSONA, CHARACTER
@@ -31,6 +32,7 @@ private enum class OnboardingStep {
 @Composable
 fun ChatArea(
     activeCharacter: CharacterEntity?,
+    activePersonaName: String,
     activePersonaAvatar: ByteArray?,
     messages: List<MessageEntity>,
     siblingsMap: Map<Long, List<MessageEntity>>,
@@ -195,12 +197,20 @@ fun ChatArea(
                     val currentIndex = siblings.indexOfFirst { it.id == message.id }.coerceAtLeast(0)
                     val totalCount = siblings.size
 
+                    val displayContent = remember(message.content, activeCharacter?.name, activePersonaName) {
+                        ContextManager.replaceSimpleMacros(
+                            text = message.content,
+                            charName = activeCharacter?.name.orEmpty(),
+                            userName = activePersonaName
+                        )
+                    }
+
                     Column(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalAlignment = if (isUserMessage) Alignment.End else Alignment.Start
                     ) {
                         MessageBubble(
-                            content = message.content,
+                            content = displayContent,
                             isUser = isUserMessage,
                             onEdit = { newContent -> onEditMessage(message.id, newContent) },
                             onDelete = { messageToDelete = message },

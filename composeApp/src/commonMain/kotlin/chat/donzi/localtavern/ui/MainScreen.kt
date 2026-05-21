@@ -379,6 +379,7 @@ fun MainScreen(
             Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
                 ChatArea(
                     activeCharacter = activeCharacter,
+                    activePersonaName = activePersona?.name.orEmpty(), // <-- Added parameter pass down
                     activePersonaAvatar = activePersona?.avatarData,
                     messages = messages,
                     siblingsMap = siblingsMap,

@@ -11,6 +11,12 @@ data class ChatMessage(
 
 object ContextManager {
 
+    fun replaceSimpleMacros(text: String, charName: String, userName: String): String {
+        return text
+            .replace("{{char}}", charName)
+            .replace("{{user}}", userName)
+    }
+
     fun buildPayload(
         blocks: List<PromptBlock>,
         character: CharacterEntity?,
@@ -25,46 +31,39 @@ object ContextManager {
 
         val parsedExamples = character?.mesExample?.split("|||")?.joinToString("\n") ?: ""
 
-        // Core extraction fields
         val charName = character?.name.orEmpty()
         val userName = persona?.name.orEmpty()
         val personaDesc = persona?.description.orEmpty()
         val charDesc = character?.description.orEmpty()
         val scenario = character?.scenario.orEmpty()
 
-        // Shared helper function to resolve all dynamic and static placeholders
         fun replacePlaceholders(text: String, historyContext: List<ChatMessage>): String {
             val lastMsg = historyContext.lastOrNull()?.content.orEmpty()
             val lastUserMsg = historyContext.lastOrNull { it.role == "user" }?.content.orEmpty()
             val lastCharMsg = historyContext.lastOrNull { it.role == "assistant" || it.role == "char" || it.role == "character" }?.content.orEmpty()
 
-            return text
-                // Legacy / Internal Card Fields
+            val baseReplaced = text
                 .replace("{{user_persona}}", personaDesc)
                 .replace("{{character_description}}", charDesc)
                 .replace("{{personality}}", character?.personality.orEmpty())
                 .replace("{{scenario}}", scenario)
                 .replace("{{mes_example}}", parsedExamples)
-                // Standard Tavern Chat Macros
-                .replace("{{char}}", charName)
-                .replace("{{user}}", userName)
                 .replace("{{persona}}", personaDesc)
                 .replace("{{description}}", charDesc)
                 .replace("{{scenario}}", scenario)
                 .replace("{{lastMessage}}", lastMsg)
                 .replace("{{lastUserMessage}}", lastUserMsg)
                 .replace("{{lastCharMessage}}", lastCharMsg)
+
+            return replaceSimpleMacros(baseReplaced, charName, userName)
         }
 
-        // 1. Process Chat History chronologically (oldest to newest)
-        // This ensures identity fields are evaluated immediately, and context fields reference evaluated strings
         val processedHistory = mutableListOf<ChatMessage>()
         for (msg in chatHistory) {
             val processedContent = replacePlaceholders(msg.content, processedHistory)
             processedHistory.add(msg.copy(content = processedContent))
         }
 
-        // 2. Process Prompt Blocks using the finalized, evaluated history
         for (block in activeBlocks) {
             val content = replacePlaceholders(block.template, processedHistory)
 
@@ -90,7 +89,6 @@ object ContextManager {
             finalMessages.add(ChatMessage(role = "system", content = safeSystemPrompt))
         }
 
-        // 3. Select fitting historical items backwards using the processed token counts
         val selectedHistory = mutableListOf<ChatMessage>()
         for (msg in processedHistory.reversed()) {
             val msgTokens = tokenizer.countTokens(msg.content) + 4
