@@ -9,6 +9,11 @@ import kotlin.time.Clock
 class ChatRepository(private val database: LocalTavernDB) {
     private val queries = database.localTavernDBQueries
 
+    private fun generateUuid(): String {
+        val chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        return (1..32).map { chars.random() }.joinToString("")
+    }
+
     suspend fun getAllCharacters(): List<CharacterEntity> = withContext(Dispatchers.IO) {
         queries.selectAllCharacters().executeAsList()
     }
@@ -29,7 +34,8 @@ class ChatRepository(private val database: LocalTavernDB) {
                 creatorNotes = null,
                 altGreetings = null,
                 avatarData = null,
-                isAssistant = 1L
+                isAssistant = 1L,
+                uuid = generateUuid()
             )
             queries.lastInsertId().executeAsOne()
         }
@@ -54,7 +60,8 @@ class ChatRepository(private val database: LocalTavernDB) {
                 creatorNotes = card.creator_notes,
                 altGreetings = card.alternate_greetings.joinToString("|||").ifBlank { null },
                 avatarData = avatarData,
-                isAssistant = 0L
+                isAssistant = 0L,
+                uuid = generateUuid()
             )
             queries.lastInsertId().executeAsOne()
         }
@@ -72,7 +79,8 @@ class ChatRepository(private val database: LocalTavernDB) {
                 creatorNotes = null,
                 altGreetings = null,
                 avatarData = null,
-                isAssistant = 0L
+                isAssistant = 0L,
+                uuid = generateUuid()
             )
             queries.lastInsertId().executeAsOne()
         }
@@ -112,7 +120,7 @@ class ChatRepository(private val database: LocalTavernDB) {
     }
 
     suspend fun insertPersona(name: String, description: String?, avatarData: ByteArray?) = withContext(Dispatchers.IO) {
-        queries.insertPersona(name, description, avatarData)
+        queries.insertPersona(name, description, avatarData, generateUuid())
     }
 
     suspend fun updatePersona(id: Long, name: String, description: String?, avatarData: ByteArray?) = withContext(Dispatchers.IO) {
@@ -197,7 +205,7 @@ class ChatRepository(private val database: LocalTavernDB) {
     suspend fun getOrCreateSession(characterId: Long, personaId: Long): Long = withContext(Dispatchers.IO) {
         val session = queries.selectLastSessionForCharacter(characterId).executeAsOneOrNull()
         session?.id ?: database.transactionWithResult {
-            queries.insertChatSession(characterId, personaId, null, currentTimeMillis(), null)
+            queries.insertChatSession(characterId, personaId, null, currentTimeMillis(), null, null, generateUuid())
             queries.lastInsertId().executeAsOne()
         }
     }
@@ -286,14 +294,59 @@ class ChatRepository(private val database: LocalTavernDB) {
             }
         }
     }
+
     suspend fun getSessionsForCharacter(characterId: Long): List<ChatSession> = withContext(Dispatchers.IO) {
         queries.selectSessionsForCharacter(characterId).executeAsList()
     }
 
     suspend fun createNewSession(characterId: Long, personaId: Long): Long = withContext(Dispatchers.IO) {
         database.transactionWithResult {
-            queries.insertChatSession(characterId, personaId, null, currentTimeMillis(), null)
+            queries.insertChatSession(characterId, personaId, null, currentTimeMillis(), null, null, generateUuid())
             queries.lastInsertId().executeAsOne()
+        }
+    }
+
+    suspend fun branchSession(
+        originalSessionId: Long,
+        untilMessageId: Long,
+        messagesToCopy: List<MessageEntity>,
+        newTitle: String
+    ): Long = withContext(Dispatchers.IO) {
+        database.transactionWithResult {
+            val originalSession = queries.selectSessionById(originalSessionId).executeAsOneOrNull()
+                ?: throw IllegalArgumentException("Original session not found")
+
+            queries.insertChatSession(
+                originalSession.characterId,
+                originalSession.personaId,
+                newTitle,
+                currentTimeMillis(),
+                null,
+                originalSessionId,
+                generateUuid()
+            )
+            val newSessionId = queries.lastInsertId().executeAsOne()
+
+            var lastInsertedNewId: Long? = null
+            val cutoffIndex = messagesToCopy.indexOfFirst { it.id == untilMessageId }
+            val filteredMessages = if (cutoffIndex != -1) {
+                messagesToCopy.subList(0, cutoffIndex + 1)
+            } else {
+                messagesToCopy
+            }
+
+            filteredMessages.forEach { msg ->
+                queries.insertMessageWithParent(
+                    newSessionId, msg.role, msg.content, msg.timestamp, lastInsertedNewId, 1L
+                )
+                lastInsertedNewId = queries.lastInsertId().executeAsOne()
+            }
+
+            if (lastInsertedNewId != null) {
+                queries.updateSessionCurrentMessage(lastInsertedNewId, currentTimeMillis(), newSessionId)
+            }
+
+            newSessionId
         }
     }
 

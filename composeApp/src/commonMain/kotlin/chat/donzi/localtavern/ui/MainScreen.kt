@@ -21,6 +21,7 @@ import chat.donzi.localtavern.data.database.ChatRepository
 import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.data.database.PersonaEntity
 import chat.donzi.localtavern.data.database.MessageEntity
+import chat.donzi.localtavern.data.database.ChatSession
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.ui.components.ActiveDrawer
 import chat.donzi.localtavern.ui.components.SidePanels
@@ -136,6 +137,7 @@ fun MainScreen(
     var activeSessionId by remember { mutableStateOf<Long?>(null) }
     var messages by remember { mutableStateOf(emptyList<MessageEntity>()) }
     var siblingsMap by remember { mutableStateOf(emptyMap<Long, List<MessageEntity>>()) }
+    var currentSessionDetails by remember { mutableStateOf<ChatSession?>(null) }
     val coroutineScope = rememberCoroutineScope()
 
     var isSelectMode by remember { mutableStateOf(false) }
@@ -185,6 +187,9 @@ fun MainScreen(
             hasApiProfile = chatRepository.getAllApiConnections().isNotEmpty()
 
             activeSessionId?.let { sessionId ->
+                val sessionDetails = chatRepository.getSessionById(sessionId)
+                currentSessionDetails = sessionDetails
+
                 val activeTimeline = chatRepository.getMessagesForSession(sessionId)
                 messages = activeTimeline
 
@@ -204,6 +209,7 @@ fun MainScreen(
             } ?: run {
                 messages = emptyList()
                 siblingsMap = emptyMap()
+                currentSessionDetails = null
             }
         }
     }
@@ -562,7 +568,31 @@ fun MainScreen(
                     onEnterSelectMode = { isSelectMode = true; selectedMessageIds = emptySet() },
                     isGenerating = isGenerating,
                     onStopGeneration = { currentResponseJob?.cancel() },
-                    onManageChats = { showChatManagerDialog = true }
+                    onManageChats = { showChatManagerDialog = true },
+                    onBranchMessage = { message ->
+                        coroutineScope.launch {
+                            activeSessionId?.let { sessionId ->
+                                val currentSession = chatRepository.getSessionById(sessionId)
+                                val baseTitle = currentSession?.title ?: "${activeCharacter?.name ?: "Chat"} #$sessionId"
+                                val newTitle = "Branch of $baseTitle"
+
+                                val newSessionId = chatRepository.branchSession(
+                                    originalSessionId = sessionId,
+                                    untilMessageId = message.id,
+                                    messagesToCopy = messages,
+                                    newTitle = newTitle
+                                )
+                                activeSessionId = newSessionId
+                                refreshMessages()
+                            }
+                        }
+                    },
+                    onGoToParentChat = currentSessionDetails?.parentSessionId?.let { parentId ->
+                        {
+                            activeSessionId = parentId
+                            refreshMessages()
+                        }
+                    }
                 )
             }
         }
@@ -686,11 +716,11 @@ fun ChatManagerDialog(
     onSessionSelected: (Long) -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
-    var sessions by remember { mutableStateOf(emptyList<chat.donzi.localtavern.data.database.ChatSession>()) }
+    var sessions by remember { mutableStateOf(emptyList<ChatSession>()) }
     var expandedMenuSessionId by remember { mutableStateOf<Long?>(null) }
-    var sessionToRename by remember { mutableStateOf<chat.donzi.localtavern.data.database.ChatSession?>(null) }
+    var sessionToRename by remember { mutableStateOf<ChatSession?>(null) }
     var editTitleText by remember { mutableStateOf("") }
-    var sessionToDelete by remember { mutableStateOf<chat.donzi.localtavern.data.database.ChatSession?>(null) }
+    var sessionToDelete by remember { mutableStateOf<ChatSession?>(null) }
 
     fun loadSessions() {
         coroutineScope.launch {
@@ -724,7 +754,6 @@ fun ChatManagerDialog(
             }
         },
         text = {
-            // Constrain inner dialog container size to fit a maximum of ~4 entries perfectly before scrolling
             Box(modifier = Modifier.sizeIn(maxHeight = 280.dp, minWidth = 280.dp)) {
                 if (sessions.isEmpty()) {
                     Text(
@@ -822,7 +851,6 @@ fun ChatManagerDialog(
         }
     )
 
-    // Dedicated structural dialog overlay for Renaming sessions
     if (sessionToRename != null) {
         val targetSession = sessionToRename!!
         AlertDialog(

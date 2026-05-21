@@ -115,6 +115,7 @@ fun MessageBubble(
     onDelete: () -> Unit = {},
     onAddImage: () -> Unit = {},
     onBranch: () -> Unit = {},
+    onGoToParent: (() -> Unit)? = null,
     avatarData: ByteArray? = null,
     isSelectMode: Boolean = false,
     isSelected: Boolean = false,
@@ -209,7 +210,8 @@ fun MessageBubble(
                 onCopy = onCopy,
                 onDelete = onDelete,
                 onAddImage = onAddImage,
-                onBranch = onBranch
+                onBranch = onBranch,
+                onGoToParent = onGoToParent
             )
         } else {
             Box(
@@ -372,7 +374,8 @@ fun MessageBubble(
                 onCopy = onCopy,
                 onDelete = onDelete,
                 onAddImage = onAddImage,
-                onBranch = onBranch
+                onBranch = onBranch,
+                onGoToParent = onGoToParent
             )
         }
     }
@@ -391,7 +394,8 @@ fun MessageActions(
     onCopy: () -> Unit,
     onDelete: () -> Unit,
     onAddImage: () -> Unit,
-    onBranch: () -> Unit
+    onBranch: () -> Unit,
+    onGoToParent: (() -> Unit)?
 ) {
     AnimatedVisibility(
         visible = visible,
@@ -425,7 +429,8 @@ fun MessageActions(
                     onCopy = onCopy,
                     onDelete = onDelete,
                     onAddImage = onAddImage,
-                    onBranch = onBranch
+                    onBranch = onBranch,
+                    onGoToParent = onGoToParent
                 )
             }
         }

@@ -55,7 +55,9 @@ fun ChatArea(
     onEnterSelectMode: () -> Unit = {},
     isGenerating: Boolean = false,
     onStopGeneration: () -> Unit = {},
-    onManageChats: () -> Unit
+    onManageChats: () -> Unit,
+    onBranchMessage: (MessageEntity) -> Unit = {},
+    onGoToParentChat: (() -> Unit)? = null
 ) {
     var messageToDelete by remember { mutableStateOf<MessageEntity?>(null) }
 
@@ -215,6 +217,8 @@ fun ChatArea(
                             isUser = isUserMessage,
                             onEdit = { newContent -> onEditMessage(message.id, newContent) },
                             onDelete = { messageToDelete = message },
+                            onBranch = { onBranchMessage(message) },
+                            onGoToParent = onGoToParentChat,
                             avatarData = currentAvatar,
                             isSelectMode = isSelectMode,
                             isSelected = selectedMessageIds.contains(message.id),

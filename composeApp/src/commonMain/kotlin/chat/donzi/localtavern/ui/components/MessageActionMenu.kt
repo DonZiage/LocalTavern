@@ -1,6 +1,7 @@
 package chat.donzi.localtavern.ui.components
 
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -16,7 +17,8 @@ fun MessageActionMenu(
     onCopy: () -> Unit,
     onDelete: () -> Unit,
     onAddImage: () -> Unit,
-    onBranch: () -> Unit
+    onBranch: () -> Unit,
+    onGoToParent: (() -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
 
@@ -24,6 +26,20 @@ fun MessageActionMenu(
         expanded = expanded,
         onDismissRequest = onDismissRequest
     ) {
+        if (onGoToParent != null) {
+            DropdownMenuItem(
+                text = { Text("Go to Parent Chat") },
+                onClick = {
+                    onDismissRequest()
+                    coroutineScope.launch {
+                        delay(50.milliseconds)
+                        onGoToParent()
+                    }
+                },
+                leadingIcon = { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Go back to parent chat session") }
+            )
+            HorizontalDivider()
+        }
         DropdownMenuItem(
             text = { Text("Copy") },
             onClick = {
@@ -67,12 +83,12 @@ fun MessageActionMenu(
                     onDelete()
                 }
             },
-            leadingIcon = { 
+            leadingIcon = {
                 Icon(
-                    Icons.Default.Delete, 
+                    Icons.Default.Delete,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.error
-                ) 
+                )
             }
         )
     }
