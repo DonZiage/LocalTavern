@@ -5,7 +5,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Stop // Added standard Stop Icon
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,7 +24,8 @@ fun ChatInputBar(
     isGenerating: Boolean = false,
     onStopGeneration: () -> Unit = {},
     onManageChats: () -> Unit,
-    canManageChats: Boolean
+    canManageChats: Boolean,
+    onGoToParent: (() -> Unit)? = null
 ) {
     var text by remember { mutableStateOf("") }
     var showMenu by remember { mutableStateOf(false) }
@@ -54,7 +55,8 @@ fun ChatInputBar(
                 onEnterSelectMode = onEnterSelectMode,
                 canDelete = canDelete,
                 onManageChats = onManageChats,
-                canManageChats = canManageChats
+                canManageChats = canManageChats,
+                onGoToParent = onGoToParent
             )
         }
 

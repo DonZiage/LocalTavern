@@ -160,6 +160,12 @@ fun MainScreen(
         characters.isNotEmpty()
     }
 
+    // FIXED: Query API profile configurations globally outside active conversation sessions
+    // to guarantee Step 1 onboarding visibility sync blocks evaluate correctly at all times.
+    LaunchedEffect(activeSessionId, characters, personas) {
+        hasApiProfile = chatRepository.getAllApiConnections().isNotEmpty()
+    }
+
     var lastEditingCharacter by remember { mutableStateOf<CharacterEntity?>(null) }
     LaunchedEffect(editingCharacter) {
         if (editingCharacter != null) {
@@ -217,6 +223,7 @@ fun MainScreen(
     LaunchedEffect(activeCharacter, activePersonaId, activeSessionId, characters, personas) {
         isSelectMode = false
         selectedMessageIds = emptySet()
+        hasApiProfile = chatRepository.getAllApiConnections().isNotEmpty()
         if (activePersonaId != null && activeCharacter != null) {
             var sessionId = activeSessionId
             val currentSession = sessionId?.let { chatRepository.getSessionById(it) }
@@ -240,7 +247,6 @@ fun MainScreen(
             activeSessionId = null
             messages = emptyList()
             siblingsMap = emptyMap()
-            hasApiProfile = chatRepository.getAllApiConnections().isNotEmpty()
         }
     }
 

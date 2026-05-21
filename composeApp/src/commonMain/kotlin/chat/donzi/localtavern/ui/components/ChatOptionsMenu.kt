@@ -1,6 +1,7 @@
 package chat.donzi.localtavern.ui.components
 
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
@@ -20,7 +21,8 @@ fun ChatOptionsMenu(
     onEnterSelectMode: () -> Unit,
     canDelete: Boolean,
     onManageChats: () -> Unit,
-    canManageChats: Boolean
+    canManageChats: Boolean,
+    onGoToParent: (() -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
 
@@ -28,6 +30,20 @@ fun ChatOptionsMenu(
         expanded = expanded,
         onDismissRequest = onDismissRequest
     ) {
+        if (onGoToParent != null) {
+            DropdownMenuItem(
+                text = { Text("Go to Parent Chat") },
+                onClick = {
+                    onDismissRequest()
+                    coroutineScope.launch {
+                        delay(50.milliseconds)
+                        onGoToParent()
+                    }
+                },
+                leadingIcon = { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null) }
+            )
+            HorizontalDivider()
+        }
         DropdownMenuItem(
             text = { Text("Chats") },
             onClick = {

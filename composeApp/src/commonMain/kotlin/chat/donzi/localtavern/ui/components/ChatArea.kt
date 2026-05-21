@@ -194,7 +194,8 @@ fun ChatArea(
                     }
 
                     val isLastMessage = messages.lastOrNull()?.id == message.id
-                    val isSwipeable = !isUserMessage && isLastMessage
+                    // Fixed requirement: swipes are entirely disabled during streaming generation
+                    val isSwipeable = !isUserMessage && isLastMessage && !isGenerating
 
                     val siblings = siblingsMap[message.id] ?: listOf(message)
                     val currentIndex = siblings.indexOfFirst { it.id == message.id }.coerceAtLeast(0)
@@ -218,27 +219,28 @@ fun ChatArea(
                             onEdit = { newContent -> onEditMessage(message.id, newContent) },
                             onDelete = { messageToDelete = message },
                             onBranch = { onBranchMessage(message) },
-                            onGoToParent = onGoToParentChat,
                             avatarData = currentAvatar,
                             isSelectMode = isSelectMode,
                             isSelected = selectedMessageIds.contains(message.id),
                             onSelectToggle = { onSelectMessageToggle(message.id) },
                             isSwipeable = isSwipeable,
                             onSwipeRight = {
-                                if (currentIndex > 0) {
+                                if (currentIndex > 0 && !isGenerating) {
                                     onSelectVariation(siblings[currentIndex - 1].id)
                                 }
                             },
                             onSwipeLeft = {
-                                if (currentIndex < totalCount - 1) {
-                                    onSelectVariation(siblings[currentIndex + 1].id)
-                                } else {
-                                    onGenerateNewVariation(message.id)
+                                if (!isGenerating) {
+                                    if (currentIndex < totalCount - 1) {
+                                        onSelectVariation(siblings[currentIndex + 1].id)
+                                    } else {
+                                        onGenerateNewVariation(message.id)
+                                    }
                                 }
                             }
                         )
 
-                        if (isSwipeable) {
+                        if (!isUserMessage && isLastMessage) {
                             Row(
                                 modifier = Modifier
                                     .padding(start = 54.dp, top = 2.dp, bottom = 6.dp)
@@ -252,7 +254,7 @@ fun ChatArea(
                                             onSelectVariation(siblings[currentIndex - 1].id)
                                         }
                                     },
-                                    enabled = currentIndex > 0,
+                                    enabled = currentIndex > 0 && !isGenerating,
                                     modifier = Modifier.size(24.dp)
                                 ) {
                                     Icon(
@@ -276,7 +278,7 @@ fun ChatArea(
                                             onGenerateNewVariation(message.id)
                                         }
                                     },
-                                    enabled = true,
+                                    enabled = !isGenerating,
                                     modifier = Modifier.size(24.dp)
                                 ) {
                                     Icon(
@@ -302,7 +304,8 @@ fun ChatArea(
                 isGenerating = isGenerating,
                 onStopGeneration = onStopGeneration,
                 onManageChats = onManageChats,
-                canManageChats = activeCharacter != null
+                canManageChats = activeCharacter != null,
+                onGoToParent = onGoToParentChat
             )
         }
     }

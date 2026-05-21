@@ -82,7 +82,8 @@ fun CharacterListSection(
         else characters.filter { it.name.contains(query, ignoreCase = true) }
     }
 
-    Column(modifier = modifier.fillMaxWidth()) {
+    // Explicit vertical sizing constraints applied here on the root layout container
+    Column(modifier = modifier.fillMaxWidth().fillMaxHeight()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -250,7 +251,7 @@ fun CharacterListSection(
             }
         }
 
-        LazyColumn(modifier = Modifier.weight(1f)) {
+        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
             items(filtered, key = { it.id }) { char ->
                 val isSelected = selectedIds.contains(char.id)
                 CharacterItem(
