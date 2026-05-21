@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
@@ -14,10 +15,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.data.database.MessageEntity
 
@@ -40,14 +43,19 @@ fun ChatArea(
     onSendMessage: (String) -> Unit,
     onEditMessage: (Long, String) -> Unit,
     onDeleteMessage: (Long) -> Unit,
+    onDeleteMessages: (List<Long>) -> Unit = {},
     onRegenerate: () -> Unit,
     onSelectVariation: (Long) -> Unit,
     onGenerateNewVariation: (Long) -> Unit,
     isSelectMode: Boolean = false,
     selectedMessageIds: Set<Long> = emptySet(),
     onSelectMessageToggle: (Long) -> Unit = {},
-    onEnterSelectMode: () -> Unit = {}
+    onEnterSelectMode: () -> Unit = {},
+    isGenerating: Boolean = false,
+    onStopGeneration: () -> Unit = {}
 ) {
+    var messageToDelete by remember { mutableStateOf<MessageEntity?>(null) }
+
     Column(modifier = Modifier.fillMaxSize()) {
         if (activeCharacter == null && messages.isEmpty()) {
             Box(
@@ -72,7 +80,6 @@ fun ChatArea(
                         color = MaterialTheme.colorScheme.primary
                     )
 
-                    // Build a dynamic real-time structural list of unsatisfied steps
                     val visibleSteps = remember(hasApiProfile, hasPersona, hasCharacter) {
                         mutableListOf<OnboardingStep>().apply {
                             if (!hasApiProfile) add(OnboardingStep.API)
@@ -104,7 +111,7 @@ fun ChatArea(
 
                                     Surface(
                                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                        shape = MaterialTheme.shapes.medium,
+                                        shape = RoundedCornerShape(8.dp),
                                         tonalElevation = 1.dp,
                                         modifier = Modifier
                                             .weight(1f)
@@ -196,7 +203,7 @@ fun ChatArea(
                             content = message.content,
                             isUser = isUserMessage,
                             onEdit = { newContent -> onEditMessage(message.id, newContent) },
-                            onDelete = { onDeleteMessage(message.id) },
+                            onDelete = { messageToDelete = message },
                             avatarData = currentAvatar,
                             isSelectMode = isSelectMode,
                             isSelected = selectedMessageIds.contains(message.id),
@@ -276,8 +283,101 @@ fun ChatArea(
                 onRegenerate = onRegenerate,
                 canRegenerate = messages.any { it.role == "user" },
                 onEnterSelectMode = onEnterSelectMode,
-                canDelete = messages.isNotEmpty()
+                canDelete = messages.isNotEmpty(),
+                isGenerating = isGenerating,
+                onStopGeneration = onStopGeneration
             )
+        }
+    }
+
+    if (messageToDelete != null) {
+        val currentMsg = messageToDelete!!
+        val isUserMsg = currentMsg.role == "user"
+        val siblings = siblingsMap[currentMsg.id] ?: listOf(currentMsg)
+        val totalCount = siblings.size
+
+        Dialog(onDismissRequest = { messageToDelete = null }) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp,
+                modifier = Modifier
+                    .padding(16.dp)
+                    .widthIn(max = 340.dp)
+                    .wrapContentSize()
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = if (isUserMsg || totalCount < 2) "Delete message?" else "Delete option",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Text(
+                        text = if (isUserMsg || totalCount < 2) "This action cannot be undone." else "Delete this swipe or the entire message?",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (isUserMsg || totalCount < 2) {
+                            TextButton(onClick = { messageToDelete = null }) {
+                                Text("Cancel")
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            TextButton(
+                                onClick = {
+                                    onDeleteMessage(currentMsg.id)
+                                    messageToDelete = null
+                                },
+                                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                            ) {
+                                Text("Delete")
+                            }
+                        } else {
+                            TextButton(onClick = { messageToDelete = null }) {
+                                Text("Cancel")
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Button(
+                                onClick = {
+                                    onDeleteMessage(currentMsg.id)
+                                    messageToDelete = null
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF7B1FA2),
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                Text("Swipe")
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                            // Changed: Set container color to matching purple theme
+                            Button(
+                                onClick = {
+                                    onDeleteMessages(siblings.map { it.id })
+                                    messageToDelete = null
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF7B1FA2),
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                Text("Message")
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

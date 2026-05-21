@@ -18,7 +18,7 @@ fun ApiConnectionSettings(
     var connections by remember { mutableStateOf<List<ApiConnection>>(emptyList()) }
     var showAddDialog by remember { mutableStateOf(false) }
     var editingConnection by remember { mutableStateOf<ApiConnection?>(null) }
-    var refreshTrigger by remember { mutableIntStateOf(0) }
+    var refreshTrigger by remember { mutableStateOf(0) }
 
     LaunchedEffect(refreshTrigger) {
         connections = chatRepository.getAllApiConnections()
@@ -71,7 +71,7 @@ fun ApiConnectionSettings(
                                 temperature = connection.temperature, topP = connection.topP, topK = connection.topK,
                                 presencePenalty = connection.presencePenalty, frequencyPenalty = connection.frequencyPenalty,
                                 contextLimit = connection.contextLimit, responseLimit = connection.responseLimit,
-                                displayOrder = connection.displayOrder
+                                displayOrder = connection.displayOrder, timeoutLimit = connection.timeoutLimit // Mapped timeout column
                             )
                             refreshTrigger++
                         }
@@ -110,7 +110,8 @@ fun ApiConnectionSettings(
                             frequencyPenalty = updated.frequencyPenalty,
                             contextLimit = updated.contextLimit,
                             responseLimit = updated.responseLimit,
-                            displayOrder = updated.displayOrder
+                            displayOrder = updated.displayOrder,
+                            timeoutLimit = updated.timeoutLimit
                         )
                         refreshTrigger++
                     }
@@ -133,7 +134,8 @@ fun ApiConnectionSettings(
                         model = model,
                         isActive = connections.isEmpty(),
                         isChatCompletion = isChatCompletion,
-                        displayOrder = connections.size.toLong()
+                        displayOrder = connections.size.toLong(),
+                        timeoutLimit = 60L
                     )
                     showAddDialog = false
                     refreshTrigger++
@@ -166,7 +168,8 @@ fun ApiConnectionSettings(
                         frequencyPenalty = connectionToEdit.frequencyPenalty,
                         contextLimit = connectionToEdit.contextLimit,
                         responseLimit = connectionToEdit.responseLimit,
-                        displayOrder = connectionToEdit.displayOrder
+                        displayOrder = connectionToEdit.displayOrder,
+                        timeoutLimit = connectionToEdit.timeoutLimit
                     )
                     editingConnection = null
                     refreshTrigger++

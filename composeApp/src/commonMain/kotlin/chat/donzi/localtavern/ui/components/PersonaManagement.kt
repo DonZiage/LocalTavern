@@ -18,7 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog // Added for full screen modal popup behavior
+import androidx.compose.ui.window.Dialog
 import chat.donzi.localtavern.data.database.PersonaEntity
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import chat.donzi.localtavern.utils.DefaultTokenizer
@@ -72,7 +72,6 @@ fun PersonaManagement(
         }
     )
 
-    // Conditional rendering matching ApiConnectionDialog patterns
     if (showAddDialog) {
         PersonaEditDialog(
             title = "Add Persona",
@@ -118,7 +117,6 @@ private fun PersonaEditDialog(
     var showImageMenu by remember { mutableStateOf(false) }
     var showFullImage by remember { mutableStateOf(false) }
 
-    // Initialized cleanly inside the dialog context
     val pickImage = rememberImagePickerLauncher { bytes ->
         avatarData = bytes
     }
@@ -231,8 +229,7 @@ private fun PersonaEditDialog(
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
                         onClick = { onSave(name, description.ifBlank { null }, avatarData) },
-                        enabled = name.isNotBlank(),
-                        shape = RoundedCornerShape(8.dp)
+                        enabled = name.isNotBlank() // Fixed: Shape removed to inherit standard pill/oval shape style
                     ) {
                         Text("Save")
                     }

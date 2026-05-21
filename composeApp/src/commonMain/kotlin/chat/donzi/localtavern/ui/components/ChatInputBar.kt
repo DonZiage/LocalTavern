@@ -5,6 +5,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Stop // Added standard Stop Icon
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -19,13 +20,15 @@ fun ChatInputBar(
     onRegenerate: () -> Unit,
     canRegenerate: Boolean,
     onEnterSelectMode: () -> Unit,
-    canDelete: Boolean
+    canDelete: Boolean,
+    isGenerating: Boolean = false, // Added generation state tracking
+    onStopGeneration: () -> Unit = {} // Added cancel handling trigger hook
 ) {
     var text by remember { mutableStateOf("") }
     var showMenu by remember { mutableStateOf(false) }
 
     fun handleSend() {
-        if (text.isNotBlank()) {
+        if (text.isNotBlank() && !isGenerating) {
             onSendMessage(text)
             text = ""
         }
@@ -55,10 +58,11 @@ fun ChatInputBar(
             value = text,
             onValueChange = { text = it },
             placeholder = { Text("Message...") },
+            enabled = !isGenerating, // Block text box edit manipulation fields during active streams
             modifier = Modifier
                 .weight(1f)
                 .onPreviewKeyEvent { event ->
-                    if (event.type == KeyEventType.KeyDown &&
+                    if (!isGenerating && event.type == KeyEventType.KeyDown &&
                         (event.key == Key.Enter || event.key == Key.NumPadEnter)) {
                         if (event.isShiftPressed) {
                             false
@@ -79,15 +83,25 @@ fun ChatInputBar(
             )
         )
 
-        IconButton(
-            onClick = { handleSend() },
-            enabled = text.isNotBlank()
-        ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.Send,
-                contentDescription = "Send",
-                tint = if (text.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray
-            )
+        if (isGenerating) {
+            IconButton(onClick = onStopGeneration) {
+                Icon(
+                    imageVector = Icons.Default.Stop,
+                    contentDescription = "Stop Response Generation",
+                    tint = MaterialTheme.colorScheme.error
+                )
+            }
+        } else {
+            IconButton(
+                onClick = { handleSend() },
+                enabled = text.isNotBlank()
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Send,
+                    contentDescription = "Send",
+                    tint = if (text.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray
+                )
+            }
         }
     }
 }

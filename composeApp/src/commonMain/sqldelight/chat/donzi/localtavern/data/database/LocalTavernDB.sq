@@ -11,22 +11,18 @@ CREATE TABLE CharacterEntity (
     avatarData BLOB,
     isAssistant INTEGER NOT NULL DEFAULT 0
 );
-
 CREATE INDEX IF NOT EXISTS idx_character_assistant ON CharacterEntity(isAssistant);
 
 insertCharacter:
 INSERT INTO CharacterEntity(name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-
 lastInsertId:
 SELECT last_insert_rowid();
 
 selectAllCharacters:
 SELECT * FROM CharacterEntity ORDER BY isAssistant DESC, name ASC;
-
 selectAssistant:
 SELECT * FROM CharacterEntity WHERE isAssistant = 1 LIMIT 1;
-
 updateCharacter:
 UPDATE CharacterEntity
 SET name = ?,
@@ -41,20 +37,17 @@ WHERE id = ?;
 
 deleteCharactersByIds:
 DELETE FROM CharacterEntity WHERE id IN ?;
-
 CREATE TABLE PersonaEntity (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     description TEXT,
     avatarData BLOB
 );
-
 insertPersona:
 INSERT INTO PersonaEntity(name, description, avatarData) VALUES (?, ?, ?);
 
 selectAllPersonas:
 SELECT * FROM PersonaEntity ORDER BY name ASC;
-
 selectPersonaById:
 SELECT * FROM PersonaEntity WHERE id = ?;
 
@@ -67,7 +60,6 @@ WHERE id = ?;
 
 deletePersona:
 DELETE FROM PersonaEntity WHERE id = ?;
-
 CREATE TABLE ChatSession (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     characterId INTEGER NOT NULL,
@@ -76,21 +68,16 @@ CREATE TABLE ChatSession (
     lastTimestamp INTEGER NOT NULL,
     currentMessageId INTEGER
 );
-
 CREATE INDEX IF NOT EXISTS idx_session_character_time ON ChatSession(characterId, lastTimestamp DESC);
 
 selectSessionById:
 SELECT * FROM ChatSession WHERE id = ?;
-
 insertChatSession:
 INSERT INTO ChatSession(characterId, personaId, title, lastTimestamp, currentMessageId) VALUES (?, ?, ?, ?, ?);
-
 updateSessionCurrentMessage:
 UPDATE ChatSession SET currentMessageId = ?, lastTimestamp = ? WHERE id = ?;
-
 selectLastSessionForCharacter:
 SELECT * FROM ChatSession WHERE characterId = ? ORDER BY lastTimestamp DESC LIMIT 1;
-
 CREATE TABLE MessageEntity (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sessionId INTEGER NOT NULL,
@@ -100,29 +87,26 @@ CREATE TABLE MessageEntity (
     parentId INTEGER,
     isActivePath INTEGER NOT NULL DEFAULT 1
 );
-
--- Targeted compound indices for sub-millisecond timeline rendering and sibling fetching
 CREATE INDEX IF NOT EXISTS idx_message_active_timeline ON MessageEntity(sessionId, isActivePath, timestamp ASC);
 CREATE INDEX IF NOT EXISTS idx_message_siblings ON MessageEntity(sessionId, parentId, timestamp ASC);
 
 selectActiveTimeline:
-SELECT * FROM MessageEntity WHERE sessionId = ? AND isActivePath = 1 ORDER BY timestamp ASC;
+SELECT * FROM MessageEntity WHERE sessionId = ?
+AND isActivePath = 1 ORDER BY timestamp ASC;
 
 selectSiblings:
-SELECT * FROM MessageEntity WHERE sessionId = ? AND parentId IS ? ORDER BY timestamp ASC;
+SELECT * FROM MessageEntity WHERE sessionId = ? AND parentId IS ?
+ORDER BY timestamp ASC;
 
 insertMessageWithParent:
 INSERT INTO MessageEntity(sessionId, role, content, timestamp, parentId, isActivePath) VALUES (?, ?, ?, ?, ?, ?);
-
 deactivateSiblings:
 UPDATE MessageEntity SET isActivePath = 0 WHERE sessionId = ? AND parentId IS ? AND id != ?;
-
 activateMessage:
 UPDATE MessageEntity SET isActivePath = 1 WHERE id = ?;
 
 updateMessageContent:
 UPDATE MessageEntity SET content = ? WHERE id = ?;
-
 deleteMessage:
 DELETE FROM MessageEntity WHERE id = ?;
 
@@ -143,19 +127,18 @@ CREATE TABLE ApiConnection (
     frequencyPenalty REAL NOT NULL DEFAULT 0.0,
     contextLimit INTEGER NOT NULL DEFAULT 4096,
     responseLimit INTEGER NOT NULL DEFAULT 0,
-    displayOrder INTEGER NOT NULL DEFAULT 0
+    displayOrder INTEGER NOT NULL DEFAULT 0,
+    timeoutLimit INTEGER NOT NULL DEFAULT 60 -- Added persistent schema property
 );
-
 selectAllApiConnections:
 SELECT * FROM ApiConnection ORDER BY displayOrder ASC;
 
 insertApiConnection:
 INSERT INTO ApiConnection(
     provider, name, baseUrl, apiKey, model, isActive, isChatCompletion, lastUsed,
-    temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit, displayOrder
+    temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit, displayOrder, timeoutLimit
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 updateApiConnection:
 UPDATE ApiConnection
 SET provider = ?,
@@ -173,7 +156,8 @@ SET provider = ?,
     frequencyPenalty = ?,
     contextLimit = ?,
     responseLimit = ?,
-    displayOrder = ?
+    displayOrder = ?,
+    timeoutLimit = ? -- Added query configuration mutations
 WHERE id = ?;
 
 deleteApiConnection:
@@ -181,37 +165,29 @@ DELETE FROM ApiConnection WHERE id = ?;
 
 setActiveApiConnection:
 UPDATE ApiConnection SET isActive = 0;
-
 updateActiveApiConnection:
 UPDATE ApiConnection SET isActive = 1, lastUsed = ? WHERE id = ?;
-
 selectActiveApiConnection:
 SELECT * FROM ApiConnection WHERE isActive = 1 LIMIT 1;
 
 selectLastUsedApiConnection:
 SELECT * FROM ApiConnection ORDER BY lastUsed DESC LIMIT 1;
-
 updateApiConnectionDisplayOrder:
 UPDATE ApiConnection SET displayOrder = ? WHERE id = ?;
-
 CREATE TABLE AppSettings (
     id INTEGER PRIMARY KEY CHECK (id = 1) DEFAULT 1,
     isDarkMode INTEGER NOT NULL DEFAULT 1,
     activePersonaId INTEGER
 );
-
 getAppSettings:
 SELECT * FROM AppSettings WHERE id = 1;
 
 updateDarkMode:
 UPDATE AppSettings SET isDarkMode = ? WHERE id = 1;
-
 updateActivePersonaId:
 UPDATE AppSettings SET activePersonaId = ? WHERE id = 1;
-
 insertDefaultSettings:
 INSERT OR IGNORE INTO AppSettings(id, isDarkMode, activePersonaId) VALUES (1, 1, NULL);
-
 CREATE TABLE PromptBlockEntity (
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,
@@ -220,14 +196,12 @@ CREATE TABLE PromptBlockEntity (
     isCustom INTEGER NOT NULL DEFAULT 0,
     displayOrder INTEGER NOT NULL DEFAULT 0
 );
-
 selectAllPromptBlocks:
 SELECT * FROM PromptBlockEntity ORDER BY displayOrder ASC;
 
 insertPromptBlock:
 INSERT INTO PromptBlockEntity(id, name, template, isEnabled, isCustom, displayOrder)
 VALUES (?, ?, ?, ?, ?, ?);
-
 updatePromptBlock:
 UPDATE PromptBlockEntity
 SET name = ?,
@@ -237,6 +211,5 @@ WHERE id = ?;
 
 deletePromptBlock:
 DELETE FROM PromptBlockEntity WHERE id = ? AND isCustom = 1;
-
 updatePromptBlockDisplayOrder:
 UPDATE PromptBlockEntity SET displayOrder = ? WHERE id = ?;

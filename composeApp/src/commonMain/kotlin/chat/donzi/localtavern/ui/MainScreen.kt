@@ -26,6 +26,10 @@ import androidx.compose.ui.geometry.Offset
 import chat.donzi.localtavern.utils.ContextManager
 import chat.donzi.localtavern.utils.ChatMessage
 import chat.donzi.localtavern.utils.toDomain
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 
 private suspend fun insertInitialGreetings(
@@ -86,7 +90,9 @@ fun MainScreen(
 
     var hasApiProfile by remember { mutableStateOf(false) }
 
-    // Automated trigger tokens for interactive setup flow configurations
+    var isGenerating by remember { mutableStateOf(false) }
+    var currentResponseJob by remember { mutableStateOf<Job?>(null) }
+
     var autoEditPersonaTrigger by remember { mutableStateOf(false) }
     var autoShowCharacterMenuTrigger by remember { mutableStateOf(false) }
 
@@ -168,62 +174,102 @@ fun MainScreen(
     }
 
     fun requestAiResponse(sessionId: Long, targetParentId: Long? = null) {
-        coroutineScope.launch {
-            val activeConnection = chatRepository.getActiveApiConnection()
-            if (activeConnection != null) {
-                val aiMessageId = chatRepository.insertMessage(sessionId, "assistant", "...", targetParentId)
-                refreshMessages()
-
-                var fullResponse = ""
-                var receivedFirstToken = false
-                val dbMessages = chatRepository.getMessagesForSession(sessionId)
-
-                val chatHistory = dbMessages
-                    .filter { it.id != aiMessageId }
-                    .map { ChatMessage(role = it.role, content = it.content) }
-
-                val blocks = chatRepository.getAllPromptBlocks().map { it.toDomain() }
-                val messagesPayload = ContextManager.buildPayload(
-                    blocks = blocks,
-                    character = activeCharacter,
-                    persona = activePersona,
-                    chatHistory = chatHistory,
-                    contextLimit = activeConnection.contextLimit,
-                    responseLimit = activeConnection.responseLimit
-                )
-
-                try {
-                    chatClient.streamChatRequest(
-                        baseUrl = activeConnection.baseUrl ?: "",
-                        apiKey = activeConnection.apiKey ?: "",
-                        model = activeConnection.model ?: "gpt-3.5-turbo",
-                        messages = messagesPayload,
-                        isChatCompletion = activeConnection.isChatCompletion == 1L
-                    ).collect { token ->
-                        if (!receivedFirstToken) {
-                            receivedFirstToken = true
-                            fullResponse = token
-                        } else {
-                            fullResponse += token
-                        }
-
-                        messages = messages.map { msg ->
-                            if (msg.id == aiMessageId) msg.copy(content = fullResponse) else msg
-                        }
-                        chatRepository.updateMessageContent(aiMessageId, fullResponse)
-                    }
+        currentResponseJob?.cancel()
+        currentResponseJob = coroutineScope.launch {
+            try {
+                isGenerating = true
+                val activeConnection = chatRepository.getActiveApiConnection()
+                if (activeConnection != null) {
+                    val aiMessageId = chatRepository.insertMessage(sessionId, "assistant", "...", targetParentId)
                     refreshMessages()
-                } catch (e: Exception) {
-                    val errorText = "Error: ${e.message}"
-                    messages = messages.map { msg ->
-                        if (msg.id == aiMessageId) msg.copy(content = errorText) else msg
+
+                    var fullResponse = ""
+                    var receivedFirstToken = false
+                    val dbMessages = chatRepository.getMessagesForSession(sessionId)
+
+                    val chatHistory = dbMessages
+                        .filter { it.id != aiMessageId }
+                        .map { ChatMessage(role = it.role, content = it.content) }
+
+                    val blocks = chatRepository.getAllPromptBlocks().map { it.toDomain() }
+                    val messagesPayload = ContextManager.buildPayload(
+                        blocks = blocks,
+                        character = activeCharacter,
+                        persona = activePersona,
+                        chatHistory = chatHistory,
+                        contextLimit = activeConnection.contextLimit,
+                        responseLimit = activeConnection.responseLimit
+                    )
+
+                    val timeoutLimitSeconds = activeConnection.timeoutLimit.coerceAtLeast(5L)
+                    val tokenChannel = Channel<String>(Channel.UNLIMITED)
+
+                    val streamJob = launch {
+                        try {
+                            chatClient.streamChatRequest(
+                                baseUrl = activeConnection.baseUrl ?: "",
+                                apiKey = activeConnection.apiKey ?: "",
+                                model = activeConnection.model ?: "gpt-3.5-turbo",
+                                messages = messagesPayload,
+                                isChatCompletion = activeConnection.isChatCompletion == 1L
+                            ).collect { token ->
+                                tokenChannel.send(token)
+                            }
+                        } catch (e: Exception) {
+                            tokenChannel.close(e)
+                            return@launch
+                        }
+                        tokenChannel.close()
                     }
-                    chatRepository.updateMessageContent(aiMessageId, errorText)
+
+                    try {
+                        while (true) {
+                            val token = withTimeout(timeoutLimitSeconds * 1000L) {
+                                tokenChannel.receiveCatching().getOrNull()
+                            } ?: break
+
+                            if (!receivedFirstToken) {
+                                receivedFirstToken = true
+                                fullResponse = token
+                            } else {
+                                fullResponse += token
+                            }
+
+                            messages = messages.map { msg ->
+                                if (msg.id == aiMessageId) msg.copy(content = fullResponse) else msg
+                            }
+                            chatRepository.updateMessageContent(aiMessageId, fullResponse)
+                        }
+                        refreshMessages()
+                    } catch (_: TimeoutCancellationException) {
+                        streamJob.cancel()
+                        val errorSuffix = "\n\n[Error: Response timeout exceeded after ${timeoutLimitSeconds}s without token emissions.]"
+                        val errorText = if (fullResponse.isBlank()) "Error: Response timeout exceeded after ${timeoutLimitSeconds}s without token emissions." else fullResponse + errorSuffix
+                        messages = messages.map { msg ->
+                            if (msg.id == aiMessageId) msg.copy(content = errorText) else msg
+                        }
+                        chatRepository.updateMessageContent(aiMessageId, errorText)
+                        refreshMessages()
+                    } catch (_: kotlinx.coroutines.CancellationException) {
+                        streamJob.cancel()
+                        refreshMessages()
+                    } catch (e: Exception) {
+                        streamJob.cancel()
+                        val errorSuffix = "\n\n[Error: ${e.message}]"
+                        val errorText = if (fullResponse.isBlank()) "Error: ${e.message}" else fullResponse + errorSuffix
+                        messages = messages.map { msg ->
+                            if (msg.id == aiMessageId) msg.copy(content = errorText) else msg
+                        }
+                        chatRepository.updateMessageContent(aiMessageId, errorText)
+                        refreshMessages()
+                    }
+                } else {
+                    activeSessionId?.let { chatRepository.insertMessage(it, "assistant", "No active connection.", targetParentId) }
                     refreshMessages()
                 }
-            } else {
-                activeSessionId?.let { chatRepository.insertMessage(it, "assistant", "No active connection.", targetParentId) }
-                refreshMessages()
+            } finally {
+                isGenerating = false
+                currentResponseJob = null
             }
         }
     }
@@ -275,6 +321,7 @@ fun MainScreen(
                                 Text("Cancel")
                             }
                             Spacer(modifier = Modifier.width(12.dp))
+
                             Button(
                                 onClick = {
                                     coroutineScope.launch {
@@ -285,10 +332,13 @@ fun MainScreen(
                                     }
                                 },
                                 enabled = selectedMessageIds.isNotEmpty(),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F))
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFD32F2F),
+                                    contentColor = Color.White
+                                )
                             ) {
-                                Icon(Icons.Default.Delete, contentDescription = null)
-                                Text("Delete")
+                                Icon(Icons.Default.Delete, contentDescription = null, tint = Color.White)
+                                Text("Delete", color = Color.White)
                             }
                             IconButton(onClick = { isSelectMode = false; selectedMessageIds = emptySet() }) {
                                 Icon(Icons.Default.Close, contentDescription = "Close")
@@ -356,7 +406,43 @@ fun MainScreen(
                     },
                     onDeleteMessage = { id ->
                         coroutineScope.launch {
+                            activeSessionId?.let { sessionId ->
+                                val activeTimeline = chatRepository.getMessagesForSession(sessionId)
+                                val isCurrentActive = activeTimeline.any { it.id == id }
+
+                                if (isCurrentActive) {
+                                    val currentTimeline = chatRepository.getMessagesForSession(sessionId)
+                                    val msg = currentTimeline.find { it.id == id }
+                                    val parentId = msg?.parentId
+                                    val siblings = chatRepository.getMessageSiblings(sessionId, parentId)
+                                    val otherSibling = siblings.firstOrNull { it.id != id }
+                                    if (otherSibling != null) {
+                                        chatRepository.selectVariation(sessionId, otherSibling.id, parentId)
+                                    } else {
+                                        if (parentId != null) {
+                                            chatRepository.updateSessionCurrentMessage(sessionId, parentId)
+                                        }
+                                    }
+                                }
+                            }
                             chatRepository.deleteMessage(id)
+                            refreshMessages()
+                        }
+                    },
+                    onDeleteMessages = { ids ->
+                        coroutineScope.launch {
+                            activeSessionId?.let { sessionId ->
+                                val activeTimeline = chatRepository.getMessagesForSession(sessionId)
+                                val activeDeleted = activeTimeline.find { it.id in ids }
+                                if (activeDeleted != null) {
+                                    val parentId = activeDeleted.parentId
+                                    if (parentId != null) {
+                                        val parentMsg = chatRepository.getMessagesForSession(sessionId).find { it.id == parentId }
+                                        chatRepository.selectVariation(sessionId, parentId, parentMsg?.parentId)
+                                    }
+                                }
+                            }
+                            ids.forEach { chatRepository.deleteMessage(it) }
                             refreshMessages()
                         }
                     },
@@ -403,7 +489,9 @@ fun MainScreen(
                             selectedMessageIds = messages.subList(index, messages.size).map { it.id }.toSet()
                         }
                     },
-                    onEnterSelectMode = { isSelectMode = true; selectedMessageIds = emptySet() }
+                    onEnterSelectMode = { isSelectMode = true; selectedMessageIds = emptySet() },
+                    isGenerating = isGenerating,
+                    onStopGeneration = { currentResponseJob?.cancel() }
                 )
             }
         }
