@@ -54,7 +54,8 @@ fun ChatArea(
     onSelectMessageToggle: (Long) -> Unit = {},
     onEnterSelectMode: () -> Unit = {},
     isGenerating: Boolean = false,
-    onStopGeneration: () -> Unit = {}
+    onStopGeneration: () -> Unit = {},
+    onManageChats: () -> Unit
 ) {
     var messageToDelete by remember { mutableStateOf<MessageEntity?>(null) }
 
@@ -295,7 +296,9 @@ fun ChatArea(
                 onEnterSelectMode = onEnterSelectMode,
                 canDelete = messages.isNotEmpty(),
                 isGenerating = isGenerating,
-                onStopGeneration = onStopGeneration
+                onStopGeneration = onStopGeneration,
+                onManageChats = onManageChats,
+                canManageChats = activeCharacter != null
             )
         }
     }

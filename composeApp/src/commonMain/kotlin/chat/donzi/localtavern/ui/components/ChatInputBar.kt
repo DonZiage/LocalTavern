@@ -22,7 +22,9 @@ fun ChatInputBar(
     onEnterSelectMode: () -> Unit,
     canDelete: Boolean,
     isGenerating: Boolean = false,
-    onStopGeneration: () -> Unit = {}
+    onStopGeneration: () -> Unit = {},
+    onManageChats: () -> Unit,
+    canManageChats: Boolean
 ) {
     var text by remember { mutableStateOf("") }
     var showMenu by remember { mutableStateOf(false) }
@@ -50,7 +52,9 @@ fun ChatInputBar(
                 onRegenerate = onRegenerate,
                 canRegenerate = canRegenerate,
                 onEnterSelectMode = onEnterSelectMode,
-                canDelete = canDelete
+                canDelete = canDelete,
+                onManageChats = onManageChats,
+                canManageChats = canManageChats
             )
         }
 

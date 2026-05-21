@@ -213,3 +213,15 @@ deletePromptBlock:
 DELETE FROM PromptBlockEntity WHERE id = ? AND isCustom = 1;
 updatePromptBlockDisplayOrder:
 UPDATE PromptBlockEntity SET displayOrder = ? WHERE id = ?;
+
+selectSessionsForCharacter:
+SELECT * FROM ChatSession WHERE characterId = ? ORDER BY lastTimestamp DESC;
+
+deleteSession:
+DELETE FROM ChatSession WHERE id = ?;
+
+deleteMessagesForSession:
+DELETE FROM MessageEntity WHERE sessionId = ?;
+
+updateSessionTitle:
+UPDATE ChatSession SET title = ? WHERE id = ?;

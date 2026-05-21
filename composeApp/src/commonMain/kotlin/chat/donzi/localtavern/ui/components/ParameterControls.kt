@@ -14,6 +14,7 @@ import chat.donzi.localtavern.data.database.ChatRepository
 import chat.donzi.localtavern.utils.PromptBlock
 import chat.donzi.localtavern.utils.toDomain
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 @Composable
 fun ParameterControls(
@@ -132,6 +133,17 @@ fun ParameterControls(
                     range = -2f..2f,
                     steps = 40,
                     onValueChange = { onUpdate(connection.copy(frequencyPenalty = it.toDouble())) }
+                )
+
+                ParameterSlider(
+                    label = "Response Timeout",
+                    value = connection.timeoutLimit.toFloat(),
+                    range = 0f..120f,
+                    steps = 5,
+                    format = { if (it == 0f) "No Timer" else "${it.toInt()}s" },
+                    onValueChange = { floatValue ->
+                        onUpdate(connection.copy(timeoutLimit = floatValue.roundToInt().toLong()))
+                    }
                 )
             }
         }

@@ -1,6 +1,7 @@
 package chat.donzi.localtavern.ui.components
 
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
@@ -17,7 +18,9 @@ fun ChatOptionsMenu(
     onRegenerate: () -> Unit,
     canRegenerate: Boolean,
     onEnterSelectMode: () -> Unit,
-    canDelete: Boolean
+    canDelete: Boolean,
+    onManageChats: () -> Unit,
+    canManageChats: Boolean
 ) {
     val coroutineScope = rememberCoroutineScope()
 
@@ -26,16 +29,16 @@ fun ChatOptionsMenu(
         onDismissRequest = onDismissRequest
     ) {
         DropdownMenuItem(
-            text = { Text("Delete") },
+            text = { Text("Chats") },
             onClick = {
                 onDismissRequest()
                 coroutineScope.launch {
                     delay(50.milliseconds)
-                    onEnterSelectMode()
+                    onManageChats()
                 }
             },
-            enabled = canDelete,
-            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) }
+            enabled = canManageChats,
+            leadingIcon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) }
         )
         DropdownMenuItem(
             text = { Text("Regenerate") },
@@ -48,6 +51,18 @@ fun ChatOptionsMenu(
             },
             enabled = canRegenerate,
             leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) }
+        )
+        DropdownMenuItem(
+            text = { Text("Delete Messages") },
+            onClick = {
+                onDismissRequest()
+                coroutineScope.launch {
+                    delay(50.milliseconds)
+                    onEnterSelectMode()
+                }
+            },
+            enabled = canDelete,
+            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) }
         )
     }
 }

@@ -286,4 +286,25 @@ class ChatRepository(private val database: LocalTavernDB) {
             }
         }
     }
+    suspend fun getSessionsForCharacter(characterId: Long): List<ChatSession> = withContext(Dispatchers.IO) {
+        queries.selectSessionsForCharacter(characterId).executeAsList()
+    }
+
+    suspend fun createNewSession(characterId: Long, personaId: Long): Long = withContext(Dispatchers.IO) {
+        database.transactionWithResult {
+            queries.insertChatSession(characterId, personaId, null, currentTimeMillis(), null)
+            queries.lastInsertId().executeAsOne()
+        }
+    }
+
+    suspend fun deleteSession(sessionId: Long) = withContext(Dispatchers.IO) {
+        database.transaction {
+            queries.deleteMessagesForSession(sessionId)
+            queries.deleteSession(sessionId)
+        }
+    }
+
+    suspend fun updateSessionTitle(sessionId: Long, title: String?) = withContext(Dispatchers.IO) {
+        queries.updateSessionTitle(title, sessionId)
+    }
 }
