@@ -160,8 +160,6 @@ fun MainScreen(
         characters.isNotEmpty()
     }
 
-    // FIXED: Query API profile configurations globally outside active conversation sessions
-    // to guarantee Step 1 onboarding visibility sync blocks evaluate correctly at all times.
     LaunchedEffect(activeSessionId, characters, personas) {
         hasApiProfile = chatRepository.getAllApiConnections().isNotEmpty()
     }

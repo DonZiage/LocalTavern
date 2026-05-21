@@ -194,7 +194,6 @@ fun ChatArea(
                     }
 
                     val isLastMessage = messages.lastOrNull()?.id == message.id
-                    // Fixed requirement: swipes are entirely disabled during streaming generation
                     val isSwipeable = !isUserMessage && isLastMessage && !isGenerating
 
                     val siblings = siblingsMap[message.id] ?: listOf(message)

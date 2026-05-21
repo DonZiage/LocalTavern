@@ -79,8 +79,8 @@ android {
         applicationId = "chat.donzi.localtavern"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 55
+        versionName = "0.5.5"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -98,7 +98,7 @@ compose.desktop {
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Exe
             )
             packageName = "LocalTavern"
-            packageVersion = "0.1.5"
+            packageVersion = "0.5.5"
         }
     }
 }
