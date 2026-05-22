@@ -52,6 +52,7 @@ fun SidePanels(
     onCharacterSelect: (CharacterEntity) -> Unit,
     onCharactersDelete: (Set<Long>) -> Unit,
     onCharacterImport: (SillyTavernCardV2, ByteArray?) -> Unit,
+    onCharacterExport: (CharacterEntity) -> Unit,
     onCharacterCreate: (String) -> Unit,
     onCharacterEdit: (CharacterEntity) -> Unit,
     autoEditDefaultPersona: Boolean = false,
@@ -214,6 +215,7 @@ fun SidePanels(
                                 onImportCharacter = onCharacterImport,
                                 onCreateCharacter = onCharacterCreate,
                                 onEditCharacter = onCharacterEdit,
+                                onExportCharacter = onCharacterExport,
                                 autoShowNewCharacterMenu = autoShowNewCharacterMenu,
                                 onAutoShowMenuConsumed = onAutoShowMenuConsumed
                             )

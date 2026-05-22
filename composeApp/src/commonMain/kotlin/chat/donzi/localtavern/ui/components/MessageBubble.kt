@@ -170,7 +170,6 @@ fun MessageBubble(
         Color.Transparent
     }
 
-    // Extracted conditional actions view to eliminate layout tree logic duplication
     val actionsBlock = @Composable {
         if (isEditing) {
             EditActions(

@@ -24,12 +24,12 @@ import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import chat.donzi.localtavern.saveFile
-import chat.donzi.localtavern.openDirectory
 import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import coil3.compose.AsyncImage
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.time.Duration.Companion.milliseconds
 
 @Composable
 fun CharacterDefinitionEditor(
@@ -67,9 +67,29 @@ fun CharacterDefinitionEditor(
     var showImageMenu by remember { mutableStateOf(false) }
     var showFullImage by remember { mutableStateOf(false) }
 
+    var showExportNotification by remember { mutableStateOf(false) }
+    var exportedDir by remember { mutableStateOf("") }
+
     val deleteRed = Color(0xFFD32F2F)
 
     fun persist() = onSave(name, description, personality, scenario, firstMes, mesExample, altGreetings, avatarData)
+
+    var isFirstLoad by remember(character.id) { mutableStateOf(true) }
+    LaunchedEffect(name, description, personality, scenario, firstMes, mesExample, altGreetings, avatarData) {
+        if (isFirstLoad) {
+            isFirstLoad = false
+            return@LaunchedEffect
+        }
+        delay(600.milliseconds)
+        persist()
+    }
+
+    LaunchedEffect(showExportNotification) {
+        if (showExportNotification) {
+            delay(5000.milliseconds)
+            showExportNotification = false
+        }
+    }
 
     val baseTokens = remember(name, description, personality, scenario, firstMes, mesExample) {
         DefaultTokenizer.countTokens(name) +
@@ -99,35 +119,22 @@ fun CharacterDefinitionEditor(
     }
 
     val exportCharacter = {
-        val original = avatarData ?: ByteArray(0)
-        val exportedBytes = CharacterManager.exportToPng(
-            originalImage = original,
-            character = character.copy(avatarData = avatarData)
+        val currentCharacter = character.copy(
+            name = name, description = description, personality = personality, scenario = scenario, firstMes = firstMes,
+            mesExample = mesExample.filter { it.isNotBlank() }.joinToString("|||"),
+            altGreetings = altGreetings.filter { it.isNotBlank() }.joinToString("|||"), avatarData = avatarData
         )
 
         try {
-            val fileName = "${character.name}.png"
-            val savedPath = saveFile(fileName, exportedBytes)
-            if (savedPath != null) {
-                scope.launch {
-                    val result = snackbarHostState.showSnackbar(
-                        message = "Exported to LocalTavern/ExportedCharacters",
-                        actionLabel = "Show",
-                        duration = SnackbarDuration.Long
-                    )
-                    if (result == SnackbarResult.ActionPerformed) {
-                        openDirectory(savedPath)
-                    }
-                }
+            val parentDir = CharacterManager.performExport(currentCharacter)
+            if (parentDir != null) {
+                exportedDir = parentDir
+                showExportNotification = true
             } else {
-                scope.launch {
-                    snackbarHostState.showSnackbar("Failed to export: Could not save file")
-                }
+                scope.launch { snackbarHostState.showSnackbar("Failed to export: Could not save file") }
             }
         } catch (e: Exception) {
-            scope.launch {
-                snackbarHostState.showSnackbar("Failed to export: ${e.message}")
-            }
+            scope.launch { snackbarHostState.showSnackbar("Failed to export: ${e.message}") }
         }
     }
 
@@ -148,11 +155,7 @@ fun CharacterDefinitionEditor(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    "Edit Character",
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.weight(1f)
-                )
+                Text("Edit Character", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
 
                 OutlinedButton(
                     onClick = { exportCharacter() },
@@ -167,10 +170,7 @@ fun CharacterDefinitionEditor(
                 Button(
                     onClick = { confirmDelete = true },
                     modifier = Modifier.height(36.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = deleteRed,
-                        contentColor = Color.White
-                    ),
+                    colors = ButtonDefaults.buttonColors(containerColor = deleteRed, contentColor = Color.White),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
                 ) {
                     Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -178,147 +178,76 @@ fun CharacterDefinitionEditor(
                     Text("Delete", style = MaterialTheme.typography.labelLarge)
                 }
 
-                IconButton(
-                    onClick = onClose,
-                    modifier = Modifier.size(36.dp)
-                ) {
+                IconButton(onClick = { persist(); onClose() }, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Default.Close, contentDescription = "Close")
                 }
             }
 
             Spacer(Modifier.height(4.dp))
+            Text(text = "Total: $totalTokenDisplay", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 8.dp))
 
-            Text(
-                text = "Total: $totalTokenDisplay",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                contentAlignment = Alignment.Center
-            ) {
+            Box(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
                 Box {
                     Box(
                         modifier = Modifier
-                            .size(120.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .size(120.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant)
                             .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f), CircleShape)
                             .clickable { showImageMenu = true }
                     ) {
                         if (avatarData != null) {
-                            AsyncImage(
-                                model = avatarData,
-                                contentDescription = "Character Avatar",
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
+                            AsyncImage(model = avatarData, contentDescription = "Character Avatar", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
                         } else {
-                            Icon(
-                                imageVector = Icons.Default.AddAPhoto,
-                                contentDescription = "Add Photo",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(40.dp).align(Alignment.Center)
-                            )
+                            Icon(imageVector = Icons.Default.AddAPhoto, contentDescription = "Add Photo", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(40.dp).align(Alignment.Center))
                         }
                     }
-
-                    AvatarDropdownMenu(
-                        expanded = showImageMenu,
-                        onDismissRequest = { showImageMenu = false },
-                        hasAvatar = avatarData != null,
-                        onAddOrUpdate = { pickImage() },
-                        onView = { showFullImage = true },
-                        onRemove = {
-                            avatarData = null
-                            persist()
-                        }
-                    )
+                    AvatarDropdownMenu(expanded = showImageMenu, onDismissRequest = { showImageMenu = false }, hasAvatar = avatarData != null, onAddOrUpdate = { pickImage() }, onView = { showFullImage = true }, onRemove = { avatarData = null; persist() })
                 }
             }
 
             Spacer(Modifier.height(16.dp))
-
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Text("${DefaultTokenizer.countTokens(name)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it; persist() },
-                label = { Text("Name") },
-                modifier = Modifier.fillMaxWidth()
-            )
+            OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(12.dp))
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Text("${DefaultTokenizer.countTokens(description)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            OutlinedTextField(
-                value = description,
-                onValueChange = { description = it; persist() },
-                label = { Text("Description") },
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 4
-            )
+            OutlinedTextField(value = description, onValueChange = { description = it }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth(), minLines = 4)
             Spacer(Modifier.height(12.dp))
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Text("${DefaultTokenizer.countTokens(personality)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            OutlinedTextField(
-                value = personality,
-                onValueChange = { personality = it; persist() },
-                label = { Text("Personality") },
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 4
-            )
+            OutlinedTextField(value = personality, onValueChange = { personality = it }, label = { Text("Personality") }, modifier = Modifier.fillMaxWidth(), minLines = 4)
             Spacer(Modifier.height(12.dp))
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Text("${DefaultTokenizer.countTokens(scenario)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            OutlinedTextField(
-                value = scenario,
-                onValueChange = { scenario = it; persist() },
-                label = { Text("Scenario") },
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 3
-            )
+            OutlinedTextField(value = scenario, onValueChange = { scenario = it }, label = { Text("Scenario") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
             Spacer(Modifier.height(12.dp))
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Text("${DefaultTokenizer.countTokens(firstMes)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            OutlinedTextField(
-                value = firstMes,
-                onValueChange = { firstMes = it; persist() },
-                label = { Text("First Message") },
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 3
-            )
+            OutlinedTextField(value = firstMes, onValueChange = { firstMes = it }, label = { Text("First Message") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
             Spacer(Modifier.height(16.dp))
 
-            MessageExamplesStrip(
-                examples = mesExample,
-                onChange = { mesExample = it; persist() }
-            )
-
+            MessageExamplesStrip(examples = mesExample, onChange = { mesExample = it })
             Spacer(Modifier.height(16.dp))
-
-            AlternateGreetingsStrip(
-                greetings = altGreetings,
-                onChange = { altGreetings = it; persist() }
-            )
+            AlternateGreetingsStrip(greetings = altGreetings, onChange = { altGreetings = it })
             Spacer(Modifier.height(24.dp))
         }
 
-        SnackbarHost(
-            hostState = snackbarHostState,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp)
+        SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp))
+
+        ExportNotificationBubble(
+            visible = showExportNotification,
+            exportedDir = exportedDir,
+            onDismiss = { showExportNotification = false },
+            modifier = Modifier.align(Alignment.TopCenter)
         )
     }
 
@@ -332,15 +261,8 @@ fun CharacterDefinitionEditor(
             onDismissRequest = { confirmDelete = false },
             title = { Text("Delete Character?") },
             text = { Text("\"${character.name}\" will be permanently removed.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmDelete = false
-                    onDelete()
-                }) { Text("Delete", color = deleteRed) }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
-            }
+            confirmButton = { TextButton(onClick = { confirmDelete = false; onDelete() }) { Text("Delete", color = deleteRed) } },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } }
         )
     }
 }
@@ -356,43 +278,14 @@ fun AvatarDropdownMenu(
 ) {
     DropdownMenu(expanded = expanded, onDismissRequest = onDismissRequest) {
         if (!hasAvatar) {
-            DropdownMenuItem(
-                text = { Text("Add") },
-                leadingIcon = { Icon(Icons.Default.AddAPhoto, null) },
-                onClick = {
-                    onDismissRequest()
-                    onAddOrUpdate()
-                }
-            )
+            DropdownMenuItem(text = { Text("Add") }, leadingIcon = { Icon(Icons.Default.AddAPhoto, null) }, onClick = { onDismissRequest(); onAddOrUpdate() })
         } else {
-            DropdownMenuItem(
-                text = { Text("View") },
-                leadingIcon = { Icon(Icons.Default.Visibility, null) },
-                onClick = {
-                    onDismissRequest()
-                    onView()
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Update") },
-                leadingIcon = { Icon(Icons.Default.Refresh, null) },
-                onClick = {
-                    onDismissRequest()
-                    onAddOrUpdate()
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Remove") },
-                leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
-                onClick = {
-                    onDismissRequest()
-                    onRemove()
-                }
-            )
+            DropdownMenuItem(text = { Text("View") }, leadingIcon = { Icon(Icons.Default.Visibility, null) }, onClick = { onDismissRequest(); onView() })
+            DropdownMenuItem(text = { Text("Update") }, leadingIcon = { Icon(Icons.Default.Refresh, null) }, onClick = { onDismissRequest(); onAddOrUpdate() })
+            DropdownMenuItem(text = { Text("Remove") }, leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }, onClick = { onDismissRequest(); onRemove() })
         }
     }
 }
-
 
 @Composable
 fun MessageExamplesStrip(
@@ -404,21 +297,12 @@ fun MessageExamplesStrip(
     var editingIndex by remember { mutableStateOf<Int?>(null) }
 
     Column(modifier = modifier.fillMaxWidth()) {
-        Text(
-            "Message Examples",
-            style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.padding(bottom = 6.dp)
-        )
+        Text("Message Examples", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(bottom = 6.dp))
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalMouseWheelScroll(scrollState)
-        ) {
+        Box(modifier = Modifier.fillMaxWidth().horizontalMouseWheelScroll(scrollState)) {
             Row(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(scrollState)
+                    .fillMaxWidth().horizontalScroll(scrollState)
                     .pointerInput(Unit) {
                         detectHorizontalDragGestures { change, dragAmount ->
                             if (change.type == PointerType.Mouse) {
@@ -426,47 +310,19 @@ fun MessageExamplesStrip(
                                 scrollState.dispatchRawDelta(-dragAmount)
                             }
                         }
-                    }
-                    .padding(vertical = 4.dp),
+                    }.padding(vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 examples.forEachIndexed { index, text ->
-                    Surface(
-                        onClick = { editingIndex = index },
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        modifier = Modifier.height(36.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 12.dp)
-                        ) {
-                            Text(
-                                text = "#${index + 1}  " + text.ifBlank { "(empty)" }.replace('\n', ' '),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.labelLarge,
-                                modifier = Modifier.widthIn(max = 220.dp)
-                            )
+                    Surface(onClick = { editingIndex = index }, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.height(36.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp)) {
+                            Text(text = "#${index + 1}  " + text.ifBlank { "(empty)" }.replace('\n', ' '), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge, modifier = Modifier.widthIn(max = 220.dp))
                         }
                     }
                     Spacer(Modifier.width(8.dp))
                 }
-
-                Surface(
-                    onClick = {
-                        val newList = examples + ""
-                        onChange(newList)
-                        editingIndex = newList.size - 1
-                    },
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    modifier = Modifier.height(36.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 12.dp)
-                    ) {
+                Surface(onClick = { val newList = examples + ""; onChange(newList); editingIndex = newList.size - 1 }, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.height(36.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp)) {
                         Icon(Icons.Default.Add, contentDescription = "Add example")
                         Spacer(Modifier.width(4.dp))
                         Text("Add", style = MaterialTheme.typography.labelLarge)
@@ -487,27 +343,13 @@ fun MessageExamplesStrip(
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             Text("${DefaultTokenizer.countTokens(text)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        OutlinedTextField(
-                            value = text,
-                            onValueChange = { text = it },
-                            modifier = Modifier.fillMaxWidth(),
-                            minLines = 5,
-                            label = { Text("Example message text") }
-                        )
+                        OutlinedTextField(value = text, onValueChange = { text = it }, modifier = Modifier.fillMaxWidth(), minLines = 5, label = { Text("Example message text") })
                     }
                 },
-                confirmButton = {
-                    TextButton(onClick = {
-                        onChange(examples.toMutableList().also { it[idx] = text })
-                        editingIndex = null
-                    }) { Text("Save") }
-                },
+                confirmButton = { TextButton(onClick = { onChange(examples.toMutableList().also { it[idx] = text }); editingIndex = null }) { Text("Save") } },
                 dismissButton = {
                     Row {
-                        TextButton(onClick = {
-                            onChange(examples.toMutableList().also { it.removeAt(idx) })
-                            editingIndex = null
-                        }) {
+                        TextButton(onClick = { onChange(examples.toMutableList().also { it.removeAt(idx) }); editingIndex = null }) {
                             Icon(Icons.Default.Delete, contentDescription = null)
                             Spacer(Modifier.width(4.dp))
                             Text("Delete")

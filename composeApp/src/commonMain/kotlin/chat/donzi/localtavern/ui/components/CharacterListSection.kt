@@ -34,6 +34,7 @@ fun CharacterListSection(
     onImportCharacter: (SillyTavernCardV2, ByteArray?) -> Unit,
     onCreateCharacter: (String) -> Unit,
     onEditCharacter: (CharacterEntity) -> Unit,
+    onExportCharacter: (CharacterEntity) -> Unit,
     actions: @Composable RowScope.() -> Unit = {},
     autoShowNewCharacterMenu: Boolean = false,
     onAutoShowMenuConsumed: () -> Unit = {}
@@ -271,6 +272,7 @@ fun CharacterListSection(
                             if (!isSelected) selectedIds.add(char.id)
                         },
                         onEditClick = { onEditCharacter(char) },
+                        onExportClick = { onExportCharacter(char) },
                         onDeleteClick = { characterToDelete = char }
                     )
                 }

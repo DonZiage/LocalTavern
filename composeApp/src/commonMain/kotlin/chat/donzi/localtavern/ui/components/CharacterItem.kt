@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -33,6 +34,7 @@ fun CharacterItem(
     onClick: () -> Unit,
     onLongClick: () -> Unit = {},
     onEditClick: (() -> Unit)? = null,
+    onExportClick: (() -> Unit)? = null,
     onDeleteClick: (() -> Unit)? = null
 ) {
     val containerColor =
@@ -104,7 +106,7 @@ fun CharacterItem(
                 )
             }
 
-            if (!selectionMode && (onEditClick != null || onDeleteClick != null)) {
+            if (!selectionMode && (onEditClick != null || onExportClick != null || onDeleteClick != null)) {
                 Box {
                     IconButton(onClick = { showMenu = true }) {
                         Icon(
@@ -114,7 +116,7 @@ fun CharacterItem(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                         )
                     }
-                    
+
                     DropdownMenu(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false }
@@ -126,6 +128,16 @@ fun CharacterItem(
                                 onClick = {
                                     showMenu = false
                                     onEditClick()
+                                }
+                            )
+                        }
+                        if (onExportClick != null) {
+                            DropdownMenuItem(
+                                text = { Text("Export") },
+                                leadingIcon = { Icon(Icons.Default.Download, null, modifier = Modifier.size(18.dp)) },
+                                onClick = {
+                                    showMenu = false
+                                    onExportClick()
                                 }
                             )
                         }

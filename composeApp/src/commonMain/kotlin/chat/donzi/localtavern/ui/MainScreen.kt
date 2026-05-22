@@ -27,16 +27,20 @@ import chat.donzi.localtavern.ui.components.ActiveDrawer
 import chat.donzi.localtavern.ui.components.SidePanels
 import chat.donzi.localtavern.ui.components.ChatArea
 import chat.donzi.localtavern.ui.components.CharacterDefinitionEditor
+import chat.donzi.localtavern.ui.components.ExportNotificationBubble
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import androidx.compose.ui.geometry.Offset
 import chat.donzi.localtavern.utils.ContextManager
 import chat.donzi.localtavern.utils.ChatMessage
 import chat.donzi.localtavern.utils.toDomain
+import chat.donzi.localtavern.utils.CharacterManager
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.time.Duration.Companion.milliseconds
 
 private suspend fun insertInitialGreetings(
     chatRepository: ChatRepository,
@@ -152,6 +156,10 @@ fun MainScreen(
     var autoShowCharacterMenuTrigger by remember { mutableStateOf(false) }
     var showChatManagerDialog by remember { mutableStateOf(false) }
 
+    var showExportNotification by remember { mutableStateOf(false) }
+    var exportedDir by remember { mutableStateOf("") }
+    val snackbarHostState = remember { SnackbarHostState() }
+
     val hasPersona = remember(personas) {
         personas.any { it.name != "User" || !it.description.isNullOrBlank() || it.avatarData != null }
     }
@@ -181,8 +189,29 @@ fun MainScreen(
         }
     }
 
+    LaunchedEffect(showExportNotification) {
+        if (showExportNotification) {
+            delay(5000.milliseconds)
+            showExportNotification = false
+        }
+    }
+
     val activePersona = remember(personas, activePersonaId) {
         personas.find { it.id == activePersonaId }
+    }
+
+    val exportCharacterFromList = { targetChar: CharacterEntity ->
+        try {
+            val parentDir = CharacterManager.performExport(targetChar)
+            if (parentDir != null) {
+                exportedDir = parentDir
+                showExportNotification = true
+            } else {
+                coroutineScope.launch { snackbarHostState.showSnackbar("Failed to export: Could not save file") }
+            }
+        } catch (e: Exception) {
+            coroutineScope.launch { snackbarHostState.showSnackbar("Failed to export: ${e.message}") }
+        }
     }
 
     fun refreshMessages() {
@@ -199,13 +228,15 @@ fun MainScreen(
                 val updatedSiblings = mutableMapOf<Long, List<MessageEntity>>()
                 val rootGreetings = chatRepository.getMessageSiblings(sessionId, null)
                 if (rootGreetings.isNotEmpty()) {
-                    rootGreetings.forEach { updatedSiblings[it.id] = rootGreetings }
+                    updatedSiblings[rootGreetings.first().id] = rootGreetings
                 }
 
                 activeTimeline.lastOrNull()?.let { lastMsg ->
                     if (lastMsg.role == "assistant" && lastMsg.parentId != null) {
                         val lastSiblings = chatRepository.getMessageSiblings(sessionId, lastMsg.parentId)
-                        lastSiblings.forEach { updatedSiblings[it.id] = lastSiblings }
+                        if (lastSiblings.isNotEmpty()) {
+                            updatedSiblings[lastSiblings.first().id] = lastSiblings
+                        }
                     }
                 }
                 siblingsMap = updatedSiblings
@@ -267,12 +298,8 @@ fun MainScreen(
 
                     val blocks = chatRepository.getAllPromptBlocks().map { it.toDomain() }
                     val messagesPayload = ContextManager.buildPayload(
-                        blocks = blocks,
-                        character = activeCharacter,
-                        persona = activePersona,
-                        chatHistory = chatHistory,
-                        contextLimit = activeConnection.contextLimit,
-                        responseLimit = activeConnection.responseLimit
+                        blocks = blocks, character = activeCharacter, persona = activePersona, chatHistory = chatHistory,
+                        contextLimit = activeConnection.contextLimit, responseLimit = activeConnection.responseLimit
                     )
 
                     val timeoutLimitSeconds = activeConnection.timeoutLimit
@@ -281,14 +308,10 @@ fun MainScreen(
                     val streamJob = launch {
                         try {
                             chatClient.streamChatRequest(
-                                baseUrl = activeConnection.baseUrl ?: "",
-                                apiKey = activeConnection.apiKey ?: "",
-                                model = activeConnection.model ?: "gpt-3.5-turbo",
-                                messages = messagesPayload,
+                                baseUrl = activeConnection.baseUrl ?: "", apiKey = activeConnection.apiKey ?: "",
+                                model = activeConnection.model ?: "gpt-3.5-turbo", messages = messagesPayload,
                                 isChatCompletion = activeConnection.isChatCompletion == 1L
-                            ).collect { token ->
-                                tokenChannel.send(token)
-                            }
+                            ).collect { token -> tokenChannel.send(token) }
                         } catch (e: Exception) {
                             tokenChannel.close(e)
                             return@launch
@@ -301,9 +324,7 @@ fun MainScreen(
                             val token = if (timeoutLimitSeconds == 0L) {
                                 tokenChannel.receiveCatching().getOrNull()
                             } else {
-                                withTimeout(timeoutLimitSeconds * 1000L) {
-                                    tokenChannel.receiveCatching().getOrNull()
-                                }
+                                withTimeout(timeoutLimitSeconds * 1000L) { tokenChannel.receiveCatching().getOrNull() }
                             } ?: break
 
                             if (!receivedFirstToken) {
@@ -313,19 +334,13 @@ fun MainScreen(
                                 fullResponse += token
                             }
 
-                            messages = messages.map { msg ->
-                                if (msg.id == aiMessageId) msg.copy(content = fullResponse) else msg
-                            }
+                            messages = messages.map { msg -> if (msg.id == aiMessageId) msg.copy(content = fullResponse) else msg }
                             chatRepository.updateMessageContent(aiMessageId, fullResponse)
                         }
                         refreshMessages()
                     } catch (_: TimeoutCancellationException) {
                         streamJob.cancel()
-                        val errorSuffix = "\n\n[Error: Response timeout exceeded after ${timeoutLimitSeconds}s without token emissions.]"
-                        val errorText = if (fullResponse.isBlank()) "Error: Response timeout exceeded after ${timeoutLimitSeconds}s without token emissions." else fullResponse + errorSuffix
-                        messages = messages.map { msg ->
-                            if (msg.id == aiMessageId) msg.copy(content = errorText) else msg
-                        }
+                        val errorText = if (fullResponse.isBlank()) "Error: Response timeout exceeded." else "$fullResponse\n\n[Timeout Error]"
                         chatRepository.updateMessageContent(aiMessageId, errorText)
                         refreshMessages()
                     } catch (_: kotlinx.coroutines.CancellationException) {
@@ -333,11 +348,7 @@ fun MainScreen(
                         refreshMessages()
                     } catch (e: Exception) {
                         streamJob.cancel()
-                        val errorSuffix = "\n\n[Error: ${e.message}]"
-                        val errorText = if (fullResponse.isBlank()) "Error: ${e.message}" else fullResponse + errorSuffix
-                        messages = messages.map { msg ->
-                            if (msg.id == aiMessageId) msg.copy(content = errorText) else msg
-                        }
+                        val errorText = if (fullResponse.isBlank()) "Error: ${e.message}" else "$fullResponse\n\n[Error]"
                         chatRepository.updateMessageContent(aiMessageId, errorText)
                         refreshMessages()
                     }
@@ -399,28 +410,21 @@ fun MainScreen(
                                 Text("Cancel")
                             }
                             Spacer(modifier = Modifier.width(12.dp))
-
                             Button(
                                 onClick = {
                                     coroutineScope.launch {
                                         for (id in selectedMessageIds) chatRepository.deleteMessage(id)
-                                        isSelectMode = false
-                                        selectedMessageIds = emptySet()
+                                        isSelectMode = false; selectedMessageIds = emptySet()
                                         refreshMessages()
                                     }
                                 },
                                 enabled = selectedMessageIds.isNotEmpty(),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFFD32F2F),
-                                    contentColor = Color.White
-                                )
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White)
                             ) {
                                 Icon(Icons.Default.Delete, contentDescription = null, tint = Color.White)
                                 Text("Delete", color = Color.White)
                             }
-                            IconButton(onClick = { isSelectMode = false; selectedMessageIds = emptySet() }) {
-                                Icon(Icons.Default.Close, contentDescription = "Close")
-                            }
+                            IconButton(onClick = { isSelectMode = false; selectedMessageIds = emptySet() }) { Icon(Icons.Default.Close, contentDescription = "Close") }
                         }
                     )
                 } else {
@@ -429,26 +433,14 @@ fun MainScreen(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(activeCharacter?.name ?: "LocalTavern")
                                 if (activeCharacter != null) {
-                                    IconButton(onClick = { editingCharacter = activeCharacter }) {
-                                        Icon(Icons.Default.Edit, contentDescription = "Edit")
-                                    }
+                                    IconButton(onClick = { editingCharacter = activeCharacter }) { Icon(Icons.Default.Edit, contentDescription = "Edit") }
                                 }
                             }
                         },
-                        navigationIcon = {
-                            IconButton(onClick = { onActiveDrawerChange(ActiveDrawer.Settings) }) {
-                                Icon(Icons.Filled.Menu, contentDescription = "Settings")
-                            }
-                        },
+                        navigationIcon = { IconButton(onClick = { onActiveDrawerChange(ActiveDrawer.Settings) }) { Icon(Icons.Filled.Menu, contentDescription = "Settings") } },
                         actions = {
-                            if (activeCharacter != null) {
-                                IconButton(onClick = { activeCharacter = null }) {
-                                    Icon(Icons.Filled.Close, contentDescription = "Close Chat")
-                                }
-                            }
-                            IconButton(onClick = { onActiveDrawerChange(ActiveDrawer.Characters) }) {
-                                Icon(Icons.Filled.Person, contentDescription = "Characters")
-                            }
+                            if (activeCharacter != null) { IconButton(onClick = { activeCharacter = null }) { Icon(Icons.Filled.Close, contentDescription = "Close Chat") } }
+                            IconButton(onClick = { onActiveDrawerChange(ActiveDrawer.Characters) }) { Icon(Icons.Filled.Person, contentDescription = "Characters") }
                         }
                     )
                 }
@@ -456,40 +448,16 @@ fun MainScreen(
         ) { paddingValues ->
             Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
                 ChatArea(
-                    activeCharacter = activeCharacter,
-                    activePersonaName = activePersona?.name.orEmpty(),
-                    activePersonaAvatar = activePersona?.avatarData,
-                    messages = messages,
-                    siblingsMap = siblingsMap,
-                    hasApiProfile = hasApiProfile,
-                    hasPersona = hasPersona,
-                    hasCharacter = hasCharacter,
-                    onNavigateToSettings = { onActiveDrawerChange(ActiveDrawer.Settings) },
-                    onNavigateToPersonas = {
-                        autoEditPersonaTrigger = true
-                        onActiveDrawerChange(ActiveDrawer.Characters)
-                    },
-                    onNavigateToCharacters = {
-                        autoShowCharacterMenuTrigger = true
-                        onActiveDrawerChange(ActiveDrawer.Characters)
-                    },
-                    onSendMessage = onSendMessage,
-                    onEditMessage = { id, content ->
-                        coroutineScope.launch {
-                            chatRepository.updateMessageContent(id, content)
-                            messages = messages.map { msg ->
-                                if (msg.id == id) msg.copy(content = content) else msg
-                            }
-                            refreshMessages()
-                        }
-                    },
+                    activeCharacter = activeCharacter, activePersonaName = activePersona?.name.orEmpty(), activePersonaAvatar = activePersona?.avatarData,
+                    messages = messages, siblingsMap = siblingsMap, hasApiProfile = hasApiProfile, hasPersona = hasPersona, hasCharacter = hasCharacter,
+                    onNavigateToSettings = { onActiveDrawerChange(ActiveDrawer.Settings) }, onNavigateToPersonas = { autoEditPersonaTrigger = true; onActiveDrawerChange(ActiveDrawer.Characters) },
+                    onNavigateToCharacters = { autoShowCharacterMenuTrigger = true; onActiveDrawerChange(ActiveDrawer.Characters) }, onSendMessage = onSendMessage,
+                    onEditMessage = { id, content -> coroutineScope.launch { chatRepository.updateMessageContent(id, content); refreshMessages() } },
                     onDeleteMessage = { id ->
                         coroutineScope.launch {
                             activeSessionId?.let { sessionId ->
                                 val activeTimeline = chatRepository.getMessagesForSession(sessionId)
-                                val isCurrentActive = activeTimeline.any { it.id == id }
-
-                                if (isCurrentActive) {
+                                if (activeTimeline.any { it.id == id }) {
                                     val currentTimeline = chatRepository.getMessagesForSession(sessionId)
                                     val msg = currentTimeline.find { it.id == id }
                                     val parentId = msg?.parentId
@@ -497,15 +465,12 @@ fun MainScreen(
                                     val otherSibling = siblings.firstOrNull { it.id != id }
                                     if (otherSibling != null) {
                                         chatRepository.selectVariation(sessionId, otherSibling.id, parentId)
-                                    } else {
-                                        if (parentId != null) {
-                                            chatRepository.updateSessionCurrentMessage(sessionId, parentId)
-                                        }
+                                    } else if (parentId != null) {
+                                        chatRepository.updateSessionCurrentMessage(sessionId, parentId)
                                     }
                                 }
                             }
-                            chatRepository.deleteMessage(id)
-                            refreshMessages()
+                            chatRepository.deleteMessage(id); refreshMessages()
                         }
                     },
                     onDeleteMessages = { ids ->
@@ -521,10 +486,20 @@ fun MainScreen(
                                     }
                                 }
                             }
-                            ids.forEach { chatRepository.deleteMessage(it) }
-                            refreshMessages()
+                            ids.forEach { chatRepository.deleteMessage(it) }; refreshMessages()
                         }
                     },
+                    onBranchMessage = { message ->
+                        coroutineScope.launch {
+                            activeSessionId?.let { sessionId ->
+                                val currentSession = chatRepository.getSessionById(sessionId)
+                                val baseTitle = currentSession?.title ?: "${activeCharacter?.name ?: "Chat"} #$sessionId"
+                                val newSessionId = chatRepository.branchSession(sessionId, message.id, messages, "Branch of $baseTitle")
+                                activeSessionId = newSessionId; refreshMessages()
+                            }
+                        }
+                    },
+                    onGoToParentChat = currentSessionDetails?.parentSessionId?.let { parentId -> { activeSessionId = parentId; refreshMessages() } },
                     onRegenerate = {
                         coroutineScope.launch {
                             if (messages.isEmpty() || activeSessionId == null) return@launch
@@ -543,168 +518,66 @@ fun MainScreen(
                             }
                         }
                     },
-                    onSelectVariation = { variationId ->
-                        coroutineScope.launch {
-                            activeSessionId?.let { sessionId ->
-                                val msg = messages.find { it.id == variationId } ?: siblingsMap[variationId]?.find { it.id == variationId }
-                                chatRepository.selectVariation(sessionId, variationId, msg?.parentId)
-                                refreshMessages()
-                            }
-                        }
-                    },
-                    onGenerateNewVariation = { lastMessageId ->
-                        coroutineScope.launch {
-                            activeSessionId?.let { sessionId ->
-                                val existingMsg = messages.find { it.id == lastMessageId }
-                                requestAiResponse(sessionId, existingMsg?.parentId)
-                            }
-                        }
-                    },
-                    isSelectMode = isSelectMode,
-                    selectedMessageIds = selectedMessageIds,
-                    onSelectMessageToggle = { id ->
-                        val index = messages.indexOfFirst { it.id == id }
-                        if (index != -1) {
-                            selectedMessageIds = messages.subList(index, messages.size).map { it.id }.toSet()
-                        }
-                    },
-                    onEnterSelectMode = { isSelectMode = true; selectedMessageIds = emptySet() },
-                    isGenerating = isGenerating,
-                    onStopGeneration = { currentResponseJob?.cancel() },
-                    onManageChats = { showChatManagerDialog = true },
-                    onBranchMessage = { message ->
-                        coroutineScope.launch {
-                            activeSessionId?.let { sessionId ->
-                                val currentSession = chatRepository.getSessionById(sessionId)
-                                val baseTitle = currentSession?.title ?: "${activeCharacter?.name ?: "Chat"} #$sessionId"
-                                val newTitle = "Branch of $baseTitle"
-
-                                val newSessionId = chatRepository.branchSession(
-                                    originalSessionId = sessionId,
-                                    untilMessageId = message.id,
-                                    messagesToCopy = messages,
-                                    newTitle = newTitle
-                                )
-                                activeSessionId = newSessionId
-                                refreshMessages()
-                            }
-                        }
-                    },
-                    onGoToParentChat = currentSessionDetails?.parentSessionId?.let { parentId ->
-                        {
-                            activeSessionId = parentId
-                            refreshMessages()
-                        }
-                    }
+                    onSelectVariation = { variationId -> coroutineScope.launch { activeSessionId?.let { sessionId -> val msg = messages.find { it.id == variationId } ?: siblingsMap[variationId]?.find { it.id == variationId }; chatRepository.selectVariation(sessionId, variationId, msg?.parentId); refreshMessages() } } },
+                    onGenerateNewVariation = { lastMessageId -> coroutineScope.launch { activeSessionId?.let { sessionId -> val existingMsg = messages.find { it.id == lastMessageId }; requestAiResponse(sessionId, existingMsg?.parentId) } } },
+                    isSelectMode = isSelectMode, selectedMessageIds = selectedMessageIds,
+                    onSelectMessageToggle = { id -> val index = messages.indexOfFirst { it.id == id }; if (index != -1) { selectedMessageIds = messages.subList(index, messages.size).map { it.id }.toSet() } },
+                    onEnterSelectMode = { isSelectMode = true; selectedMessageIds = emptySet() }, isGenerating = isGenerating, onStopGeneration = { currentResponseJob?.cancel() }, onManageChats = { showChatManagerDialog = true }
                 )
             }
         }
 
         SidePanels(
-            activeDrawer = activeDrawer,
-            drawerWidth = drawerWidth,
-            onClose = { onActiveDrawerChange(ActiveDrawer.None) },
-            chatRepository = chatRepository,
-            chatClient = chatClient,
-            isDarkMode = isDarkMode,
-            onToggleDarkMode = onToggleDarkMode,
-            personas = personas,
-            activePersonaId = activePersonaId,
-            onPersonaSelect = onPersonaSelect,
-            onPersonaAdd = onPersonaAdd,
-            onPersonaUpdate = onPersonaUpdate,
-            onPersonaDelete = onPersonaDelete,
-            characters = characters,
-            onCharacterSelect = { character -> activeCharacter = character; onActiveDrawerChange(ActiveDrawer.None) },
-            onCharactersDelete = { ids -> if (activeCharacter?.id in ids) activeCharacter = null; onCharactersDelete(ids) },
-            onCharacterImport = onCharacterImport,
-            onCharacterCreate = { name -> pendingCreationName = name; onCharacterCreate(name); onActiveDrawerChange(ActiveDrawer.None) },
-            onCharacterEdit = { character -> editingCharacter = character; onActiveDrawerChange(ActiveDrawer.None) },
-            autoEditDefaultPersona = autoEditPersonaTrigger,
-            onAutoEditConsumed = { autoEditPersonaTrigger = false },
-            autoShowNewCharacterMenu = autoShowCharacterMenuTrigger,
-            onAutoShowMenuConsumed = { autoShowCharacterMenuTrigger = false }
+            activeDrawer = activeDrawer, drawerWidth = drawerWidth, onClose = { onActiveDrawerChange(ActiveDrawer.None) },
+            chatRepository = chatRepository, chatClient = chatClient, isDarkMode = isDarkMode, onToggleDarkMode = onToggleDarkMode,
+            personas = personas, activePersonaId = activePersonaId, onPersonaSelect = onPersonaSelect, onPersonaAdd = onPersonaAdd, onPersonaUpdate = onPersonaUpdate, onPersonaDelete = onPersonaDelete,
+            characters = characters, onCharacterSelect = { character -> activeCharacter = character; onActiveDrawerChange(ActiveDrawer.None) },
+            onCharactersDelete = { ids -> if (activeCharacter?.id in ids) activeCharacter = null; onCharactersDelete(ids) }, onCharacterImport = onCharacterImport,
+            onCharacterCreate = { name -> pendingCreationName = name; onCharacterCreate(name); onActiveDrawerChange(ActiveDrawer.None) }, onCharacterEdit = { character -> editingCharacter = character; onActiveDrawerChange(ActiveDrawer.None) },
+            onCharacterExport = { character -> exportCharacterFromList(character) }, autoEditDefaultPersona = autoEditPersonaTrigger, onAutoEditConsumed = { autoEditPersonaTrigger = false },
+            autoShowNewCharacterMenu = autoShowCharacterMenuTrigger, onAutoShowMenuConsumed = { autoShowCharacterMenuTrigger = false }
         )
 
-        AnimatedVisibility(
-            visible = editingCharacter != null,
-            enter = slideInVertically(initialOffsetY = { it }),
-            exit = slideOutVertically(targetOffsetY = { it })
-        ) {
+        AnimatedVisibility(visible = editingCharacter != null, enter = slideInVertically(initialOffsetY = { it }), exit = slideOutVertically(targetOffsetY = { it })) {
             lastEditingCharacter?.let { targetCharacter ->
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     CharacterDefinitionEditor(
-                        character = targetCharacter,
-                        onClose = { editingCharacter = null },
+                        character = targetCharacter, onClose = { editingCharacter = null },
                         onSave = { name, desc, personality, scenario, firstMes, mesExample, altGreetings, avatarData ->
                             coroutineScope.launch {
-                                chatRepository.updateCharacter(
-                                    id = targetCharacter.id, name = name, personality = personality,
-                                    scenario = scenario, description = desc, firstMes = firstMes,
-                                    mesExample = mesExample, altGreetings = altGreetings, avatarData = avatarData
-                                )
+                                chatRepository.updateCharacter(targetCharacter.id, name, personality, scenario, desc, firstMes, mesExample, altGreetings, avatarData)
                                 refreshData()
-                                if (activeCharacter?.id == targetCharacter.id) {
-                                    activeCharacter = chatRepository.getCharacterById(targetCharacter.id)
-                                }
-
+                                if (activeCharacter?.id == targetCharacter.id) activeCharacter = chatRepository.getCharacterById(targetCharacter.id)
                                 activeSessionId?.let { sessionId ->
                                     val currentRoots = chatRepository.getMessageSiblings(sessionId, null)
                                     val textList = mutableListOf<String>()
                                     if (firstMes.isNotBlank()) textList.add(firstMes)
                                     altGreetings.filter { it.isNotBlank() }.forEach { textList.add(it) }
-
-                                    currentRoots.forEachIndexed { index, existingMessage ->
-                                        if (index < textList.size) {
-                                            chatRepository.updateMessageContent(existingMessage.id, textList[index])
-                                        } else {
-                                            chatRepository.deleteMessage(existingMessage.id)
-                                        }
-                                    }
-                                    if (textList.size > currentRoots.size) {
-                                        for (i in currentRoots.size until textList.size) {
-                                            chatRepository.insertMessageRaw(sessionId, "assistant", textList[i], null, false)
-                                        }
-                                    }
-
+                                    currentRoots.forEachIndexed { index, existingMessage -> if (index < textList.size) chatRepository.updateMessageContent(existingMessage.id, textList[index]) else chatRepository.deleteMessage(existingMessage.id) }
+                                    if (textList.size > currentRoots.size) { for (i in currentRoots.size until textList.size) chatRepository.insertMessageRaw(sessionId, "assistant", textList[i], null, false) }
                                     val finalRoots = chatRepository.getMessageSiblings(sessionId, null)
-                                    if (finalRoots.isNotEmpty() && finalRoots.none { it.id == messages.firstOrNull()?.id }) {
-                                        finalRoots.firstOrNull()?.let { chatRepository.selectVariation(sessionId, it.id, null) }
-                                    }
+                                    if (finalRoots.isNotEmpty() && finalRoots.none { it.id == messages.firstOrNull()?.id }) finalRoots.firstOrNull()?.let { chatRepository.selectVariation(sessionId, it.id, null) }
                                 }
                                 refreshMessages()
                             }
                         },
-                        onDelete = {
-                            coroutineScope.launch {
-                                chatRepository.deleteCharacters(setOf(targetCharacter.id))
-                                if (activeCharacter?.id == targetCharacter.id) activeCharacter = null
-                                editingCharacter = null
-                                refreshData()
-                            }
-                        }
+                        onDelete = { coroutineScope.launch { chatRepository.deleteCharacters(setOf(targetCharacter.id)); if (activeCharacter?.id == targetCharacter.id) activeCharacter = null; editingCharacter = null; refreshData() } }
                     )
                 }
             }
         }
 
         if (showChatManagerDialog && activeCharacter != null && activePersonaId != null) {
-            ChatManagerDialog(
-                characterId = activeCharacter!!.id,
-                personaId = activePersonaId,
-                activeSessionId = activeSessionId,
-                chatRepository = chatRepository,
-                onDismissRequest = { showChatManagerDialog = false },
-                onSessionSelected = { id ->
-                    if (id == -1L) {
-                        activeSessionId = null
-                    } else {
-                        activeSessionId = id
-                    }
-                    showChatManagerDialog = false
-                }
-            )
+            ChatManagerDialog(characterId = activeCharacter!!.id, personaId = activePersonaId, activeSessionId = activeSessionId, chatRepository = chatRepository, onDismissRequest = { showChatManagerDialog = false }, onSessionSelected = { id -> activeSessionId =
+                if (id == -1L) null else id; showChatManagerDialog = false })
         }
+
+        ExportNotificationBubble(
+            visible = showExportNotification,
+            exportedDir = exportedDir,
+            onDismiss = { showExportNotification = false },
+            modifier = Modifier.align(Alignment.TopCenter)
+        )
     }
 }
 
@@ -724,119 +597,36 @@ fun ChatManagerDialog(
     var editTitleText by remember { mutableStateOf("") }
     var sessionToDelete by remember { mutableStateOf<ChatSession?>(null) }
 
-    fun loadSessions() {
-        coroutineScope.launch {
-            sessions = chatRepository.getSessionsForCharacter(characterId)
-        }
-    }
-
-    LaunchedEffect(characterId) {
-        loadSessions()
-    }
+    fun loadSessions() { coroutineScope.launch { sessions = chatRepository.getSessionsForCharacter(characterId) } }
+    LaunchedEffect(characterId) { loadSessions() }
 
     AlertDialog(
         onDismissRequest = onDismissRequest,
         title = {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("Saved Chats", style = MaterialTheme.typography.titleLarge)
-                IconButton(
-                    onClick = {
-                        coroutineScope.launch {
-                            val newSessionId = chatRepository.createNewSession(characterId, personaId)
-                            onSessionSelected(newSessionId)
-                        }
-                    }
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = "New Chat")
-                }
+                IconButton(onClick = { coroutineScope.launch { val newSessionId = chatRepository.createNewSession(characterId, personaId); onSessionSelected(newSessionId) } }) { Icon(Icons.Default.Add, contentDescription = "New Chat") }
             }
         },
         text = {
             Box(modifier = Modifier.sizeIn(maxHeight = 280.dp, minWidth = 280.dp)) {
                 if (sessions.isEmpty()) {
-                    Text(
-                        "No alternative chats found.",
-                        modifier = Modifier.padding(vertical = 16.dp),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Text("No alternative chats found.", modifier = Modifier.padding(vertical = 16.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         items(sessions) { session ->
                             val isActive = session.id == activeSessionId
-                            Card(
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (isActive) MaterialTheme.colorScheme.primaryContainer
-                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-                                ),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        onSessionSelected(session.id)
+                            Card(colors = CardDefaults.cardColors(containerColor = if (isActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)), modifier = Modifier.fillMaxWidth().clickable { onSessionSelected(session.id) }) {
+                                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Column(modifier = Modifier.weight(1f).padding(vertical = 4.dp)) {
+                                        Text(text = session.title ?: "#${session.id} ${formatTimestampToDateTime(session.lastTimestamp)}", style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold), maxLines = 1)
+                                        if (isActive) Text(text = "Active Conversation", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = MaterialTheme.colorScheme.primary)
                                     }
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Column(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .padding(vertical = 4.dp)
-                                    ) {
-                                        Text(
-                                            text = session.title ?: "#${session.id} ${formatTimestampToDateTime(session.lastTimestamp)}",
-                                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                                            maxLines = 1
-                                        )
-                                        if (isActive) {
-                                            Text(
-                                                text = "Active Conversation",
-                                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                                color = MaterialTheme.colorScheme.primary
-                                            )
-                                        }
-                                    }
-
                                     Box {
-                                        IconButton(onClick = { expandedMenuSessionId = session.id }) {
-                                            Icon(
-                                                Icons.Default.MoreVert,
-                                                contentDescription = "Chat Options",
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        }
-                                        DropdownMenu(
-                                            expanded = expandedMenuSessionId == session.id,
-                                            onDismissRequest = { expandedMenuSessionId = null }
-                                        ) {
-                                            DropdownMenuItem(
-                                                text = { Text("Rename") },
-                                                leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                                onClick = {
-                                                    expandedMenuSessionId = null
-                                                    sessionToRename = session
-                                                    editTitleText = session.title ?: ""
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
-                                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error) },
-                                                onClick = {
-                                                    expandedMenuSessionId = null
-                                                    sessionToDelete = session
-                                                }
-                                            )
+                                        IconButton(onClick = { expandedMenuSessionId = session.id }) { Icon(Icons.Default.MoreVert, contentDescription = "Chat Options", modifier = Modifier.size(20.dp)) }
+                                        DropdownMenu(expanded = expandedMenuSessionId == session.id, onDismissRequest = { expandedMenuSessionId = null }) {
+                                            DropdownMenuItem(text = { Text("Rename") }, leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp)) }, onClick = { expandedMenuSessionId = null; sessionToRename = session; editTitleText = session.title ?: "" })
+                                            DropdownMenuItem(text = { Text("Delete", color = MaterialTheme.colorScheme.error) }, leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error) }, onClick = { expandedMenuSessionId = null; sessionToDelete = session })
                                         }
                                     }
                                 }
@@ -846,11 +636,7 @@ fun ChatManagerDialog(
                 }
             }
         },
-        confirmButton = {
-            TextButton(onClick = onDismissRequest) {
-                Text("Close")
-            }
-        }
+        confirmButton = { TextButton(onClick = onDismissRequest) { Text("Close") } }
     )
 
     if (sessionToRename != null) {
@@ -858,36 +644,9 @@ fun ChatManagerDialog(
         AlertDialog(
             onDismissRequest = { sessionToRename = null },
             title = { Text("Rename Chat") },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
-                    OutlinedTextField(
-                        value = editTitleText,
-                        onValueChange = { editTitleText = it },
-                        label = { Text("Chat Title") },
-                        placeholder = { Text("#${targetSession.id}") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        coroutineScope.launch {
-                            chatRepository.updateSessionTitle(targetSession.id, editTitleText.ifBlank { null })
-                            sessionToRename = null
-                            loadSessions()
-                        }
-                    }
-                ) {
-                    Text("Save")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { sessionToRename = null }) {
-                    Text("Cancel")
-                }
-            }
+            text = { Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { OutlinedTextField(value = editTitleText, onValueChange = { editTitleText = it }, label = { Text("Chat Title") }, placeholder = { Text("#${targetSession.id}") }, singleLine = true, modifier = Modifier.fillMaxWidth()) } },
+            confirmButton = { TextButton(onClick = { coroutineScope.launch { chatRepository.updateSessionTitle(targetSession.id, editTitleText.ifBlank { null }); sessionToRename = null; loadSessions() } }) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { sessionToRename = null }) { Text("Cancel") } }
         )
     }
 
@@ -897,34 +656,8 @@ fun ChatManagerDialog(
             onDismissRequest = { sessionToDelete = null },
             title = { Text("Delete Conversation?") },
             text = { Text("Are you sure you want to delete this chat session? All associated logs and swipe messages will be permanently deleted.") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        coroutineScope.launch {
-                            chatRepository.deleteSession(targetSession.id)
-                            if (targetSession.id == activeSessionId) {
-                                val remaining = sessions.filter { it.id != targetSession.id }
-                                if (remaining.isNotEmpty()) {
-                                    onSessionSelected(remaining.first().id)
-                                } else {
-                                    onSessionSelected(-1L)
-                                }
-                            } else {
-                                loadSessions()
-                            }
-                            sessionToDelete = null
-                        }
-                    },
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Delete")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { sessionToDelete = null }) {
-                    Text("Cancel")
-                }
-            }
+            confirmButton = { TextButton(onClick = { coroutineScope.launch { chatRepository.deleteSession(targetSession.id); if (targetSession.id == activeSessionId) { val remaining = sessions.filter { it.id != targetSession.id }; if (remaining.isNotEmpty()) onSessionSelected(remaining.first().id) else onSessionSelected(-1L) } else { loadSessions() }; sessionToDelete = null } }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Delete") } },
+            dismissButton = { TextButton(onClick = { sessionToDelete = null }) { Text("Cancel") } }
         )
     }
 }

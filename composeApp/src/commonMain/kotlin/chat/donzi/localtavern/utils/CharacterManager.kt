@@ -3,6 +3,7 @@ package chat.donzi.localtavern.utils
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.data.models.SillyTavernWrapper
 import chat.donzi.localtavern.data.database.CharacterEntity
+import chat.donzi.localtavern.saveFile
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -16,15 +17,12 @@ data class ImportedCharacter(
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other == null || this::class != other::class) return false
-
         other as ImportedCharacter
-
         if (card != other.card) return false
         if (avatarData != null) {
             if (other.avatarData == null) return false
             if (!avatarData.contentEquals(other.avatarData)) return false
         } else if (other.avatarData != null) return false
-
         return true
     }
 
@@ -45,13 +43,13 @@ object CharacterManager {
     private fun isPng(bytes: ByteArray): Boolean {
         if (bytes.size < 8) return false
         return bytes[0].toInt() == 0x89.toByte().toInt() &&
-               bytes[1].toInt() == 0x50.toByte().toInt() &&
-               bytes[2].toInt() == 0x4E.toByte().toInt() &&
-               bytes[3].toInt() == 0x47.toByte().toInt() &&
-               bytes[4].toInt() == 0x0D.toByte().toInt() &&
-               bytes[5].toInt() == 0x0A.toByte().toInt() &&
-               bytes[6].toInt() == 0x1A.toByte().toInt() &&
-               bytes[7].toInt() == 0x0A.toByte().toInt()
+                bytes[1].toInt() == 0x50.toByte().toInt() &&
+                bytes[2].toInt() == 0x4E.toByte().toInt() &&
+                bytes[3].toInt() == 0x47.toByte().toInt() &&
+                bytes[4].toInt() == 0x0D.toByte().toInt() &&
+                bytes[5].toInt() == 0x0A.toByte().toInt() &&
+                bytes[6].toInt() == 0x1A.toByte().toInt() &&
+                bytes[7].toInt() == 0x0A.toByte().toInt()
     }
 
     fun processImport(bytes: ByteArray, fileName: String? = null): ImportedCharacter? {
@@ -67,22 +65,13 @@ object CharacterManager {
                 PngParser.extractSillyTavernCard(bytes)
             }
 
-            if (jsonString.isNullOrBlank()) {
-                println("[CharacterManager] No character JSON found")
-                return null
-            }
+            if (jsonString.isNullOrBlank()) return null
 
-            val card = parseCardJson(jsonString) ?: run {
-                println("[CharacterManager] Failed to parse card JSON")
-                return null
-            }
-
+            val card = parseCardJson(jsonString) ?: return null
             val avatarData: ByteArray? = if (png) bytes else null
 
             ImportedCharacter(card, avatarData)
-        } catch (e: Exception) {
-            println("[CharacterManager] Error processing import: ${e.message}")
-            e.printStackTrace()
+        } catch (_: Exception) {
             null
         }
     }
@@ -96,14 +85,12 @@ object CharacterManager {
             } else {
                 json.decodeFromJsonElement<SillyTavernCardV2>(element)
             }
-        } catch (e: Exception) {
-            println("[CharacterManager] JSON parsing error: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
 
-    @OptIn(ExperimentalEncodingApi::class)
-    fun exportToPng(originalImage: ByteArray, character: CharacterEntity): ByteArray {
+    private fun getCardJsonString(character: CharacterEntity): String {
         val card = SillyTavernCardV2(
             name = character.name,
             description = character.description ?: "",
@@ -114,36 +101,64 @@ object CharacterManager {
             system_prompt = "",
             alternate_greetings = character.altGreetings?.split("|||") ?: emptyList()
         )
-        val jsonString = json.encodeToString(card)
+        return json.encodeToString(card)
+    }
+
+    @OptIn(ExperimentalEncodingApi::class)
+    fun exportToPng(originalImage: ByteArray, character: CharacterEntity): ByteArray {
+        val jsonString = getCardJsonString(character)
         val base64Data = Base64.encode(jsonString.encodeToByteArray())
         val chunkData = "chara\u0000$base64Data".encodeToByteArray()
         return insertMetadataChunk(originalImage, chunkData)
+    }
+
+    fun exportToJson(character: CharacterEntity): ByteArray {
+        return getCardJsonString(character).encodeToByteArray()
+    }
+
+    fun getFileName(character: CharacterEntity): String {
+        val hasAvatar = character.avatarData != null && character.avatarData.isNotEmpty()
+        return if (hasAvatar) "${character.name}.png" else "${character.name}.json"
+    }
+
+    fun extractParentDir(savedPath: String): String {
+        return if (savedPath.contains('/')) savedPath.substringBeforeLast('/') else savedPath.substringBeforeLast('\\')
+    }
+
+    fun performExport(character: CharacterEntity): String? {
+        val fileName = getFileName(character)
+        val avatar = character.avatarData
+
+        val exportedBytes = if (avatar != null && avatar.isNotEmpty()) {
+            exportToPng(avatar, character)
+        } else {
+            exportToJson(character)
+        }
+
+        val savedPath = saveFile(fileName, exportedBytes)
+        return savedPath?.let { extractParentDir(it) }
     }
 
     private fun insertMetadataChunk(pngBytes: ByteArray, data: ByteArray): ByteArray {
         if (pngBytes.size < 33) return pngBytes
 
         val ihdrDataLength = ((pngBytes[8].toInt() and 0xFF) shl 24) or
-                             ((pngBytes[9].toInt() and 0xFF) shl 16) or
-                             ((pngBytes[10].toInt() and 0xFF) shl 8) or
-                             (pngBytes[11].toInt() and 0xFF)
+                ((pngBytes[9].toInt() and 0xFF) shl 16) or
+                ((pngBytes[10].toInt() and 0xFF) shl 8) or
+                (pngBytes[11].toInt() and 0xFF)
         val ihdrTotalSize = 12 + ihdrDataLength
-        
+
         val type = "tEXt".encodeToByteArray()
-        val chunkTotalSize = 4 + 4 + data.size + 4 // length + type + data + crc
-        
+        val chunkTotalSize = 4 + 4 + data.size + 4
+
         val result = ByteArray(pngBytes.size + chunkTotalSize)
-
         pngBytes.copyInto(result, 0, 0, 8 + ihdrTotalSize)
-        
-        var offset = 8 + ihdrTotalSize
 
+        var offset = 8 + ihdrTotalSize
         writeInt(result, offset, data.size)
         offset += 4
-
         type.copyInto(result, offset)
         offset += type.size
-
         data.copyInto(result, offset)
         offset += data.size
 
@@ -157,7 +172,6 @@ object CharacterManager {
         if (pngBytes.size > remainingOffset) {
             pngBytes.copyInto(result, offset, remainingOffset, pngBytes.size)
         }
-        
         return result
     }
 
@@ -171,14 +185,12 @@ object CharacterManager {
 
 private class CommonCRC32 {
     private var crc = -1
-
     fun update(bytes: ByteArray) {
         for (b in bytes) {
             val index = (crc xor b.toInt()) and 0xFF
             crc = (crc ushr 8) xor crcTable[index]
         }
     }
-
     val value: Long get() = (crc.toLong() xor 0xFFFFFFFFL) and 0xFFFFFFFFL
 
     companion object {
