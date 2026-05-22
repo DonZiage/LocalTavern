@@ -7,6 +7,8 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.utils.io.*
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.SerialName
@@ -43,7 +45,6 @@ class ChatClient(private val httpClient: HttpClient) {
                 }
             })
         } else {
-            // Text Completion Format: Combines everything into a script-like string
             val promptBuilder = StringBuilder()
             messages.forEach { msg ->
                 when (msg.role) {
@@ -53,7 +54,6 @@ class ChatClient(private val httpClient: HttpClient) {
                     else -> promptBuilder.append(msg.content).append("\n")
                 }
             }
-            // Prime the AI to answer as the character
             promptBuilder.append("Character:")
             put("prompt", promptBuilder.toString())
         }
@@ -163,6 +163,7 @@ class ChatClient(private val httpClient: HttpClient) {
 
                 val channel: ByteReadChannel = response.bodyAsChannel()
                 while (!channel.isClosedForRead) {
+                    currentCoroutineContext().ensureActive()
                     @Suppress("DEPRECATION")
                     val line = channel.readUTF8Line() ?: break
                     if (line.startsWith("data: ")) {

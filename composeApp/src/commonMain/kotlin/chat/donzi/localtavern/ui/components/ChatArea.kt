@@ -1,9 +1,11 @@
 package chat.donzi.localtavern.ui.components
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -15,7 +17,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -24,6 +29,7 @@ import androidx.compose.ui.window.Dialog
 import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.data.database.MessageEntity
 import chat.donzi.localtavern.utils.ContextManager
+import kotlinx.coroutines.launch
 
 private enum class OnboardingStep {
     API, PERSONA, CHARACTER
@@ -178,10 +184,61 @@ fun ChatArea(
                 }
             }
         } else {
+            val focusRequester = remember { FocusRequester() }
+            val listState = rememberLazyListState()
+            val coroutineScope = rememberCoroutineScope()
+            val lastMessage = messages.lastOrNull()
+            val siblings = lastMessage?.let { siblingsMap[it.id] ?: listOf(it) } ?: emptyList()
+            val currentIndex = lastMessage?.let { siblings.indexOfFirst { child -> child.id == it.id } }?.coerceAtLeast(0) ?: 0
+            val totalCount = siblings.size
+
+            LaunchedEffect(activeCharacter, messages.size) {
+                focusRequester.requestFocus()
+            }
+
             LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .focusRequester(focusRequester)
+                    .focusable()
+                    .onKeyEvent { event ->
+                        if (event.type == KeyEventType.KeyDown) {
+                            if (isGenerating) {
+                                if ((event.key == Key.Enter || event.key == Key.NumPadEnter) && !event.isShiftPressed) {
+                                    onStopGeneration()
+                                    true
+                                } else false
+                            } else if (lastMessage != null && lastMessage.role != "user") {
+                                when (event.key) {
+                                    Key.DirectionLeft -> {
+                                        if (currentIndex > 0) {
+                                            onSelectVariation(siblings[currentIndex - 1].id)
+                                            coroutineScope.launch { listState.animateScrollToItem(0) }
+                                            true
+                                        } else if (totalCount > 1) {
+                                            onSelectVariation(siblings[totalCount - 1].id)
+                                            coroutineScope.launch { listState.animateScrollToItem(0) }
+                                            true
+                                        } else false
+                                    }
+                                    Key.DirectionRight -> {
+                                        if (currentIndex < totalCount - 1) {
+                                            onSelectVariation(siblings[currentIndex + 1].id)
+                                            coroutineScope.launch { listState.animateScrollToItem(0) }
+                                            true
+                                        } else {
+                                            onGenerateNewVariation(lastMessage.id)
+                                            coroutineScope.launch { listState.animateScrollToItem(0) }
+                                            true
+                                        }
+                                    }
+                                    else -> false
+                                }
+                            } else false
+                        } else false
+                    },
                 contentPadding = PaddingValues(8.dp),
                 reverseLayout = true
             ) {
@@ -196,9 +253,9 @@ fun ChatArea(
                     val isLastMessage = messages.lastOrNull()?.id == message.id
                     val isSwipeable = !isUserMessage && isLastMessage && !isGenerating
 
-                    val siblings = siblingsMap[message.id] ?: listOf(message)
-                    val currentIndex = siblings.indexOfFirst { it.id == message.id }.coerceAtLeast(0)
-                    val totalCount = siblings.size
+                    val msgSiblings = siblingsMap[message.id] ?: listOf(message)
+                    val msgCurrentIndex = msgSiblings.indexOfFirst { it.id == message.id }.coerceAtLeast(0)
+                    val msgTotalCount = msgSiblings.size
 
                     val displayContent = remember(message.content, activeCharacter?.name, activePersonaName) {
                         ContextManager.replaceSimpleMacros(
@@ -224,14 +281,18 @@ fun ChatArea(
                             onSelectToggle = { onSelectMessageToggle(message.id) },
                             isSwipeable = isSwipeable,
                             onSwipeRight = {
-                                if (currentIndex > 0 && !isGenerating) {
-                                    onSelectVariation(siblings[currentIndex - 1].id)
+                                if (!isGenerating) {
+                                    if (msgCurrentIndex > 0) {
+                                        onSelectVariation(msgSiblings[msgCurrentIndex - 1].id)
+                                    } else if (msgTotalCount > 1) {
+                                        onSelectVariation(msgSiblings[msgTotalCount - 1].id)
+                                    }
                                 }
                             },
                             onSwipeLeft = {
                                 if (!isGenerating) {
-                                    if (currentIndex < totalCount - 1) {
-                                        onSelectVariation(siblings[currentIndex + 1].id)
+                                    if (msgCurrentIndex < msgTotalCount - 1) {
+                                        onSelectVariation(msgSiblings[msgCurrentIndex + 1].id)
                                     } else {
                                         onGenerateNewVariation(message.id)
                                     }
@@ -249,11 +310,13 @@ fun ChatArea(
                             ) {
                                 IconButton(
                                     onClick = {
-                                        if (currentIndex > 0) {
-                                            onSelectVariation(siblings[currentIndex - 1].id)
+                                        if (msgCurrentIndex > 0) {
+                                            onSelectVariation(msgSiblings[msgCurrentIndex - 1].id)
+                                        } else if (msgTotalCount > 1) {
+                                            onSelectVariation(msgSiblings[msgTotalCount - 1].id)
                                         }
                                     },
-                                    enabled = currentIndex > 0 && !isGenerating,
+                                    enabled = !isGenerating,
                                     modifier = Modifier.size(24.dp)
                                 ) {
                                     Icon(
@@ -264,15 +327,15 @@ fun ChatArea(
                                 }
 
                                 Text(
-                                    text = "${currentIndex + 1} / $totalCount",
+                                    text = "${msgCurrentIndex + 1} / $msgTotalCount",
                                     style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                                 )
 
                                 IconButton(
                                     onClick = {
-                                        if (currentIndex < totalCount - 1) {
-                                            onSelectVariation(siblings[currentIndex + 1].id)
+                                        if (msgCurrentIndex < msgTotalCount - 1) {
+                                            onSelectVariation(msgSiblings[msgCurrentIndex + 1].id)
                                         } else {
                                             onGenerateNewVariation(message.id)
                                         }

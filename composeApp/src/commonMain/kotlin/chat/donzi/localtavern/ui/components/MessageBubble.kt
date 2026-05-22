@@ -13,6 +13,8 @@ import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -46,6 +48,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
+import kotlinx.coroutines.launch
 
 @Composable
 fun parseMarkdownToAnnotatedString(text: String, defaultColor: Color): AnnotatedString {
@@ -128,6 +131,8 @@ fun MessageBubble(
         mutableStateOf(TextFieldValue(content, selection = TextRange(content.length)))
     }
     val focusRequester = remember { FocusRequester() }
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    val coroutineScope = rememberCoroutineScope()
 
     var showActionsOnMobile by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
@@ -141,6 +146,7 @@ fun MessageBubble(
     LaunchedEffect(isEditing) {
         if (isEditing) {
             focusRequester.requestFocus()
+            bringIntoViewRequester.bringIntoView()
         }
     }
 
@@ -164,6 +170,36 @@ fun MessageBubble(
         Color.Transparent
     }
 
+    // Extracted conditional actions view to eliminate layout tree logic duplication
+    val actionsBlock = @Composable {
+        if (isEditing) {
+            EditActions(
+                onCancel = {
+                    isEditing = false
+                    editedTextValue = TextFieldValue(content, selection = TextRange(content.length))
+                },
+                onSave = {
+                    onEdit(editedTextValue.text)
+                    isEditing = false
+                }
+            )
+        } else {
+            MessageActions(
+                visible = actionsVisible,
+                showMenu = showMenu,
+                onShowMenuChange = { showMenu = it },
+                onEdit = {
+                    editedTextValue = TextFieldValue(content, selection = TextRange(content.length))
+                    isEditing = true
+                },
+                onCopy = onCopy,
+                onDelete = onDelete,
+                onAddImage = onAddImage,
+                onBranch = onBranch,
+            )
+        }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -177,7 +213,7 @@ fun MessageBubble(
                     if (isSelectMode) {
                         onSelectToggle()
                     } else {
-                        showActionsOnMobile = false
+                        showActionsOnMobile = !showActionsOnMobile
                     }
                 },
                 onLongClick = {
@@ -198,19 +234,7 @@ fun MessageBubble(
         }
 
         if (isUser) {
-            MessageActions(
-                visible = actionsVisible,
-                showMenu = showMenu,
-                onShowMenuChange = { showMenu = it },
-                onEdit = {
-                    editedTextValue = TextFieldValue(content, selection = TextRange(content.length))
-                    isEditing = true
-                },
-                onCopy = onCopy,
-                onDelete = onDelete,
-                onAddImage = onAddImage,
-                onBranch = onBranch,
-            )
+            actionsBlock()
         } else {
             Box(
                 modifier = Modifier
@@ -274,56 +298,43 @@ fun MessageBubble(
             if (content == "...") {
                 AnimatedEllipsis(color = textColor)
             } else if (isEditing) {
-                Column {
-                    BasicTextField(
-                        value = editedTextValue,
-                        onValueChange = { editedTextValue = it },
-                        modifier = Modifier
-                            .focusRequester(focusRequester)
-                            .onPreviewKeyEvent { event ->
-                                if (event.type == KeyEventType.KeyDown &&
-                                    (event.key == Key.Enter || event.key == Key.NumPadEnter)) {
-                                    if (event.isShiftPressed) {
-                                        false
-                                    } else {
-                                        onEdit(editedTextValue.text)
-                                        isEditing = false
-                                        true
+                BasicTextField(
+                    value = editedTextValue,
+                    onValueChange = {
+                        editedTextValue = it
+                        coroutineScope.launch {
+                            bringIntoViewRequester.bringIntoView()
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester)
+                        .bringIntoViewRequester(bringIntoViewRequester)
+                        .onPreviewKeyEvent { event ->
+                            if (event.type == KeyEventType.KeyDown &&
+                                (event.key == Key.Enter || event.key == Key.NumPadEnter)) {
+                                if (event.isShiftPressed) {
+                                    editedTextValue = editedTextValue.insertNewline()
+                                    coroutineScope.launch {
+                                        bringIntoViewRequester.bringIntoView()
                                     }
+                                    true
                                 } else {
-                                    false
+                                    onEdit(editedTextValue.text)
+                                    isEditing = false
+                                    true
                                 }
-                            },
-                        textStyle = LocalTextStyle.current.copy(
-                            color = textColor,
-                            fontSize = 16.sp
-                        ),
-                        cursorBrush = SolidColor(textColor)
-                    )
-                    Row(
-                        modifier = Modifier.align(Alignment.End).padding(top = 10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        IconButton(
-                            onClick = {
-                                isEditing = false
-                                editedTextValue = TextFieldValue(content, selection = TextRange(content.length))
-                            },
-                            modifier = Modifier.size(24.dp)
-                        ) {
-                            Icon(Icons.Default.Close, "Cancel", tint = textColor, modifier = Modifier.size(20.dp))
-                        }
-                        IconButton(
-                            onClick = {
-                                onEdit(editedTextValue.text)
-                                isEditing = false
-                            },
-                            modifier = Modifier.size(24.dp)
-                        ) {
-                            Icon(Icons.Default.Check, "Save", tint = textColor, modifier = Modifier.size(20.dp))
-                        }
-                    }
-                }
+                            } else {
+                                false
+                            }
+                        },
+                    textStyle = LocalTextStyle.current.copy(
+                        color = textColor,
+                        fontSize = 16.sp,
+                        lineHeight = 22.sp
+                    ),
+                    cursorBrush = SolidColor(textColor)
+                )
             } else {
                 Text(
                     text = annotatedContent,
@@ -361,24 +372,40 @@ fun MessageBubble(
                 }
             }
         } else {
-            MessageActions(
-                visible = actionsVisible,
-                showMenu = showMenu,
-                onShowMenuChange = { showMenu = it },
-                onEdit = {
-                    editedTextValue = TextFieldValue(content, selection = TextRange(content.length))
-                    isEditing = true
-                },
-                onCopy = onCopy,
-                onDelete = onDelete,
-                onAddImage = onAddImage,
-                onBranch = onBranch,
-            )
+            actionsBlock()
         }
     }
 
     if (showFullImage && avatarData != null) {
         FullscreenImageViewer(avatarData = avatarData, onDismiss = { showFullImage = false })
+    }
+}
+
+@Composable
+fun EditActions(
+    onCancel: () -> Unit,
+    onSave: () -> Unit
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(horizontal = 4.dp)
+    ) {
+        IconButton(onClick = onCancel, modifier = Modifier.size(32.dp)) {
+            Icon(
+                Icons.Default.Close,
+                contentDescription = "Cancel",
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
+            )
+        }
+        IconButton(onClick = onSave, modifier = Modifier.size(32.dp)) {
+            Icon(
+                Icons.Default.Check,
+                contentDescription = "Save",
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+        }
     }
 }
 
@@ -430,4 +457,14 @@ fun MessageActions(
             }
         }
     }
+}
+
+private fun TextFieldValue.insertNewline(): TextFieldValue {
+    val currentText = this.text
+    val selection = this.selection
+    val newText = currentText.substring(0, selection.min) + "\n" + currentText.substring(selection.max)
+    return TextFieldValue(
+        text = newText,
+        selection = TextRange(selection.min + 1)
+    )
 }

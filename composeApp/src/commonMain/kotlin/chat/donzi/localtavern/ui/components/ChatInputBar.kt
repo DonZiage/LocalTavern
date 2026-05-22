@@ -12,6 +12,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.*
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -27,20 +29,28 @@ fun ChatInputBar(
     canManageChats: Boolean,
     onGoToParent: (() -> Unit)? = null
 ) {
-    var text by remember { mutableStateOf("") }
+    var textValue by remember { mutableStateOf(TextFieldValue("")) }
     var showMenu by remember { mutableStateOf(false) }
 
     fun handleSend() {
-        if (text.isNotBlank() && !isGenerating) {
-            onSendMessage(text)
-            text = ""
+        if (textValue.text.isNotBlank() && !isGenerating) {
+            onSendMessage(textValue.text)
+            textValue = TextFieldValue("")
         }
     }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(12.dp),
+            .padding(12.dp)
+            .onKeyEvent { event ->
+                if (isGenerating && event.type == KeyEventType.KeyDown &&
+                    (event.key == Key.Enter || event.key == Key.NumPadEnter) &&
+                    !event.isShiftPressed) {
+                    onStopGeneration()
+                    true
+                } else false
+            },
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box {
@@ -61,8 +71,8 @@ fun ChatInputBar(
         }
 
         TextField(
-            value = text,
-            onValueChange = { text = it },
+            value = textValue,
+            onValueChange = { textValue = it },
             placeholder = { Text("Message...") },
             enabled = !isGenerating,
             modifier = Modifier
@@ -71,7 +81,8 @@ fun ChatInputBar(
                     if (!isGenerating && event.type == KeyEventType.KeyDown &&
                         (event.key == Key.Enter || event.key == Key.NumPadEnter)) {
                         if (event.isShiftPressed) {
-                            false
+                            textValue = textValue.insertNewline()
+                            true
                         } else {
                             handleSend()
                             true
@@ -100,14 +111,24 @@ fun ChatInputBar(
         } else {
             IconButton(
                 onClick = { handleSend() },
-                enabled = text.isNotBlank()
+                enabled = textValue.text.isNotBlank()
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.Send,
                     contentDescription = "Send",
-                    tint = if (text.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray
+                    tint = if (textValue.text.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray
                 )
             }
         }
     }
+}
+
+private fun TextFieldValue.insertNewline(): TextFieldValue {
+    val currentText = this.text
+    val selection = this.selection
+    val newText = currentText.substring(0, selection.min) + "\n" + currentText.substring(selection.max)
+    return TextFieldValue(
+        text = newText,
+        selection = TextRange(selection.min + 1)
+    )
 }
