@@ -9,11 +9,6 @@ import androidx.core.content.FileProvider
 import android.media.MediaScannerConnection
 import androidx.core.net.toUri
 
-class AndroidPlatform : Platform {
-    override val name: String = "Android ${Build.VERSION.SDK_INT}"
-}
-
-actual fun getPlatform(): Platform = AndroidPlatform()
 
 object AndroidAppContext {
     private var applicationContext: Context? = null
@@ -28,21 +23,31 @@ object AndroidAppContext {
 }
 
 actual fun saveFile(fileName: String, bytes: ByteArray): String? {
+    val context = AndroidAppContext.getContext() ?: return null
     return try {
-        // Use Downloads/LocalTavern/ExportedCharacters
-        val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        val exportDir = File(downloads, "LocalTavern/ExportedCharacters")
-        if (!exportDir.exists()) exportDir.mkdirs()
-        
-        val file = File(exportDir, fileName)
-        file.writeBytes(bytes)
-        
-        // Notify MediaScanner so it shows up in Gallery/Files immediately
-        AndroidAppContext.getContext()?.let { ctx ->
-            MediaScannerConnection.scanFile(ctx, arrayOf(file.absolutePath), null, null)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = context.contentResolver
+            val contentValues = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/png")
+                put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/LocalTavern/ExportedCharacters")
+            }
+            val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues) ?: return null
+            resolver.openOutputStream(uri)?.use { outputStream ->
+                outputStream.write(bytes)
+            }
+            uri.toString()
+        } else {
+            val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val exportDir = File(downloads, "LocalTavern/ExportedCharacters")
+            if (!exportDir.exists()) exportDir.mkdirs()
+
+            val file = File(exportDir, fileName)
+            file.writeBytes(bytes)
+
+            MediaScannerConnection.scanFile(context, arrayOf(file.absolutePath), null, null)
+            file.absolutePath
         }
-        
-        file.absolutePath
     } catch (e: Exception) {
         e.printStackTrace()
         null
@@ -51,6 +56,21 @@ actual fun saveFile(fileName: String, bytes: ByteArray): String? {
 
 actual fun openDirectory(path: String) {
     val context = AndroidAppContext.getContext() ?: return
+
+    if (path.startsWith("content://")) {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(path.toUri(), "image/png")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            return
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     val file = File(path)
     if (!file.exists()) return
 
@@ -60,17 +80,17 @@ actual fun openDirectory(path: String) {
             "${context.packageName}.fileprovider",
             file
         )
-        
+
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "image/png")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        
+
         context.startActivity(intent)
     } catch (e: Exception) {
         e.printStackTrace()
-        
+
         // Fallback: Just open the Downloads folder
         try {
             val intent = Intent(Intent.ACTION_VIEW).apply {

@@ -3,11 +3,8 @@ package chat.donzi.localtavern
 import java.io.File
 import java.awt.Desktop
 
-class JVMPlatform: Platform {
-    override val name: String = "Java ${System.getProperty("java.version")}"
-}
 
-actual fun getPlatform(): Platform = JVMPlatform()
+
 
 actual fun saveFile(fileName: String, bytes: ByteArray): String? {
     return try {

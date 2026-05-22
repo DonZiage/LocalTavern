@@ -227,7 +227,7 @@ private fun PersonaEditDialog(
                     Spacer(modifier = Modifier.weight(1f))
                     TextButton(onClick = onDismiss) { Text("Cancel") }
                     Spacer(modifier = Modifier.width(8.dp))
-                    Button(
+                    TextButton(
                         onClick = { onSave(name, description.ifBlank { null }, avatarData) },
                         enabled = name.isNotBlank()
                     ) {

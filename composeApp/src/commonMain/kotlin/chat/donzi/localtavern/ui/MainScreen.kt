@@ -49,7 +49,6 @@ private suspend fun insertInitialGreetings(
 
     if (primaryGreeting.isNotBlank()) allGreetings.add(primaryGreeting)
     allGreetings.addAll(altGreetingsList)
-    if (allGreetings.isEmpty()) allGreetings.add("Hello!")
 
     var primaryMessageId: Long? = null
     allGreetings.forEachIndexed { index, greeting ->
@@ -654,7 +653,6 @@ fun MainScreen(
                                     val textList = mutableListOf<String>()
                                     if (firstMes.isNotBlank()) textList.add(firstMes)
                                     altGreetings.filter { it.isNotBlank() }.forEach { textList.add(it) }
-                                    if (textList.isEmpty()) textList.add("Hello!")
 
                                     currentRoots.forEachIndexed { index, existingMessage ->
                                         if (index < textList.size) {

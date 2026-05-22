@@ -101,15 +101,6 @@ fun AlternateGreetingsStrip(
                 }
             }
         }
-
-        if (greetings.isEmpty()) {
-            Text(
-                "No alternate greetings yet.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-        }
     }
 
     editingIndex?.let { idx ->

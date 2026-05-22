@@ -2,8 +2,6 @@ package chat.donzi.localtavern.ui.components
 
 import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
@@ -82,8 +80,7 @@ fun CharacterListSection(
         else characters.filter { it.name.contains(query, ignoreCase = true) }
     }
 
-    // Explicit vertical sizing constraints applied here on the root layout container
-    Column(modifier = modifier.fillMaxWidth().fillMaxHeight()) {
+    Column(modifier = modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -251,30 +248,32 @@ fun CharacterListSection(
             }
         }
 
-        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            items(filtered, key = { it.id }) { char ->
-                val isSelected = selectedIds.contains(char.id)
-                CharacterItem(
-                    name = char.name,
-                    description = char.personality ?: "No personality set.",
-                    avatarData = char.avatarData,
-                    selected = isSelected,
-                    selectionMode = selectionMode,
-                    onClick = {
-                        if (selectionMode) {
-                            if (isSelected) selectedIds.remove(char.id) else selectedIds.add(char.id)
-                            if (selectedIds.isEmpty()) selectionMode = false
-                        } else {
-                            onSelect(char)
-                        }
-                    },
-                    onLongClick = {
-                        if (!selectionMode) selectionMode = true
-                        if (!isSelected) selectedIds.add(char.id)
-                    },
-                    onEditClick = { onEditCharacter(char) },
-                    onDeleteClick = { characterToDelete = char }
-                )
+        Column(modifier = Modifier.fillMaxWidth()) {
+            filtered.forEach { char ->
+                key(char.id) {
+                    val isSelected = selectedIds.contains(char.id)
+                    CharacterItem(
+                        name = char.name,
+                        description = char.personality ?: "No personality set.",
+                        avatarData = char.avatarData,
+                        selected = isSelected,
+                        selectionMode = selectionMode,
+                        onClick = {
+                            if (selectionMode) {
+                                if (isSelected) selectedIds.remove(char.id) else selectedIds.add(char.id)
+                                if (selectedIds.isEmpty()) selectionMode = false
+                            } else {
+                                onSelect(char)
+                            }
+                        },
+                        onLongClick = {
+                            if (!selectionMode) selectionMode = true
+                            if (!isSelected) selectedIds.add(char.id)
+                        },
+                        onEditClick = { onEditCharacter(char) },
+                        onDeleteClick = { characterToDelete = char }
+                    )
+                }
             }
         }
     }

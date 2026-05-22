@@ -367,27 +367,25 @@ fun ChatArea(
                                 Text("Cancel")
                             }
                             Spacer(modifier = Modifier.width(6.dp))
-                            Button(
+                            TextButton(
                                 onClick = {
                                     onDeleteMessage(currentMsg.id)
                                     messageToDelete = null
                                 },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF7B1FA2),
-                                    contentColor = Color.White
+                                colors = ButtonDefaults.textButtonColors(
+                                    contentColor = Color(0xFF7B1FA2)
                                 )
                             ) {
                                 Text("Swipe")
                             }
                             Spacer(modifier = Modifier.width(6.dp))
-                            Button(
+                            TextButton(
                                 onClick = {
                                     onDeleteMessages(siblings.map { it.id })
                                     messageToDelete = null
                                 },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF7B1FA2),
-                                    contentColor = Color.White
+                                colors = ButtonDefaults.textButtonColors(
+                                    contentColor = Color(0xFF7B1FA2)
                                 )
                             ) {
                                 Text("Message")

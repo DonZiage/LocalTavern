@@ -1,15 +1,9 @@
 package chat.donzi.localtavern
 
-import platform.UIKit.UIDevice
 import platform.Foundation.*
 import kotlinx.cinterop.*
 import platform.UIKit.UIApplication
 
-class IOSPlatform: Platform {
-    override val name: String = UIDevice.currentDevice.systemName() + " " + UIDevice.currentDevice.systemVersion
-}
-
-actual fun getPlatform(): Platform = IOSPlatform()
 
 @OptIn(ExperimentalForeignApi::class)
 actual fun saveFile(fileName: String, bytes: ByteArray): String? {
