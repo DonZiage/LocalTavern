@@ -309,7 +309,7 @@ fun MainScreen(
                         try {
                             chatClient.streamChatRequest(
                                 baseUrl = activeConnection.baseUrl ?: "", apiKey = activeConnection.apiKey ?: "",
-                                model = activeConnection.model ?: "gpt-3.5-turbo", messages = messagesPayload,
+                                model = activeConnection.model ?: "", messages = messagesPayload,
                                 isChatCompletion = activeConnection.isChatCompletion == 1L
                             ).collect { token -> tokenChannel.send(token) }
                         } catch (e: Exception) {
