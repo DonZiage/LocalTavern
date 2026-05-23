@@ -17,7 +17,6 @@ fun LocalTavernTheme(
         lightColorScheme()
     }
 
-    // iOS-style aesthetic with rounded corners for menus and dialogs
     val shapes = Shapes(
         extraSmall = RoundedCornerShape(12.dp),
         small = RoundedCornerShape(12.dp),

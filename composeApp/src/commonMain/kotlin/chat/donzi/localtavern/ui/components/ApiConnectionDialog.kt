@@ -53,7 +53,7 @@ fun ApiConnectionDialog(
             "Local Inference" to localInferenceProviders
         )
     }
-    
+
     val defaultUrls = remember {
         mapOf(
             "OpenAI" to "https://api.openai.com/v1",
@@ -85,7 +85,7 @@ fun ApiConnectionDialog(
     var apiKey by remember { mutableStateOf("") }
     var name by remember { mutableStateOf(initialConnection?.name ?: "") }
     var baseUrl by remember { mutableStateOf(initialConnection?.baseUrl ?: "") }
-    
+
     val isCloudInference = remember(selectedProvider) {
         cloudInferenceProviders.contains(selectedProvider)
     }
@@ -104,11 +104,11 @@ fun ApiConnectionDialog(
     var allModels by remember { mutableStateOf(emptyList<ModelInfo>()) }
     var isLoadingModels by remember { mutableStateOf(false) }
     var isKeyValid by remember { mutableStateOf(false) }
-    
+
     var modelSearch by remember { mutableStateOf(initialConnection?.model ?: "") }
     var selectedModelFullId by remember { mutableStateOf(initialConnection?.model ?: "") }
     var modelProviderFilter by remember { mutableStateOf("") }
-    
+
     var providerDropdownExpanded by remember { mutableStateOf(false) }
     var modelDropdownExpanded by remember { mutableStateOf(false) }
 
@@ -126,7 +126,7 @@ fun ApiConnectionDialog(
     LaunchedEffect(apiKey, baseUrl) {
         val keyToTest = apiKey.ifBlank { initialConnection?.apiKey ?: "" }
         val effectiveBaseUrl = if (isCloudInference) defaultUrls[selectedProvider] ?: baseUrl else baseUrl
-        
+
         if (selectedProvider.isNotEmpty() && (keyToTest.length > 5 || !isCloudInference) && effectiveBaseUrl.isNotBlank()) {
             isLoadingModels = true
             isKeyValid = chatClient.checkStatus(effectiveBaseUrl, keyToTest)
@@ -185,15 +185,15 @@ fun ApiConnectionDialog(
                 val idScore = model.id.fuzzyScore(modelSearch)
                 val nameScore = model.displayName.fuzzyScore(modelSearch)
                 var finalScore = maxOf(idScore, nameScore)
-                
+
                 val matchesFilter = modelProviderFilter.isEmpty() || model.provider == modelProviderFilter
-                
+
                 if (modelSearch.isNotEmpty()) {
                     if (matchesFilter) finalScore += 50
                 } else {
                     if (!matchesFilter) finalScore = 0
                 }
-                
+
                 model to finalScore
             }
             .filter { it.second > 0 }
@@ -201,6 +201,18 @@ fun ApiConnectionDialog(
             .map { it.first }
             .take(50)
             .toList()
+    }
+
+    LaunchedEffect(filteredModels) {
+        if (filteredModels.isNotEmpty()) {
+            if (selectedModelFullId.isBlank() || filteredModels.none { it.id == selectedModelFullId }) {
+                selectedModelFullId = filteredModels.first().id
+            }
+        } else {
+            if (isCloudInference) {
+                selectedModelFullId = ""
+            }
+        }
     }
 
     AlertDialog(
@@ -230,14 +242,14 @@ fun ApiConnectionDialog(
                     ) {
                         providerSections.forEach { (sectionName, providersInSection) ->
                             DropdownMenuItem(
-                                text = { 
+                                text = {
                                     Text(
-                                        sectionName, 
+                                        sectionName,
                                         style = MaterialTheme.typography.titleMedium,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.padding(vertical = 4.dp)
-                                    ) 
+                                    )
                                 },
                                 enabled = false,
                                 onClick = {}
@@ -291,8 +303,7 @@ fun ApiConnectionDialog(
                                 style = MaterialTheme.typography.labelMedium,
                                 color = if (selectedModelFullId.isEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                             )
-
-                            // Model Provider List
+                            
                             if (allModels.isNotEmpty()) {
                                 ExposedDropdownMenuBox(
                                     expanded = providerDropdownExpanded && (providerSuggestions.isNotEmpty() || modelProviderFilter.isEmpty()),
@@ -451,7 +462,7 @@ fun ApiConnectionDialog(
         },
         confirmButton = {
             Button(
-                onClick = { 
+                onClick = {
                     val effectiveBaseUrl = if (isCloudInference) defaultUrls[selectedProvider] ?: baseUrl else baseUrl
                     val defaultChatCompletion = isCloudInference
                     onSave(selectedProvider, name, effectiveBaseUrl, apiKey, selectedModelFullId, initialConnection?.isChatCompletion == 1L || (initialConnection == null && defaultChatCompletion))

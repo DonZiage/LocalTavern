@@ -222,18 +222,20 @@ fun MessageBubble(
                 }
             ),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
-        verticalAlignment = Alignment.CenterVertically
+        verticalAlignment = Alignment.Top
     ) {
         if (isSelectMode) {
             Checkbox(
                 checked = isSelected,
                 onCheckedChange = { onSelectToggle() },
-                modifier = Modifier.padding(end = 8.dp)
+                modifier = Modifier.padding(end = 8.dp).align(Alignment.CenterVertically)
             )
         }
 
         if (isUser) {
-            actionsBlock()
+            Box(modifier = Modifier.align(Alignment.Top)) {
+                actionsBlock()
+            }
         } else {
             Box(
                 modifier = Modifier
@@ -241,7 +243,8 @@ fun MessageBubble(
                     .size(36.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .clickable { if (avatarData != null) showFullImage = true },
+                    .clickable { if (avatarData != null) showFullImage = true }
+                    .align(Alignment.Top),
                 contentAlignment = Alignment.Center
             ) {
                 if (avatarData != null) {
@@ -291,8 +294,9 @@ fun MessageBubble(
                         }
                     } else modifier
                 }
-                .padding(12.dp)
+                .weight(1f, fill = false)
                 .widthIn(max = 460.dp)
+                .padding(12.dp)
         ) {
             if (content == "...") {
                 AnimatedEllipsis(color = textColor)
@@ -351,7 +355,8 @@ fun MessageBubble(
                     .size(36.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .clickable { if (avatarData != null) showFullImage = true },
+                    .clickable { if (avatarData != null) showFullImage = true }
+                    .align(Alignment.Top),
                 contentAlignment = Alignment.Center
             ) {
                 if (avatarData != null) {
@@ -371,7 +376,9 @@ fun MessageBubble(
                 }
             }
         } else {
-            actionsBlock()
+            Box(modifier = Modifier.align(Alignment.Top)) {
+                actionsBlock()
+            }
         }
     }
 

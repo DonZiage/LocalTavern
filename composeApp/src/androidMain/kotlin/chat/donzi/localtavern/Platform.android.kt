@@ -29,7 +29,8 @@ actual fun saveFile(fileName: String, bytes: ByteArray): String? {
             val resolver = context.contentResolver
             val contentValues = android.content.ContentValues().apply {
                 put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/png")
+                val mimeType = if (fileName.endsWith(".json", ignoreCase = true)) "application/json" else "image/png"
+                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mimeType)
                 put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/LocalTavern/ExportedCharacters")
             }
             val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues) ?: return null
@@ -57,10 +58,13 @@ actual fun saveFile(fileName: String, bytes: ByteArray): String? {
 actual fun openDirectory(path: String) {
     val context = AndroidAppContext.getContext() ?: return
 
+    val isJson = path.endsWith(".json", ignoreCase = true)
+    val mimeType = if (isJson) "application/json" else "image/png"
+
     if (path.startsWith("content://")) {
         try {
             val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(path.toUri(), "image/png")
+                setDataAndType(path.toUri(), mimeType)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
@@ -82,7 +86,7 @@ actual fun openDirectory(path: String) {
         )
 
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "image/png")
+            setDataAndType(uri, mimeType)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
@@ -91,7 +95,6 @@ actual fun openDirectory(path: String) {
     } catch (e: Exception) {
         e.printStackTrace()
 
-        // Fallback: Just open the Downloads folder
         try {
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).path.toUri(), "*/*")

@@ -35,7 +35,6 @@ class CircularRevealShape(private val progress: Float, private val center: Offse
         layoutDirection: LayoutDirection,
         density: androidx.compose.ui.unit.Density
     ): Outline {
-        // Safe fallback in case the click offset is ever invalid
         val safeCenter = if (center.isSpecified) center else Offset(size.width / 2f, size.height / 2f)
         val maxRadius = max(
             max(hypot(safeCenter.x, safeCenter.y), hypot(size.width - safeCenter.x, safeCenter.y)),

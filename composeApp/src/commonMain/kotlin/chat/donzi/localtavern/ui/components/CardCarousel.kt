@@ -70,7 +70,13 @@ fun <T> CardCarousel(
             delay(50.milliseconds)
             try {
                 isCentering = true
-                listState.animateScrollToItem(newlyAddedItemIndex, 0)
+                val layoutInfo = listState.layoutInfo
+                val viewportWidth = layoutInfo.viewportSize.width
+                val visibleItems = layoutInfo.visibleItemsInfo
+                val itemSize = visibleItems.find { it.index == newlyAddedItemIndex }?.size
+                    ?: (viewportWidth * itemWidthFactor).roundToInt()
+                val centerOffset = -((viewportWidth - itemSize) / 2)
+                listState.animateScrollToItem(newlyAddedItemIndex, centerOffset)
             } finally {
                 isCentering = false
             }
@@ -115,7 +121,7 @@ fun <T> CardCarousel(
                     if (kotlin.math.abs(item.offset - targetOffset) > 1) {
                         try {
                             isCentering = true
-                            listState.animateScrollToItem(item.index, 0)
+                            listState.animateScrollToItem(item.index, -targetOffset)
                         } finally {
                             isCentering = false
                         }
@@ -172,12 +178,14 @@ fun <T> CardCarousel(
                 }
             }
     ) {
-        Text(
-            title,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
-        )
+        if (title.isNotBlank()) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
+            )
+        }
 
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
             val density = LocalDensity.current
@@ -191,17 +199,17 @@ fun <T> CardCarousel(
             val horizontalPaddingDp = (this.maxWidth - itemWidthDp) / 2
 
             val itemWidthPx = with(density) { itemWidthDp.toPx() }
-            val spacingPx = with(density) { spacingDp.toPx() }
 
             LaunchedEffect(initialIndex, this.maxWidth) {
                 val size = items.size
-                if (size > 0 || initialIndex == 0) {
-                    val targetIndex = initialIndex.coerceIn(0, size)
+                if (size > 0) {
+                    val targetIndex = initialIndex.coerceIn(0, size - 1)
+                    val centerOffset = -((constraints.maxWidth - itemWidthPx) / 2).roundToInt()
                     if (!hasScrolledToInitial) {
-                        listState.scrollToItem(targetIndex, 0)
+                        listState.scrollToItem(targetIndex, centerOffset)
                         hasScrolledToInitial = true
                     } else {
-                        listState.animateScrollToItem(targetIndex, 0)
+                        listState.animateScrollToItem(targetIndex, centerOffset)
                     }
                 }
             }
@@ -209,7 +217,8 @@ fun <T> CardCarousel(
             suspend fun scrollToIndexCentered(index: Int) {
                 try {
                     isCentering = true
-                    listState.animateScrollToItem(index, 0)
+                    val centerOffset = -((constraints.maxWidth - itemWidthPx) / 2).roundToInt()
+                    listState.animateScrollToItem(index, centerOffset)
                 } finally {
                     isCentering = false
                 }
@@ -242,7 +251,7 @@ fun <T> CardCarousel(
                     },
                 contentPadding = PaddingValues(
                     start = horizontalPaddingDp,
-                    end = horizontalPaddingDp + 4.dp // Boundary fix
+                    end = horizontalPaddingDp + 4.dp
                 ),
                 horizontalArrangement = Arrangement.spacedBy(spacingDp),
                 verticalAlignment = Alignment.CenterVertically
@@ -283,6 +292,7 @@ fun <T> CardCarousel(
 
                             val currentIdx = reorderableItems.indexOfFirst { key(it) == itemId }
                             if (currentIdx != -1) {
+                                val spacingPx = with(density) { spacingDp.toPx() }
                                 val threshold = itemWidthPx + spacingPx
                                 val shift = (dragDisplacement / threshold).roundToInt()
                                 if (shift != 0) {

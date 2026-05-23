@@ -167,7 +167,7 @@ fun MainScreen(
         characters.isNotEmpty()
     }
 
-    LaunchedEffect(activeSessionId, characters, personas) {
+    LaunchedEffect(activeSessionId, characters, personas, activeDrawer) {
         hasApiProfile = chatRepository.getAllApiConnections().isNotEmpty()
     }
 
@@ -201,6 +201,7 @@ fun MainScreen(
     }
 
     val exportCharacterFromList = { targetChar: CharacterEntity ->
+        onActiveDrawerChange(ActiveDrawer.None)
         try {
             val parentDir = CharacterManager.performExport(targetChar)
             if (parentDir != null) {
@@ -228,14 +229,14 @@ fun MainScreen(
                 val updatedSiblings = mutableMapOf<Long, List<MessageEntity>>()
                 val rootGreetings = chatRepository.getMessageSiblings(sessionId, null)
                 if (rootGreetings.isNotEmpty()) {
-                    updatedSiblings[rootGreetings.first().id] = rootGreetings
+                    rootGreetings.forEach { updatedSiblings[it.id] = rootGreetings }
                 }
 
-                activeTimeline.lastOrNull()?.let { lastMsg ->
-                    if (lastMsg.role == "assistant" && lastMsg.parentId != null) {
-                        val lastSiblings = chatRepository.getMessageSiblings(sessionId, lastMsg.parentId)
-                        if (lastSiblings.isNotEmpty()) {
-                            updatedSiblings[lastSiblings.first().id] = lastSiblings
+                activeTimeline.forEach { msg ->
+                    if (msg.parentId != null && !updatedSiblings.containsKey(msg.id)) {
+                        val sibs = chatRepository.getMessageSiblings(sessionId, msg.parentId)
+                        if (sibs.isNotEmpty()) {
+                            sibs.forEach { updatedSiblings[it.id] = sibs }
                         }
                     }
                 }
@@ -535,7 +536,12 @@ fun MainScreen(
             onCharactersDelete = { ids -> if (activeCharacter?.id in ids) activeCharacter = null; onCharactersDelete(ids) }, onCharacterImport = onCharacterImport,
             onCharacterCreate = { name -> pendingCreationName = name; onCharacterCreate(name); onActiveDrawerChange(ActiveDrawer.None) }, onCharacterEdit = { character -> editingCharacter = character; onActiveDrawerChange(ActiveDrawer.None) },
             onCharacterExport = { character -> exportCharacterFromList(character) }, autoEditDefaultPersona = autoEditPersonaTrigger, onAutoEditConsumed = { autoEditPersonaTrigger = false },
-            autoShowNewCharacterMenu = autoShowCharacterMenuTrigger, onAutoShowMenuConsumed = { autoShowCharacterMenuTrigger = false }
+            autoShowNewCharacterMenu = autoShowCharacterMenuTrigger, onAutoShowMenuConsumed = { autoShowCharacterMenuTrigger = false },
+            onApiChanged = {
+                coroutineScope.launch {
+                    hasApiProfile = chatRepository.getAllApiConnections().isNotEmpty()
+                }
+            }
         )
 
         AnimatedVisibility(visible = editingCharacter != null, enter = slideInVertically(initialOffsetY = { it }), exit = slideOutVertically(targetOffsetY = { it })) {

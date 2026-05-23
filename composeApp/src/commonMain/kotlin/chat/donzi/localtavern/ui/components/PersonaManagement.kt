@@ -50,7 +50,7 @@ fun PersonaManagement(
     }
 
     CardCarousel(
-        title = "Persona Profiles",
+        title = "",
         items = personas,
         key = { it.id },
         initialIndex = activeIndex,
@@ -215,8 +215,8 @@ private fun PersonaEditDialog(
                 }
 
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Start
                 ) {
                     Text(
                         text = "Total: $totalPersonaTokens Tokens",
@@ -224,7 +224,13 @@ private fun PersonaEditDialog(
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.SemiBold
                     )
-                    Spacer(modifier = Modifier.weight(1f))
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.End
+                ) {
                     TextButton(onClick = onDismiss) { Text("Cancel") }
                     Spacer(modifier = Modifier.width(8.dp))
                     TextButton(

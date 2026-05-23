@@ -12,7 +12,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun ApiConnectionSettings(
     chatRepository: ChatRepository,
-    chatClient: ChatClient
+    chatClient: ChatClient,
+    onApiChanged: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     var connections by remember { mutableStateOf<List<ApiConnection>>(emptyList()) }
@@ -43,6 +44,7 @@ fun ApiConnectionSettings(
                 scope.launch {
                     chatRepository.updateApiConnectionDisplayOrders(newList.map { it.id })
                     refreshTrigger++
+                    onApiChanged()
                 }
             },
             onAddClick = { showAddDialog = true },
@@ -50,6 +52,7 @@ fun ApiConnectionSettings(
                 scope.launch {
                     chatRepository.deleteApiConnection(connection.id)
                     refreshTrigger++
+                    onApiChanged()
                 }
             },
             itemContent = { connection, _, modifier, requestCenter, onDeleteRequest ->
@@ -60,6 +63,7 @@ fun ApiConnectionSettings(
                         scope.launch {
                             chatRepository.setActiveApiConnection(connection.id)
                             refreshTrigger++
+                            onApiChanged()
                         }
                     },
                     onToggleMode = { isChat ->
@@ -71,9 +75,10 @@ fun ApiConnectionSettings(
                                 temperature = connection.temperature, topP = connection.topP, topK = connection.topK,
                                 presencePenalty = connection.presencePenalty, frequencyPenalty = connection.frequencyPenalty,
                                 contextLimit = connection.contextLimit, responseLimit = connection.responseLimit,
-                                displayOrder = connection.displayOrder, timeoutLimit = connection.timeoutLimit // Mapped timeout column
+                                displayOrder = connection.displayOrder, timeoutLimit = connection.timeoutLimit
                             )
                             refreshTrigger++
+                            onApiChanged()
                         }
                     },
                     onDelete = onDeleteRequest,
@@ -114,6 +119,7 @@ fun ApiConnectionSettings(
                             timeoutLimit = updated.timeoutLimit
                         )
                         refreshTrigger++
+                        onApiChanged()
                     }
                 }
             )
@@ -139,6 +145,7 @@ fun ApiConnectionSettings(
                     )
                     showAddDialog = false
                     refreshTrigger++
+                    onApiChanged()
                 }
             }
         )
@@ -173,6 +180,7 @@ fun ApiConnectionSettings(
                     )
                     editingConnection = null
                     refreshTrigger++
+                    onApiChanged()
                 }
             }
         )

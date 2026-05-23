@@ -58,7 +58,8 @@ fun SidePanels(
     autoEditDefaultPersona: Boolean = false,
     onAutoEditConsumed: () -> Unit = {},
     autoShowNewCharacterMenu: Boolean = false,
-    onAutoShowMenuConsumed: () -> Unit = {}
+    onAutoShowMenuConsumed: () -> Unit = {},
+    onApiChanged: () -> Unit = {}
 ) {
     Box(modifier = Modifier.fillMaxSize().zIndex(100f)) {
         AnimatedVisibility(
@@ -147,7 +148,8 @@ fun SidePanels(
                             ) {
                                 ApiConnectionSettings(
                                     chatRepository = chatRepository,
-                                    chatClient = chatClient
+                                    chatClient = chatClient,
+                                    onApiChanged = onApiChanged
                                 )
                             }
                         }
