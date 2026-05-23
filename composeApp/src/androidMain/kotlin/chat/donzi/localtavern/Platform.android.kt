@@ -8,6 +8,9 @@ import android.content.Context
 import androidx.core.content.FileProvider
 import android.media.MediaScannerConnection
 import androidx.core.net.toUri
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import java.io.ByteArrayOutputStream
 
 
 object AndroidAppContext {
@@ -104,5 +107,17 @@ actual fun openDirectory(path: String) {
         } catch (e2: Exception) {
             e2.printStackTrace()
         }
+    }
+}
+
+actual fun convertToPng(bytes: ByteArray): ByteArray {
+    return try {
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return bytes
+        val outputStream = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
+        outputStream.toByteArray()
+    } catch (e: Exception) {
+        e.printStackTrace()
+        bytes
     }
 }

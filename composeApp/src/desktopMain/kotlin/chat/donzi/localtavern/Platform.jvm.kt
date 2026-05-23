@@ -2,8 +2,8 @@ package chat.donzi.localtavern
 
 import java.io.File
 import java.awt.Desktop
-
-
+import org.jetbrains.skia.Image
+import org.jetbrains.skia.EncodedImageFormat
 
 
 actual fun saveFile(fileName: String, bytes: ByteArray): String? {
@@ -31,5 +31,16 @@ actual fun openDirectory(path: String) {
         }
     } catch (e: Exception) {
         e.printStackTrace()
+    }
+}
+
+actual fun convertToPng(bytes: ByteArray): ByteArray {
+    return try {
+        val skiaImage = Image.makeFromEncoded(bytes)
+        val pngData = skiaImage.encodeToData(EncodedImageFormat.PNG)
+        pngData?.bytes ?: bytes
+    } catch (e: Exception) {
+        e.printStackTrace()
+        bytes
     }
 }

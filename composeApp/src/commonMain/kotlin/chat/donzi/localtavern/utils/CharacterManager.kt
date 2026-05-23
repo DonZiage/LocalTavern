@@ -106,10 +106,17 @@ object CharacterManager {
 
     @OptIn(ExperimentalEncodingApi::class)
     fun exportToPng(originalImage: ByteArray, character: CharacterEntity): ByteArray {
+        val pngImageBytes = if (isPng(originalImage)) {
+            originalImage
+        } else {
+            chat.donzi.localtavern.convertToPng(originalImage)
+        }
+
         val jsonString = getCardJsonString(character)
         val base64Data = Base64.encode(jsonString.encodeToByteArray())
         val chunkData = "chara\u0000$base64Data".encodeToByteArray()
-        return insertMetadataChunk(originalImage, chunkData)
+
+        return insertMetadataChunk(pngImageBytes, chunkData)
     }
 
     fun exportToJson(character: CharacterEntity): ByteArray {
