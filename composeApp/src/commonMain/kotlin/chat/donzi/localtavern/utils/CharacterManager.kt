@@ -146,15 +146,16 @@ object CharacterManager {
                 ((pngBytes[9].toInt() and 0xFF) shl 16) or
                 ((pngBytes[10].toInt() and 0xFF) shl 8) or
                 (pngBytes[11].toInt() and 0xFF)
-        val ihdrTotalSize = 12 + ihdrDataLength
+        val endOfIhdrOffset = 8 + 12 + ihdrDataLength
 
         val type = "tEXt".encodeToByteArray()
         val chunkTotalSize = 4 + 4 + data.size + 4
 
         val result = ByteArray(pngBytes.size + chunkTotalSize)
-        pngBytes.copyInto(result, 0, 0, 8 + ihdrTotalSize)
 
-        var offset = 8 + ihdrTotalSize
+        pngBytes.copyInto(destination = result, destinationOffset = 0, startIndex = 0, endIndex = endOfIhdrOffset)
+
+        var offset = endOfIhdrOffset
         writeInt(result, offset, data.size)
         offset += 4
         type.copyInto(result, offset)
@@ -168,9 +169,8 @@ object CharacterManager {
         writeInt(result, offset, crc.value.toInt())
         offset += 4
 
-        val remainingOffset = 8 + ihdrTotalSize
-        if (pngBytes.size > remainingOffset) {
-            pngBytes.copyInto(result, offset, remainingOffset, pngBytes.size)
+        if (pngBytes.size > endOfIhdrOffset) {
+            pngBytes.copyInto(destination = result, destinationOffset = offset, startIndex = endOfIhdrOffset, endIndex = pngBytes.size)
         }
         return result
     }

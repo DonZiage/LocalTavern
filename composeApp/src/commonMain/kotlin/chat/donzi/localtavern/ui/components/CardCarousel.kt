@@ -1,9 +1,9 @@
 package chat.donzi.localtavern.ui.components
 
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -29,7 +30,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlin.time.Clock
 import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -58,7 +58,8 @@ fun <T> CardCarousel(
     var isCentering by remember { mutableStateOf(false) }
     var draggedItemId by remember { mutableStateOf<Any?>(null) }
     var dragDisplacement by remember { mutableFloatStateOf(0f) }
-    var lastInteractionTime by remember { mutableLongStateOf(0L) }
+
+    val snapFlingBehavior = rememberSnapFlingBehavior(lazyListState = listState)
 
     LaunchedEffect(items) {
         val newlyAddedItemIndex = items.indexOfFirst { !reorderableItems.contains(it) }
@@ -77,6 +78,7 @@ fun <T> CardCarousel(
                     ?: (viewportWidth * itemWidthFactor).roundToInt()
                 val centerOffset = -((viewportWidth - itemSize) / 2)
                 listState.animateScrollToItem(newlyAddedItemIndex, centerOffset)
+            } catch (_: Exception) {
             } finally {
                 isCentering = false
             }
@@ -122,33 +124,12 @@ fun <T> CardCarousel(
                         try {
                             isCentering = true
                             listState.animateScrollToItem(item.index, -targetOffset)
+                        } catch (_: Exception) {
                         } finally {
                             isCentering = false
                         }
                     }
                 }
-            }
-        }
-    }
-
-    LaunchedEffect(listState.isScrollInProgress, lastInteractionTime, draggedItemId, isCentering) {
-        if (isCentering || draggedItemId != null) return@LaunchedEffect
-
-        if (!listState.isScrollInProgress) {
-            val now = Clock.System.now().toEpochMilliseconds()
-            val interactionAge = if (lastInteractionTime > 0) now - lastInteractionTime else 10000
-
-            if (interactionAge < 400) {
-                delay((400 - interactionAge).milliseconds)
-            } else if (lastInteractionTime > 0) {
-                delay(50.milliseconds)
-            } else {
-                return@LaunchedEffect
-            }
-
-            val finalNow = Clock.System.now().toEpochMilliseconds()
-            if (!listState.isScrollInProgress && !isCentering && draggedItemId == null && (finalNow - lastInteractionTime) >= 400) {
-                scope.launch { performSnap() }
             }
         }
     }
@@ -161,13 +142,10 @@ fun <T> CardCarousel(
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
-                        if (isCentering) {
-                            event.changes.forEach { it.consume() }
-                        } else if (event.type == PointerEventType.Scroll) {
+                        if (event.type == PointerEventType.Scroll) {
                             val delta = event.changes.first().scrollDelta
                             val scrollAmount = delta.y * 64f + delta.x * 64f
                             if (scrollAmount != 0f) {
-                                lastInteractionTime = Clock.System.now().toEpochMilliseconds()
                                 scope.launch {
                                     listState.scrollBy(scrollAmount)
                                 }
@@ -197,7 +175,6 @@ fun <T> CardCarousel(
                 .coerceAtLeast(150.dp)
 
             val horizontalPaddingDp = (this.maxWidth - itemWidthDp) / 2
-
             val itemWidthPx = with(density) { itemWidthDp.toPx() }
 
             LaunchedEffect(initialIndex, this.maxWidth) {
@@ -209,16 +186,26 @@ fun <T> CardCarousel(
                         listState.scrollToItem(targetIndex, centerOffset)
                         hasScrolledToInitial = true
                     } else {
-                        listState.animateScrollToItem(targetIndex, centerOffset)
+                        if (!isCentering) {
+                            try {
+                                isCentering = true
+                                listState.animateScrollToItem(targetIndex, centerOffset)
+                            } catch (_: Exception) {
+                            } finally {
+                                isCentering = false
+                            }
+                        }
                     }
                 }
             }
 
             suspend fun scrollToIndexCentered(index: Int) {
+                if (isCentering) return
                 try {
                     isCentering = true
                     val centerOffset = -((constraints.maxWidth - itemWidthPx) / 2).roundToInt()
                     listState.animateScrollToItem(index, centerOffset)
+                } catch (_: Exception) {
                 } finally {
                     isCentering = false
                 }
@@ -227,27 +214,39 @@ fun <T> CardCarousel(
             LazyRow(
                 state = listState,
                 userScrollEnabled = !isCentering && draggedItemId == null,
+                flingBehavior = snapFlingBehavior,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(carouselHeight)
                     .pointerInput(Unit) {
-                        detectHorizontalDragGestures(
-                            onHorizontalDrag = { change, dragAmount ->
-                                if (draggedItemId == null && !isCentering) {
-                                    lastInteractionTime = Clock.System.now().toEpochMilliseconds()
-                                    change.consume()
-                                    scope.launch { listState.scrollBy(-dragAmount) }
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                val firstChange = event.changes.firstOrNull()
+
+                                if (firstChange != null && firstChange.type == PointerType.Mouse && event.type == PointerEventType.Press) {
+                                    val currentDragId = firstChange.id
+                                    var lastX = firstChange.position.x
+
+                                    while (true) {
+                                        val dragEvent = awaitPointerEvent(PointerEventPass.Main)
+                                        val dragChange = dragEvent.changes.find { it.id == currentDragId }
+
+                                        if (dragChange == null || dragEvent.type == PointerEventType.Release) {
+                                            scope.launch { performSnap() }
+                                            break
+                                        }
+
+                                        if (draggedItemId == null && !isCentering) {
+                                            val deltaX = dragChange.position.x - lastX
+                                            scope.launch { listState.scrollBy(-deltaX) }
+                                            dragChange.consume()
+                                            lastX = dragChange.position.x
+                                        }
+                                    }
                                 }
-                            },
-                            onDragEnd = {
-                                lastInteractionTime = Clock.System.now().toEpochMilliseconds()
-                                scope.launch { performSnap() }
-                            },
-                            onDragCancel = {
-                                lastInteractionTime = Clock.System.now().toEpochMilliseconds()
-                                scope.launch { performSnap() }
                             }
-                        )
+                        }
                     },
                 contentPadding = PaddingValues(
                     start = horizontalPaddingDp,
@@ -265,7 +264,6 @@ fun <T> CardCarousel(
                         if (!isCentering) {
                             draggedItemId = itemId
                             dragDisplacement = 0f
-                            lastInteractionTime = Clock.System.now().toEpochMilliseconds()
                         }
                     }
 
@@ -273,20 +271,17 @@ fun <T> CardCarousel(
                         draggedItemId = null
                         dragDisplacement = 0f
                         onReorder(reorderableItems.toList())
-                        lastInteractionTime = Clock.System.now().toEpochMilliseconds()
                         scope.launch { performSnap() }
                     }
 
                     val handleDragCancel: () -> Unit = {
                         draggedItemId = null
                         dragDisplacement = 0f
-                        lastInteractionTime = Clock.System.now().toEpochMilliseconds()
                         scope.launch { performSnap() }
                     }
 
                     val handleDrag: (PointerInputChange, Offset) -> Unit = { change, dragAmount ->
                         if (draggedItemId == itemId) {
-                            lastInteractionTime = Clock.System.now().toEpochMilliseconds()
                             change.consume()
                             dragDisplacement += dragAmount.x
 

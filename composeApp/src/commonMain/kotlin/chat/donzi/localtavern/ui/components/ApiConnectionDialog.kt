@@ -203,8 +203,12 @@ fun ApiConnectionDialog(
             .toList()
     }
 
-    LaunchedEffect(filteredModels) {
-        if (filteredModels.isNotEmpty()) {
+    LaunchedEffect(filteredModels, modelSearch) {
+        if (modelSearch.isBlank()) {
+            if (isCloudInference) {
+                selectedModelFullId = ""
+            }
+        } else if (filteredModels.isNotEmpty()) {
             if (selectedModelFullId.isBlank() || filteredModels.none { it.id == selectedModelFullId }) {
                 selectedModelFullId = filteredModels.first().id
             }
@@ -299,11 +303,11 @@ fun ApiConnectionDialog(
                         val modelLabelStep = if (isCloudInference) "3" else "4"
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(
-                                if (selectedModelFullId.isEmpty()) "$modelLabelStep. Select Model (Required)" else "$modelLabelStep. Model Selected",
+                                if (selectedModelFullId.isEmpty() || modelSearch.isBlank()) "$modelLabelStep. Select Model (Required)" else "$modelLabelStep. Model Selected",
                                 style = MaterialTheme.typography.labelMedium,
-                                color = if (selectedModelFullId.isEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                                color = if (selectedModelFullId.isEmpty() || modelSearch.isBlank()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                             )
-                            
+
                             if (allModels.isNotEmpty()) {
                                 ExposedDropdownMenuBox(
                                     expanded = providerDropdownExpanded && (providerSuggestions.isNotEmpty() || modelProviderFilter.isEmpty()),
@@ -395,7 +399,7 @@ fun ApiConnectionDialog(
                                         }
                                         modelDropdownExpanded = true
                                     },
-                                    label = { Text("Model Name") },
+                                    label = { Text("Model Name (Required)") },
                                     trailingIcon = {
                                         IconButton(onClick = { modelDropdownExpanded = !modelDropdownExpanded }) {
                                             Icon(Icons.Default.Search, null)
@@ -417,7 +421,7 @@ fun ApiConnectionDialog(
                                             }
                                             false
                                         },
-                                    isError = selectedModelFullId.isEmpty(),
+                                    isError = modelSearch.isBlank() || selectedModelFullId.isEmpty(),
                                     interactionSource = interactionSource,
                                     singleLine = true
                                 )
@@ -467,7 +471,7 @@ fun ApiConnectionDialog(
                     val defaultChatCompletion = isCloudInference
                     onSave(selectedProvider, name, effectiveBaseUrl, apiKey, selectedModelFullId, initialConnection?.isChatCompletion == 1L || (initialConnection == null && defaultChatCompletion))
                 },
-                enabled = selectedProvider.isNotEmpty() && (isKeyValid || !isCloudInference) && selectedModelFullId.isNotBlank() && (isCloudInference || baseUrl.isNotBlank())
+                enabled = selectedProvider.isNotEmpty() && (isKeyValid || !isCloudInference) && selectedModelFullId.isNotBlank() && modelSearch.isNotBlank() && (isCloudInference || baseUrl.isNotBlank())
             ) {
                 Text(if (initialConnection == null) "Complete Setup" else "Save Changes")
             }
