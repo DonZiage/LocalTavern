@@ -27,11 +27,11 @@ import coil3.compose.AsyncImage
 @Composable
 fun PersonaManagement(
     personas: List<PersonaEntity>,
-    activePersonaId: Long?,
-    onPersonaSelect: (Long) -> Unit,
+    activePersonaId: String?,
+    onPersonaSelect: (String) -> Unit,
     onPersonaAdd: (String, String?, ByteArray?) -> Unit,
-    onPersonaUpdate: (Long, String, String?, ByteArray?) -> Unit,
-    onPersonaDelete: (Long) -> Unit,
+    onPersonaUpdate: (String, String, String?, ByteArray?) -> Unit,
+    onPersonaDelete: (String) -> Unit,
     autoEditDefaultPersona: Boolean = false,
     onAutoEditConsumed: () -> Unit = {}
 ) {
@@ -87,14 +87,15 @@ fun PersonaManagement(
     }
 
     if (editingPersona != null) {
+        val currentEditing = editingPersona!!
         PersonaEditDialog(
             title = "Edit Persona",
-            initialName = editingPersona?.name ?: "",
-            initialDescription = editingPersona?.description ?: "",
-            initialAvatar = editingPersona?.avatarData,
+            initialName = currentEditing.name,
+            initialDescription = currentEditing.description ?: "",
+            initialAvatar = currentEditing.avatarData,
             onDismiss = { editingPersona = null },
             onSave = { name, desc, avatar ->
-                editingPersona?.let { onPersonaUpdate(it.id, name, desc, avatar) }
+                onPersonaUpdate(currentEditing.id, name, desc, avatar)
                 editingPersona = null
             }
         )
@@ -173,6 +174,7 @@ private fun PersonaEditDialog(
                         }
                     }
 
+                    // Fix: Calling unified shared AvatarDropdownMenu instead of duplicate PersonaAvatarDropdownMenu
                     AvatarDropdownMenu(
                         expanded = showImageMenu,
                         onDismissRequest = { showImageMenu = false },
@@ -242,10 +244,10 @@ private fun PersonaEditDialog(
                 }
             }
         }
+    }
 
-        if (showFullImage && avatarData != null) {
-            FullscreenImageViewer(avatarData = avatarData!!, onDismiss = { showFullImage = false })
-        }
+    if (showFullImage && avatarData != null) {
+        FullscreenImageViewer(avatarData = avatarData!!, onDismiss = { showFullImage = false })
     }
 }
 

@@ -30,7 +30,7 @@ fun CharacterListSection(
     characters: List<CharacterEntity>,
     modifier: Modifier = Modifier,
     onSelect: (CharacterEntity) -> Unit,
-    onDeleteSelected: (Set<Long>) -> Unit,
+    onDeleteSelected: (Set<String>) -> Unit,
     onImportCharacter: (SillyTavernCardV2, ByteArray?) -> Unit,
     onCreateCharacter: (String) -> Unit,
     onEditCharacter: (CharacterEntity) -> Unit,
@@ -41,7 +41,7 @@ fun CharacterListSection(
 ) {
     var query by remember { mutableStateOf("") }
     var selectionMode by remember { mutableStateOf(false) }
-    val selectedIds = remember { mutableStateListOf<Long>() }
+    val selectedIds = remember { mutableStateListOf<String>() }
     var isSearchActive by remember { mutableStateOf(false) }
     val focusRequester = focusRequester()
     var showCharacterMenu by remember { mutableStateOf(false) }

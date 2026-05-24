@@ -44,7 +44,7 @@ import kotlin.time.Duration.Companion.milliseconds
 
 private suspend fun insertInitialGreetings(
     chatRepository: ChatRepository,
-    sessionId: Long,
+    sessionId: String,
     character: CharacterEntity
 ) {
     val primaryGreeting = character.firstMes ?: ""
@@ -54,7 +54,7 @@ private suspend fun insertInitialGreetings(
     if (primaryGreeting.isNotBlank()) allGreetings.add(primaryGreeting)
     allGreetings.addAll(altGreetingsList)
 
-    var primaryMessageId: Long? = null
+    var primaryMessageId: String? = null
     allGreetings.forEachIndexed { index, greeting ->
         val isActive = index == 0
         val msgId = chatRepository.insertMessageRaw(sessionId, "assistant", greeting, null, isActive)
@@ -121,30 +121,30 @@ fun MainScreen(
     chatClient: ChatClient,
     characters: List<CharacterEntity>,
     personas: List<PersonaEntity>,
-    activePersonaId: Long?,
+    activePersonaId: String?,
     isDarkMode: Boolean,
     onToggleDarkMode: (Boolean, Offset) -> Unit,
     activeDrawer: ActiveDrawer,
     onActiveDrawerChange: (ActiveDrawer) -> Unit,
     refreshData: () -> Unit,
-    onPersonaSelect: (Long) -> Unit,
+    onPersonaSelect: (String) -> Unit,
     onPersonaAdd: (String, String?, ByteArray?) -> Unit,
-    onPersonaUpdate: (Long, String, String?, ByteArray?) -> Unit,
-    onPersonaDelete: (Long) -> Unit,
-    onCharactersDelete: (Set<Long>) -> Unit,
+    onPersonaUpdate: (String, String, String?, ByteArray?) -> Unit,
+    onPersonaDelete: (String) -> Unit,
+    onCharactersDelete: (Set<String>) -> Unit,
     onCharacterImport: (SillyTavernCardV2, ByteArray?) -> Unit,
     onCharacterCreate: (String) -> Unit
 ) {
     val drawerWidth = 300.dp
     var activeCharacter by remember { mutableStateOf<CharacterEntity?>(null) }
-    var activeSessionId by remember { mutableStateOf<Long?>(null) }
+    var activeSessionId by remember { mutableStateOf<String?>(null) }
     var messages by remember { mutableStateOf(emptyList<MessageEntity>()) }
-    var siblingsMap by remember { mutableStateOf(emptyMap<Long, List<MessageEntity>>()) }
+    var siblingsMap by remember { mutableStateOf(emptyMap<String, List<MessageEntity>>()) }
     var currentSessionDetails by remember { mutableStateOf<ChatSession?>(null) }
     val coroutineScope = rememberCoroutineScope()
 
     var isSelectMode by remember { mutableStateOf(false) }
-    var selectedMessageIds by remember { mutableStateOf(setOf<Long>()) }
+    var selectedMessageIds by remember { mutableStateOf(setOf<String>()) }
     var editingCharacter by remember { mutableStateOf<CharacterEntity?>(null) }
 
     var hasApiProfile by remember { mutableStateOf(false) }
@@ -226,7 +226,7 @@ fun MainScreen(
                 val activeTimeline = chatRepository.getMessagesForSession(sessionId)
                 messages = activeTimeline
 
-                val updatedSiblings = mutableMapOf<Long, List<MessageEntity>>()
+                val updatedSiblings = mutableMapOf<String, List<MessageEntity>>()
                 val rootGreetings = chatRepository.getMessageSiblings(sessionId, null)
                 if (rootGreetings.isNotEmpty()) {
                     rootGreetings.forEach { updatedSiblings[it.id] = rootGreetings }
@@ -279,7 +279,7 @@ fun MainScreen(
         }
     }
 
-    fun requestAiResponse(sessionId: Long, targetParentId: Long? = null) {
+    fun requestAiResponse(sessionId: String, targetParentId: String? = null) {
         currentResponseJob?.cancel()
         currentResponseJob = coroutineScope.launch {
             try {
@@ -561,20 +561,40 @@ fun MainScreen(
                                     }
 
                                     if (activeCharacter?.id == targetCharacter.id) activeCharacter = freshCharacter
-                                    activeSessionId?.let { sessionId ->
+
+                                    val targetSessionId = if (activeSessionId != null && activeCharacter?.id == targetCharacter.id) {
+                                        activeSessionId
+                                    } else {
+                                        chatRepository.getSessionsForCharacter(targetCharacter.id).firstOrNull()?.id
+                                    }
+
+                                    targetSessionId?.let { sessionId ->
                                         val currentRoots = chatRepository.getMessageSiblings(sessionId, null)
                                         val textList = mutableListOf<String>()
                                         if (firstMes.isNotBlank()) textList.add(firstMes)
                                         altGreetings.filter { it.isNotBlank() }.forEach { textList.add(it) }
-                                        currentRoots.forEachIndexed { index, existingMessage -> if (index < textList.size) chatRepository.updateMessageContent(existingMessage.id, textList[index]) else chatRepository.deleteMessage(existingMessage.id) }
-                                        if (textList.size > currentRoots.size) { for (i in currentRoots.size until textList.size) chatRepository.insertMessageRaw(sessionId, "assistant", textList[i], null, false) }
+                                        currentRoots.forEachIndexed { index, existingMessage ->
+                                            if (index < textList.size) {
+                                                chatRepository.updateMessageContent(existingMessage.id, textList[index])
+                                            } else {
+                                                chatRepository.deleteMessage(existingMessage.id)
+                                            }
+                                        }
+                                        if (textList.size > currentRoots.size) {
+                                            for (i in currentRoots.size until textList.size) {
+                                                chatRepository.insertMessageRaw(sessionId, "assistant", textList[i], null, false)
+                                            }
+                                        }
                                         val finalRoots = chatRepository.getMessageSiblings(sessionId, null)
-                                        if (finalRoots.isNotEmpty() && finalRoots.none { it.id == messages.firstOrNull()?.id }) finalRoots.firstOrNull()?.let { chatRepository.selectVariation(sessionId, it.id, null) }
+                                        if (finalRoots.isNotEmpty() && finalRoots.none { it.id == messages.firstOrNull()?.id }) {
+                                            finalRoots.firstOrNull()?.let { chatRepository.selectVariation(sessionId, it.id, null) }
+                                        }
                                     }
                                     refreshMessages()
                                 }
                             },
-                            onDelete = { coroutineScope.launch { chatRepository.deleteCharacters(setOf(targetCharacter.id)); if (activeCharacter?.id == targetCharacter.id) activeCharacter = null; editingCharacter = null; refreshData() } }
+                            onDelete = { coroutineScope.launch { chatRepository.deleteCharacters(setOf(targetCharacter.id)); if (activeCharacter?.id == targetCharacter.id) activeCharacter = null; editingCharacter = null; refreshData() } },
+                            onExport = { updatedCharacter -> exportCharacterFromList(updatedCharacter) }
                         )
                     }
                 }
@@ -583,7 +603,7 @@ fun MainScreen(
 
         if (showChatManagerDialog && activeCharacter != null && activePersonaId != null) {
             ChatManagerDialog(characterId = activeCharacter!!.id, personaId = activePersonaId, activeSessionId = activeSessionId, chatRepository = chatRepository, onDismissRequest = { showChatManagerDialog = false }, onSessionSelected = { id -> activeSessionId =
-                if (id == -1L) null else id; showChatManagerDialog = false })
+                id.ifBlank { null }; showChatManagerDialog = false })
         }
 
         ExportNotificationBubble(
@@ -597,16 +617,16 @@ fun MainScreen(
 
 @Composable
 fun ChatManagerDialog(
-    characterId: Long,
-    personaId: Long,
-    activeSessionId: Long?,
+    characterId: String,
+    personaId: String,
+    activeSessionId: String?,
     chatRepository: ChatRepository,
     onDismissRequest: () -> Unit,
-    onSessionSelected: (Long) -> Unit
+    onSessionSelected: (String) -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
     var sessions by remember { mutableStateOf(emptyList<ChatSession>()) }
-    var expandedMenuSessionId by remember { mutableStateOf<Long?>(null) }
+    var expandedMenuSessionId by remember { mutableStateOf<String?>(null) }
     var sessionToRename by remember { mutableStateOf<ChatSession?>(null) }
     var editTitleText by remember { mutableStateOf("") }
     var sessionToDelete by remember { mutableStateOf<ChatSession?>(null) }
@@ -633,7 +653,7 @@ fun ChatManagerDialog(
                             Card(colors = CardDefaults.cardColors(containerColor = if (isActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)), modifier = Modifier.fillMaxWidth().clickable { onSessionSelected(session.id) }) {
                                 Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                                     Column(modifier = Modifier.weight(1f).padding(vertical = 4.dp)) {
-                                        Text(text = session.title ?: "#${session.id} ${formatTimestampToDateTime(session.lastTimestamp)}", style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold), maxLines = 1)
+                                        Text(text = session.title ?: "#${session.id.take(6)} ${formatTimestampToDateTime(session.lastTimestamp)}", style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold), maxLines = 1)
                                         if (isActive) Text(text = "Active Conversation", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = MaterialTheme.colorScheme.primary)
                                     }
                                     Box {
@@ -658,7 +678,7 @@ fun ChatManagerDialog(
         AlertDialog(
             onDismissRequest = { sessionToRename = null },
             title = { Text("Rename Chat") },
-            text = { Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { OutlinedTextField(value = editTitleText, onValueChange = { editTitleText = it }, label = { Text("Chat Title") }, placeholder = { Text("#${targetSession.id}") }, singleLine = true, modifier = Modifier.fillMaxWidth()) } },
+            text = { Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { OutlinedTextField(value = editTitleText, onValueChange = { editTitleText = it }, label = { Text("Chat Title") }, placeholder = { Text("#${targetSession.id.take(6)}") }, singleLine = true, modifier = Modifier.fillMaxWidth()) } },
             confirmButton = { TextButton(onClick = { coroutineScope.launch { chatRepository.updateSessionTitle(targetSession.id, editTitleText.ifBlank { null }); sessionToRename = null; loadSessions() } }) { Text("Save") } },
             dismissButton = { TextButton(onClick = { sessionToRename = null }) { Text("Cancel") } }
         )
@@ -670,7 +690,7 @@ fun ChatManagerDialog(
             onDismissRequest = { sessionToDelete = null },
             title = { Text("Delete Conversation?") },
             text = { Text("Are you sure you want to delete this chat session? All associated logs and swipe messages will be permanently deleted.") },
-            confirmButton = { TextButton(onClick = { coroutineScope.launch { chatRepository.deleteSession(targetSession.id); if (targetSession.id == activeSessionId) { val remaining = sessions.filter { it.id != targetSession.id }; if (remaining.isNotEmpty()) onSessionSelected(remaining.first().id) else onSessionSelected(-1L) } else { loadSessions() }; sessionToDelete = null } }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Delete") } },
+            confirmButton = { TextButton(onClick = { coroutineScope.launch { chatRepository.deleteSession(targetSession.id); if (targetSession.id == activeSessionId) { val remaining = sessions.filter { it.id != targetSession.id }; if (remaining.isNotEmpty()) onSessionSelected(remaining.first().id) else onSessionSelected("") } else { loadSessions() }; sessionToDelete = null } }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Delete") } },
             dismissButton = { TextButton(onClick = { sessionToDelete = null }) { Text("Cancel") } }
         )
     }

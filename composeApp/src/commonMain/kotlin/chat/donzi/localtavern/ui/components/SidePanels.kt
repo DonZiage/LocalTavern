@@ -43,14 +43,14 @@ fun SidePanels(
     isDarkMode: Boolean,
     onToggleDarkMode: (Boolean, Offset) -> Unit,
     personas: List<PersonaEntity>,
-    activePersonaId: Long?,
-    onPersonaSelect: (Long) -> Unit,
+    activePersonaId: String?,
+    onPersonaSelect: (String) -> Unit,
     onPersonaAdd: (String, String?, ByteArray?) -> Unit,
-    onPersonaUpdate: (Long, String, String?, ByteArray?) -> Unit,
-    onPersonaDelete: (Long) -> Unit,
+    onPersonaUpdate: (String, String, String?, ByteArray?) -> Unit,
+    onPersonaDelete: (String) -> Unit,
     characters: List<CharacterEntity>,
     onCharacterSelect: (CharacterEntity) -> Unit,
-    onCharactersDelete: (Set<Long>) -> Unit,
+    onCharactersDelete: (Set<String>) -> Unit,
     onCharacterImport: (SillyTavernCardV2, ByteArray?) -> Unit,
     onCharacterExport: (CharacterEntity) -> Unit,
     onCharacterCreate: (String) -> Unit,
@@ -208,7 +208,7 @@ fun SidePanels(
 
                         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp).alpha(0.3f))
 
-                        CollapsibleSettingsSection(title = "Character List") {
+                        CollapsibleSettingsSection(title = "Characters") {
                             CharacterListSection(
                                 characters = characters,
                                 modifier = Modifier.heightIn(max = 1000.dp),

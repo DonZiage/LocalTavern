@@ -1,6 +1,5 @@
 package chat.donzi.localtavern.ui.components
 
-import chat.donzi.localtavern.utils.CharacterManager
 import chat.donzi.localtavern.utils.DefaultTokenizer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -30,7 +29,6 @@ import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.milliseconds
 
 @Composable
@@ -47,7 +45,8 @@ fun CharacterDefinitionEditor(
         altGreetings: List<String>,
         avatarData: ByteArray?
     ) -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onExport: (CharacterEntity) -> Unit
 ) {
     var name by remember(character.id) { mutableStateOf(character.name) }
     var description by remember(character.id) { mutableStateOf(character.description ?: "") }
@@ -63,14 +62,9 @@ fun CharacterDefinitionEditor(
     var avatarData by remember(character.id) { mutableStateOf(character.avatarData) }
 
     var confirmDelete by remember { mutableStateOf(false) }
-    val snackbarHostState = remember { SnackbarHostState() }
-    val scope = rememberCoroutineScope()
 
     var showImageMenu by remember { mutableStateOf(false) }
     var showFullImage by remember { mutableStateOf(false) }
-
-    var showExportNotification by remember { mutableStateOf(false) }
-    var exportedDir by remember { mutableStateOf("") }
 
     val deleteRed = Color(0xFFD32F2F)
 
@@ -84,13 +78,6 @@ fun CharacterDefinitionEditor(
         }
         delay(600.milliseconds)
         persist()
-    }
-
-    LaunchedEffect(showExportNotification) {
-        if (showExportNotification) {
-            delay(5000.milliseconds)
-            showExportNotification = false
-        }
     }
 
     val baseTokens = remember(name, description, personality, scenario, firstMes, mesExample) {
@@ -126,18 +113,7 @@ fun CharacterDefinitionEditor(
             mesExample = mesExample.filter { it.isNotBlank() }.joinToString("|||"),
             altGreetings = altGreetings.filter { it.isNotBlank() }.joinToString("|||"), avatarData = avatarData
         )
-
-        try {
-            val parentDir = CharacterManager.performExport(currentCharacter)
-            if (parentDir != null) {
-                exportedDir = parentDir
-                showExportNotification = true
-            } else {
-                scope.launch { snackbarHostState.showSnackbar("Failed to export: Could not save file") }
-            }
-        } catch (e: Exception) {
-            scope.launch { snackbarHostState.showSnackbar("Failed to export: ${e.message}") }
-        }
+        onExport(currentCharacter)
     }
 
     val pickImage = rememberImagePickerLauncher { bytes ->
@@ -253,15 +229,6 @@ fun CharacterDefinitionEditor(
             AlternateGreetingsStrip(greetings = altGreetings, onChange = { altGreetings = it })
             Spacer(Modifier.height(24.dp))
         }
-
-        SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp))
-
-        ExportNotificationBubble(
-            visible = showExportNotification,
-            exportedDir = exportedDir,
-            onDismiss = { showExportNotification = false },
-            modifier = Modifier.align(Alignment.TopCenter)
-        )
     }
 
     val currentAvatar = avatarData

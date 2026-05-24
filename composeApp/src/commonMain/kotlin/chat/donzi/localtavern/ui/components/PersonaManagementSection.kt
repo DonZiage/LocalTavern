@@ -9,11 +9,11 @@ import chat.donzi.localtavern.data.database.PersonaEntity
 @Composable
 fun PersonaManagementSection(
     personas: List<PersonaEntity>,
-    activePersonaId: Long?,
-    onSelect: (Long) -> Unit,
+    activePersonaId: String?,
+    onSelect: (String) -> Unit,
     onAdd: (String, String?, ByteArray?) -> Unit,
-    onUpdate: (Long, String, String?, ByteArray?) -> Unit,
-    onDelete: (Long) -> Unit,
+    onUpdate: (String, String, String?, ByteArray?) -> Unit,
+    onDelete: (String) -> Unit,
     modifier: Modifier = Modifier,
     autoEditDefaultPersona: Boolean = false,
     onAutoEditConsumed: () -> Unit = {}

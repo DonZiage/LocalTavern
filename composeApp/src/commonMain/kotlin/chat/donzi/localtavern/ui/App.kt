@@ -43,7 +43,7 @@ fun App(driverFactory: DriverFactory) {
     val chatClient = remember { ChatClient(httpClient) }
 
     var characters by remember { mutableStateOf(emptyList<CharacterEntity>()) }
-    var activePersonaId by remember { mutableStateOf<Long?>(null) }
+    var activePersonaId by remember { mutableStateOf<String?>(null) }
     var personas by remember { mutableStateOf(emptyList<PersonaEntity>()) }
 
     val systemDark = isSystemInDarkTheme()
