@@ -27,6 +27,8 @@ import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import coil3.compose.AsyncImage
+import coil3.compose.LocalPlatformContext
+import coil3.request.ImageRequest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.milliseconds
@@ -140,7 +142,6 @@ fun CharacterDefinitionEditor(
 
     val pickImage = rememberImagePickerLauncher { bytes ->
         avatarData = bytes
-        persist()
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -195,12 +196,24 @@ fun CharacterDefinitionEditor(
                             .clickable { showImageMenu = true }
                     ) {
                         if (avatarData != null) {
-                            AsyncImage(model = avatarData, contentDescription = "Character Avatar", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                            val imageRequest = ImageRequest.Builder(LocalPlatformContext.current)
+                                .data(avatarData)
+                                .memoryCacheKey("char_edit_${character.id}_${avatarData.contentHashCode()}")
+                                .build()
+
+                            AsyncImage(model = imageRequest, contentDescription = "Character Avatar", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
                         } else {
                             Icon(imageVector = Icons.Default.AddAPhoto, contentDescription = "Add Photo", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(40.dp).align(Alignment.Center))
                         }
                     }
-                    AvatarDropdownMenu(expanded = showImageMenu, onDismissRequest = { showImageMenu = false }, hasAvatar = avatarData != null, onAddOrUpdate = { pickImage() }, onView = { showFullImage = true }, onRemove = { avatarData = null; persist() })
+                    AvatarDropdownMenu(
+                        expanded = showImageMenu,
+                        onDismissRequest = { showImageMenu = false },
+                        hasAvatar = avatarData != null,
+                        onAddOrUpdate = { pickImage() },
+                        onView = { showFullImage = true },
+                        onRemove = { avatarData = null }
+                    )
                 }
             }
 

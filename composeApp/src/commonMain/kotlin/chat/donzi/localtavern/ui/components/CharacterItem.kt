@@ -22,6 +22,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import coil3.compose.LocalPlatformContext
+import coil3.request.ImageRequest
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -57,8 +59,13 @@ fun CharacterItem(
         ) {
             Box(modifier = Modifier.size(50.dp)) {
                 if (avatarData != null) {
+                    val imageRequest = ImageRequest.Builder(LocalPlatformContext.current)
+                        .data(avatarData)
+                        .memoryCacheKey("char_item_${name}_${avatarData.contentHashCode()}")
+                        .build()
+
                     AsyncImage(
-                        model = avatarData,
+                        model = imageRequest,
                         contentDescription = name,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier

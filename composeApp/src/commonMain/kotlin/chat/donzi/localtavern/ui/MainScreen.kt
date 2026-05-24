@@ -547,28 +547,36 @@ fun MainScreen(
         AnimatedVisibility(visible = editingCharacter != null, enter = slideInVertically(initialOffsetY = { it }), exit = slideOutVertically(targetOffsetY = { it })) {
             lastEditingCharacter?.let { targetCharacter ->
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    CharacterDefinitionEditor(
-                        character = targetCharacter, onClose = { editingCharacter = null },
-                        onSave = { name, desc, personality, scenario, firstMes, mesExample, altGreetings, avatarData ->
-                            coroutineScope.launch {
-                                chatRepository.updateCharacter(targetCharacter.id, name, personality, scenario, desc, firstMes, mesExample, altGreetings, avatarData)
-                                refreshData()
-                                if (activeCharacter?.id == targetCharacter.id) activeCharacter = chatRepository.getCharacterById(targetCharacter.id)
-                                activeSessionId?.let { sessionId ->
-                                    val currentRoots = chatRepository.getMessageSiblings(sessionId, null)
-                                    val textList = mutableListOf<String>()
-                                    if (firstMes.isNotBlank()) textList.add(firstMes)
-                                    altGreetings.filter { it.isNotBlank() }.forEach { textList.add(it) }
-                                    currentRoots.forEachIndexed { index, existingMessage -> if (index < textList.size) chatRepository.updateMessageContent(existingMessage.id, textList[index]) else chatRepository.deleteMessage(existingMessage.id) }
-                                    if (textList.size > currentRoots.size) { for (i in currentRoots.size until textList.size) chatRepository.insertMessageRaw(sessionId, "assistant", textList[i], null, false) }
-                                    val finalRoots = chatRepository.getMessageSiblings(sessionId, null)
-                                    if (finalRoots.isNotEmpty() && finalRoots.none { it.id == messages.firstOrNull()?.id }) finalRoots.firstOrNull()?.let { chatRepository.selectVariation(sessionId, it.id, null) }
+                    key(targetCharacter.id) {
+                        CharacterDefinitionEditor(
+                            character = targetCharacter, onClose = { editingCharacter = null },
+                            onSave = { name, desc, personality, scenario, firstMes, mesExample, altGreetings, avatarData ->
+                                coroutineScope.launch {
+                                    chatRepository.updateCharacter(targetCharacter.id, name, personality, scenario, desc, firstMes, mesExample, altGreetings, avatarData)
+                                    refreshData()
+
+                                    val freshCharacter = chatRepository.getCharacterById(targetCharacter.id)
+                                    if (freshCharacter != null && editingCharacter?.id == targetCharacter.id) {
+                                        editingCharacter = freshCharacter
+                                    }
+
+                                    if (activeCharacter?.id == targetCharacter.id) activeCharacter = freshCharacter
+                                    activeSessionId?.let { sessionId ->
+                                        val currentRoots = chatRepository.getMessageSiblings(sessionId, null)
+                                        val textList = mutableListOf<String>()
+                                        if (firstMes.isNotBlank()) textList.add(firstMes)
+                                        altGreetings.filter { it.isNotBlank() }.forEach { textList.add(it) }
+                                        currentRoots.forEachIndexed { index, existingMessage -> if (index < textList.size) chatRepository.updateMessageContent(existingMessage.id, textList[index]) else chatRepository.deleteMessage(existingMessage.id) }
+                                        if (textList.size > currentRoots.size) { for (i in currentRoots.size until textList.size) chatRepository.insertMessageRaw(sessionId, "assistant", textList[i], null, false) }
+                                        val finalRoots = chatRepository.getMessageSiblings(sessionId, null)
+                                        if (finalRoots.isNotEmpty() && finalRoots.none { it.id == messages.firstOrNull()?.id }) finalRoots.firstOrNull()?.let { chatRepository.selectVariation(sessionId, it.id, null) }
+                                    }
+                                    refreshMessages()
                                 }
-                                refreshMessages()
-                            }
-                        },
-                        onDelete = { coroutineScope.launch { chatRepository.deleteCharacters(setOf(targetCharacter.id)); if (activeCharacter?.id == targetCharacter.id) activeCharacter = null; editingCharacter = null; refreshData() } }
-                    )
+                            },
+                            onDelete = { coroutineScope.launch { chatRepository.deleteCharacters(setOf(targetCharacter.id)); if (activeCharacter?.id == targetCharacter.id) activeCharacter = null; editingCharacter = null; refreshData() } }
+                        )
+                    }
                 }
             }
         }
