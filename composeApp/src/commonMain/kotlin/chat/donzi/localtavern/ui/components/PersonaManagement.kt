@@ -174,7 +174,6 @@ private fun PersonaEditDialog(
                         }
                     }
 
-                    // Fix: Calling unified shared AvatarDropdownMenu instead of duplicate PersonaAvatarDropdownMenu
                     AvatarDropdownMenu(
                         expanded = showImageMenu,
                         onDismissRequest = { showImageMenu = false },

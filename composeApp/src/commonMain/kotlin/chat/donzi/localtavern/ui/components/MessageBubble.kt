@@ -48,6 +48,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
+import chat.donzi.localtavern.data.database.MessageEntity
 import kotlinx.coroutines.launch
 
 @Composable
@@ -119,6 +120,7 @@ fun MessageBubble(
     onAddImage: () -> Unit = {},
     onBranch: () -> Unit = {},
     avatarData: ByteArray? = null,
+    messageImageData: ByteArray? = null,
     isSelectMode: Boolean = false,
     isSelected: Boolean = false,
     onSelectToggle: () -> Unit = {},
@@ -137,6 +139,7 @@ fun MessageBubble(
     var showActionsOnMobile by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showFullImage by remember { mutableStateOf(false) }
+    var showFullMessageImage by remember { mutableStateOf(false) }
 
     val interactionSource = remember { MutableInteractionSource() }
     val isHovered by interactionSource.collectIsHoveredAsState()
@@ -298,53 +301,69 @@ fun MessageBubble(
                 .widthIn(max = 460.dp)
                 .padding(12.dp)
         ) {
-            if (content == "...") {
-                AnimatedEllipsis(color = textColor)
-            } else if (isEditing) {
-                BasicTextField(
-                    value = editedTextValue,
-                    onValueChange = {
-                        editedTextValue = it
-                        coroutineScope.launch {
-                            bringIntoViewRequester.bringIntoView()
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .focusRequester(focusRequester)
-                        .bringIntoViewRequester(bringIntoViewRequester)
-                        .onPreviewKeyEvent { event ->
-                            if (event.type == KeyEventType.KeyDown &&
-                                (event.key == Key.Enter || event.key == Key.NumPadEnter)) {
-                                if (event.isShiftPressed) {
-                                    editedTextValue = editedTextValue.insertNewline()
-                                    coroutineScope.launch {
-                                        bringIntoViewRequester.bringIntoView()
-                                    }
-                                    true
-                                } else {
-                                    onEdit(editedTextValue.text)
-                                    isEditing = false
-                                    true
-                                }
-                            } else {
-                                false
+            Column {
+                if (messageImageData != null) {
+                    AsyncImage(
+                        model = messageImageData,
+                        contentDescription = "Message Attached Image",
+                        contentScale = ContentScale.FillWidth,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .wrapContentHeight()
+                            .padding(bottom = if (content.isNotBlank() && content != "...") 8.dp else 0.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { showFullMessageImage = true }
+                    )
+                }
+
+                if (content == "...") {
+                    AnimatedEllipsis(color = textColor)
+                } else if (isEditing) {
+                    BasicTextField(
+                        value = editedTextValue,
+                        onValueChange = {
+                            editedTextValue = it
+                            coroutineScope.launch {
+                                bringIntoViewRequester.bringIntoView()
                             }
                         },
-                    textStyle = LocalTextStyle.current.copy(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(focusRequester)
+                            .bringIntoViewRequester(bringIntoViewRequester)
+                            .onPreviewKeyEvent { event ->
+                                if (event.type == KeyEventType.KeyDown &&
+                                    (event.key == Key.Enter || event.key == Key.NumPadEnter)) {
+                                    if (event.isShiftPressed) {
+                                        editedTextValue = editedTextValue.insertNewline()
+                                        coroutineScope.launch {
+                                            bringIntoViewRequester.bringIntoView()
+                                        }
+                                        true
+                                    } else {
+                                        onEdit(editedTextValue.text)
+                                        isEditing = false
+                                        true
+                                    }
+                                } else {
+                                    false
+                                }
+                            },
+                        textStyle = LocalTextStyle.current.copy(
+                            color = textColor,
+                            fontSize = 16.sp,
+                            lineHeight = 22.sp
+                        ),
+                        cursorBrush = SolidColor(textColor)
+                    )
+                } else if (content.isNotBlank()) {
+                    Text(
+                        text = annotatedContent,
                         color = textColor,
                         fontSize = 16.sp,
                         lineHeight = 22.sp
-                    ),
-                    cursorBrush = SolidColor(textColor)
-                )
-            } else {
-                Text(
-                    text = annotatedContent,
-                    color = textColor,
-                    fontSize = 16.sp,
-                    lineHeight = 22.sp
-                )
+                    )
+                }
             }
         }
 
@@ -384,6 +403,10 @@ fun MessageBubble(
 
     if (showFullImage && avatarData != null) {
         FullscreenImageViewer(avatarData = avatarData, onDismiss = { showFullImage = false })
+    }
+
+    if (showFullMessageImage && messageImageData != null) {
+        FullscreenImageViewer(avatarData = messageImageData, onDismiss = { showFullMessageImage = false })
     }
 }
 

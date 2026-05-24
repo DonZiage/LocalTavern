@@ -9,63 +9,21 @@ CREATE TABLE CharacterEntity (
     creatorNotes TEXT,
     altGreetings TEXT,
     avatarData BLOB,
-    isAssistant INTEGER NOT NULL DEFAULT 0
+    isAssistant INTEGER NOT NULL DEFAULT 0,
+    updatedAt INTEGER NOT NULL DEFAULT 0,
+    isDeleted INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_character_assistant ON CharacterEntity(isAssistant);
-
-insertCharacter:
-INSERT INTO CharacterEntity(id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-
-selectAllCharacters:
-SELECT * FROM CharacterEntity ORDER BY isAssistant DESC, name ASC;
-
-selectAssistant:
-SELECT * FROM CharacterEntity WHERE isAssistant = 1 LIMIT 1;
-
-updateCharacter:
-UPDATE CharacterEntity
-SET name = ?,
-    description = ?,
-    personality = ?,
-    scenario = ?,
-    firstMes = ?,
-    mesExample = ?,
-    altGreetings = ?,
-    avatarData = ?
-WHERE id = ?;
-
-deleteCharactersByIds:
-DELETE FROM CharacterEntity WHERE id IN ?;
-
 
 CREATE TABLE PersonaEntity (
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,
     description TEXT,
-    avatarData BLOB
+    avatarData BLOB,
+    updatedAt INTEGER NOT NULL DEFAULT 0,
+    isDeleted INTEGER NOT NULL DEFAULT 0
 );
-
-insertPersona:
-INSERT INTO PersonaEntity(id, name, description, avatarData) VALUES (?, ?, ?, ?);
-
-selectAllPersonas:
-SELECT * FROM PersonaEntity ORDER BY name ASC;
-
-selectPersonaById:
-SELECT * FROM PersonaEntity WHERE id = ?;
-
-updatePersona:
-UPDATE PersonaEntity
-SET name = ?,
-    description = ?,
-    avatarData = ?
-WHERE id = ?;
-
-deletePersona:
-DELETE FROM PersonaEntity WHERE id = ?;
-
 
 CREATE TABLE ChatSession (
     id TEXT PRIMARY KEY NOT NULL,
@@ -74,23 +32,12 @@ CREATE TABLE ChatSession (
     title TEXT,
     lastTimestamp INTEGER NOT NULL,
     currentMessageId TEXT,
-    parentSessionId TEXT
+    parentSessionId TEXT,
+    updatedAt INTEGER NOT NULL DEFAULT 0,
+    isDeleted INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_character_time ON ChatSession(characterId, lastTimestamp DESC);
-
-selectSessionById:
-SELECT * FROM ChatSession WHERE id = ?;
-
-insertChatSession:
-INSERT INTO ChatSession(id, characterId, personaId, title, lastTimestamp, currentMessageId, parentSessionId) VALUES (?, ?, ?, ?, ?, ?, ?);
-
-updateSessionCurrentMessage:
-UPDATE ChatSession SET currentMessageId = ?, lastTimestamp = ? WHERE id = ?;
-
-selectLastSessionForCharacter:
-SELECT * FROM ChatSession WHERE characterId = ? ORDER BY lastTimestamp DESC LIMIT 1;
-
 
 CREATE TABLE MessageEntity (
     id TEXT PRIMARY KEY NOT NULL,
@@ -99,33 +46,14 @@ CREATE TABLE MessageEntity (
     content TEXT NOT NULL,
     timestamp INTEGER NOT NULL,
     parentId TEXT,
-    isActivePath INTEGER NOT NULL DEFAULT 1
+    isActivePath INTEGER NOT NULL DEFAULT 1,
+    updatedAt INTEGER NOT NULL DEFAULT 0,
+    isDeleted INTEGER NOT NULL DEFAULT 0,
+    imageData BLOB
 );
 
 CREATE INDEX IF NOT EXISTS idx_message_active_timeline ON MessageEntity(sessionId, isActivePath, timestamp ASC);
 CREATE INDEX IF NOT EXISTS idx_message_siblings ON MessageEntity(sessionId, parentId, timestamp ASC);
-
-selectActiveTimeline:
-SELECT * FROM MessageEntity WHERE sessionId = ? AND isActivePath = 1 ORDER BY timestamp ASC;
-
-selectSiblings:
-SELECT * FROM MessageEntity WHERE sessionId = ? AND parentId IS ? ORDER BY timestamp ASC;
-
-insertMessageWithParent:
-INSERT INTO MessageEntity(id, sessionId, role, content, timestamp, parentId, isActivePath) VALUES (?, ?, ?, ?, ?, ?, ?);
-
-deactivateSiblings:
-UPDATE MessageEntity SET isActivePath = 0 WHERE sessionId = ? AND parentId IS ? AND id != ?;
-
-activateMessage:
-UPDATE MessageEntity SET isActivePath = 1 WHERE id = ?;
-
-updateMessageContent:
-UPDATE MessageEntity SET content = ? WHERE id = ?;
-
-deleteMessage:
-DELETE FROM MessageEntity WHERE id = ?;
-
 
 CREATE TABLE ApiConnection (
     id TEXT PRIMARY KEY NOT NULL,
@@ -145,18 +73,144 @@ CREATE TABLE ApiConnection (
     contextLimit INTEGER NOT NULL DEFAULT 4096,
     responseLimit INTEGER NOT NULL DEFAULT 0,
     displayOrder INTEGER NOT NULL DEFAULT 0,
-    timeoutLimit INTEGER NOT NULL DEFAULT 60
+    timeoutLimit INTEGER NOT NULL DEFAULT 60,
+    updatedAt INTEGER NOT NULL DEFAULT 0,
+    isDeleted INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE AppSettings (
+    id INTEGER PRIMARY KEY CHECK (id = 1) DEFAULT 1,
+    isDarkMode INTEGER NOT NULL DEFAULT 1,
+    activePersonaId TEXT
+);
+
+CREATE TABLE PromptBlockEntity (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    template TEXT NOT NULL,
+    isEnabled INTEGER NOT NULL DEFAULT 1,
+    isCustom INTEGER NOT NULL DEFAULT 0,
+    displayOrder INTEGER NOT NULL DEFAULT 0,
+    updatedAt INTEGER NOT NULL DEFAULT 0,
+    isDeleted INTEGER NOT NULL DEFAULT 0
+);
+
+-- ==========================================
+-- Standard Queries (Filtered for Non-Deleted)
+-- ==========================================
+
+selectAllCharacters:
+SELECT * FROM CharacterEntity WHERE isDeleted = 0 ORDER BY isAssistant DESC, name ASC;
+
+selectAssistant:
+SELECT * FROM CharacterEntity WHERE isAssistant = 1 AND isDeleted = 0 LIMIT 1;
+
+selectAllPersonas:
+SELECT * FROM PersonaEntity WHERE isDeleted = 0 ORDER BY name ASC;
+
+selectSessionById:
+SELECT * FROM ChatSession WHERE id = ? AND isDeleted = 0;
+
+selectLastSessionForCharacter:
+SELECT * FROM ChatSession WHERE characterId = ? AND isDeleted = 0 ORDER BY lastTimestamp DESC LIMIT 1;
+
+selectSessionsForCharacter:
+SELECT * FROM ChatSession WHERE characterId = ? AND isDeleted = 0 ORDER BY lastTimestamp DESC;
+
+selectActiveTimeline:
+SELECT * FROM MessageEntity WHERE isDeleted = 0 AND sessionId = ? AND isActivePath = 1 ORDER BY timestamp ASC;
+
+selectSiblings:
+SELECT * FROM MessageEntity WHERE isDeleted = 0 AND sessionId = ? AND parentId IS ? ORDER BY timestamp ASC;
+
 selectAllApiConnections:
-SELECT * FROM ApiConnection ORDER BY displayOrder ASC;
+SELECT * FROM ApiConnection WHERE isDeleted = 0 ORDER BY displayOrder ASC;
+
+selectActiveApiConnection:
+SELECT * FROM ApiConnection WHERE isActive = 1 AND isDeleted = 0 LIMIT 1;
+
+selectLastUsedApiConnection:
+SELECT * FROM ApiConnection WHERE isDeleted = 0 ORDER BY lastUsed DESC LIMIT 1;
+
+getAppSettings:
+SELECT * FROM AppSettings WHERE id = 1;
+
+selectAllPromptBlocks:
+SELECT * FROM PromptBlockEntity WHERE isDeleted = 0 ORDER BY displayOrder ASC;
+
+insertCharacter:
+INSERT INTO CharacterEntity(id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant, updatedAt, isDeleted)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+updateCharacter:
+UPDATE CharacterEntity
+SET name = ?,
+    description = ?,
+    personality = ?,
+    scenario = ?,
+    firstMes = ?,
+    mesExample = ?,
+    altGreetings = ?,
+    avatarData = ?,
+    updatedAt = ?
+WHERE id = ?;
+
+deleteCharactersByIds:
+UPDATE CharacterEntity SET isDeleted = 1, updatedAt = ? WHERE id IN ?;
+
+insertPersona:
+INSERT INTO PersonaEntity(id, name, description, avatarData, updatedAt, isDeleted) VALUES (?, ?, ?, ?, ?, ?);
+
+updatePersona:
+UPDATE PersonaEntity
+SET name = ?,
+    description = ?,
+    avatarData = ?,
+    updatedAt = ?
+WHERE id = ?;
+
+deletePersona:
+UPDATE PersonaEntity SET isDeleted = 1, updatedAt = ? WHERE id = ?;
+
+insertChatSession:
+INSERT INTO ChatSession(id, characterId, personaId, title, lastTimestamp, currentMessageId, parentSessionId, updatedAt, isDeleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+updateSessionCurrentMessage:
+UPDATE ChatSession SET currentMessageId = ?, lastTimestamp = ?, updatedAt = ? WHERE id = ?;
+
+updateSessionTitle:
+UPDATE ChatSession SET title = ?, updatedAt = ? WHERE id = ?;
+
+deleteSession:
+UPDATE ChatSession SET isDeleted = 1, updatedAt = ? WHERE id = ?;
+
+insertMessageWithParent:
+INSERT INTO MessageEntity(id, sessionId, role, content, timestamp, parentId, isActivePath, updatedAt, isDeleted, imageData) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+deactivateSiblings:
+UPDATE MessageEntity SET isActivePath = 0, updatedAt = ? WHERE sessionId = ? AND parentId IS ? AND id != ?;
+
+activateMessage:
+UPDATE MessageEntity SET isActivePath = 1, updatedAt = ? WHERE id = ?;
+
+updateMessageContent:
+UPDATE MessageEntity SET content = ?, updatedAt = ? WHERE id = ?;
+
+updateMessageImage:
+UPDATE MessageEntity SET imageData = ?, updatedAt = ? WHERE id = ?;
+
+deleteMessage:
+UPDATE MessageEntity SET isDeleted = 1, updatedAt = ? WHERE id = ?;
+
+deleteMessagesForSession:
+UPDATE MessageEntity SET isDeleted = 1, updatedAt = ? WHERE sessionId = ?;
 
 insertApiConnection:
 INSERT INTO ApiConnection(
     id, provider, name, baseUrl, apiKey, model, isActive, isChatCompletion, lastUsed,
-    temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit, displayOrder, timeoutLimit
+    temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit, displayOrder, timeoutLimit, updatedAt, isDeleted
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 updateApiConnection:
 UPDATE ApiConnection
@@ -176,36 +230,21 @@ SET provider = ?,
     contextLimit = ?,
     responseLimit = ?,
     displayOrder = ?,
-    timeoutLimit = ?
+    timeoutLimit = ?,
+    updatedAt = ?
 WHERE id = ?;
 
 deleteApiConnection:
-DELETE FROM ApiConnection WHERE id = ?;
+UPDATE ApiConnection SET isDeleted = 1, updatedAt = ? WHERE id = ?;
 
 setActiveApiConnection:
-UPDATE ApiConnection SET isActive = 0;
+UPDATE ApiConnection SET isActive = 0, updatedAt = ? WHERE isActive = 1;
 
 updateActiveApiConnection:
-UPDATE ApiConnection SET isActive = 1, lastUsed = ? WHERE id = ?;
-
-selectActiveApiConnection:
-SELECT * FROM ApiConnection WHERE isActive = 1 LIMIT 1;
-
-selectLastUsedApiConnection:
-SELECT * FROM ApiConnection ORDER BY lastUsed DESC LIMIT 1;
+UPDATE ApiConnection SET isActive = 1, lastUsed = ?, updatedAt = ? WHERE id = ?;
 
 updateApiConnectionDisplayOrder:
-UPDATE ApiConnection SET displayOrder = ? WHERE id = ?;
-
-
-CREATE TABLE AppSettings (
-    id INTEGER PRIMARY KEY CHECK (id = 1) DEFAULT 1,
-    isDarkMode INTEGER NOT NULL DEFAULT 1,
-    activePersonaId TEXT
-);
-
-getAppSettings:
-SELECT * FROM AppSettings WHERE id = 1;
+UPDATE ApiConnection SET displayOrder = ?, updatedAt = ? WHERE id = ?;
 
 updateDarkMode:
 UPDATE AppSettings SET isDarkMode = ? WHERE id = 1;
@@ -216,44 +255,95 @@ UPDATE AppSettings SET activePersonaId = ? WHERE id = 1;
 insertDefaultSettings:
 INSERT OR IGNORE INTO AppSettings(id, isDarkMode, activePersonaId) VALUES (1, 1, NULL);
 
-
-CREATE TABLE PromptBlockEntity (
-    id TEXT PRIMARY KEY NOT NULL,
-    name TEXT NOT NULL,
-    template TEXT NOT NULL,
-    isEnabled INTEGER NOT NULL DEFAULT 1,
-    isCustom INTEGER NOT NULL DEFAULT 0,
-    displayOrder INTEGER NOT NULL DEFAULT 0
-);
-
-selectAllPromptBlocks:
-SELECT * FROM PromptBlockEntity ORDER BY displayOrder ASC;
-
 insertPromptBlock:
-INSERT INTO PromptBlockEntity(id, name, template, isEnabled, isCustom, displayOrder)
-VALUES (?, ?, ?, ?, ?, ?);
+INSERT INTO PromptBlockEntity(id, name, template, isEnabled, isCustom, displayOrder, updatedAt, isDeleted)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
 updatePromptBlock:
 UPDATE PromptBlockEntity
 SET name = ?,
     template = ?,
-    isEnabled = ?
+    isEnabled = ?,
+    updatedAt = ?
 WHERE id = ?;
 
 deletePromptBlock:
-DELETE FROM PromptBlockEntity WHERE id = ? AND isCustom = 1;
+UPDATE PromptBlockEntity SET isDeleted = 1, updatedAt = ? WHERE id = ? AND isCustom = 1;
 
 updatePromptBlockDisplayOrder:
-UPDATE PromptBlockEntity SET displayOrder = ? WHERE id = ?;
+UPDATE PromptBlockEntity SET displayOrder = ?, updatedAt = ? WHERE id = ?;
 
-selectSessionsForCharacter:
-SELECT * FROM ChatSession WHERE characterId = ? ORDER BY lastTimestamp DESC;
+selectCharactersModifiedAfter:
+SELECT * FROM CharacterEntity WHERE updatedAt > ?;
 
-deleteSession:
-DELETE FROM ChatSession WHERE id = ?;
+selectPersonasModifiedAfter:
+SELECT * FROM PersonaEntity WHERE updatedAt > ?;
 
-deleteMessagesForSession:
-DELETE FROM MessageEntity WHERE sessionId = ?;
+selectSessionsModifiedAfter:
+SELECT * FROM ChatSession WHERE updatedAt > ?;
 
-updateSessionTitle:
-UPDATE ChatSession SET title = ? WHERE id = ?;
+selectMessagesModifiedAfter:
+SELECT * FROM MessageEntity WHERE updatedAt > ?;
+
+selectPromptBlocksModifiedAfter:
+SELECT * FROM PromptBlockEntity WHERE updatedAt > ?;
+
+selectCharacterForSync:
+SELECT * FROM CharacterEntity WHERE id = ? LIMIT 1;
+
+selectPersonaForSync:
+SELECT * FROM PersonaEntity WHERE id = ? LIMIT 1;
+
+selectSessionForSync:
+SELECT * FROM ChatSession WHERE id = ? LIMIT 1;
+
+selectMessageForSync:
+SELECT * FROM MessageEntity WHERE id = ? LIMIT 1;
+
+selectPromptBlockForSync:
+SELECT * FROM PromptBlockEntity WHERE id = ? LIMIT 1;
+
+crdtInsertCharacter:
+INSERT INTO CharacterEntity(id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant, updatedAt, isDeleted)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+crdtUpdateCharacter:
+UPDATE CharacterEntity
+SET name = ?, description = ?, personality = ?, scenario = ?, firstMes = ?, mesExample = ?, creatorNotes = ?, altGreetings = ?, avatarData = ?, isAssistant = ?, updatedAt = ?, isDeleted = ?
+WHERE id = ?;
+
+crdtInsertPersona:
+INSERT INTO PersonaEntity(id, name, description, avatarData, updatedAt, isDeleted)
+VALUES (?, ?, ?, ?, ?, ?);
+
+crdtUpdatePersona:
+UPDATE PersonaEntity
+SET name = ?, description = ?, avatarData = ?, updatedAt = ?, isDeleted = ?
+WHERE id = ?;
+
+crdtInsertChatSession:
+INSERT INTO ChatSession(id, characterId, personaId, title, lastTimestamp, currentMessageId, parentSessionId, updatedAt, isDeleted)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+crdtUpdateChatSession:
+UPDATE ChatSession
+SET characterId = ?, personaId = ?, title = ?, lastTimestamp = ?, currentMessageId = ?, parentSessionId = ?, isDeleted = ?, updatedAt = ?
+WHERE id = ?;
+
+crdtInsertMessage:
+INSERT INTO MessageEntity(id, sessionId, role, content, timestamp, parentId, isActivePath, updatedAt, isDeleted, imageData)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+crdtUpdateMessage:
+UPDATE MessageEntity
+SET sessionId = ?, role = ?, content = ?, timestamp = ?, parentId = ?, isActivePath = ?, isDeleted = ?, updatedAt = ?, imageData = ?
+WHERE id = ?;
+
+crdtInsertPromptBlock:
+INSERT INTO PromptBlockEntity(id, name, template, isEnabled, isCustom, displayOrder, updatedAt, isDeleted)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+crdtUpdatePromptBlock:
+UPDATE PromptBlockEntity
+SET name = ?, template = ?, isEnabled = ?, isCustom = ?, displayOrder = ?, isDeleted = ?, updatedAt = ?
+WHERE id = ?;
