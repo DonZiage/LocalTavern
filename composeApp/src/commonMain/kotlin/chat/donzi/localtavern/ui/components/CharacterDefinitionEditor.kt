@@ -116,8 +116,8 @@ fun CharacterDefinitionEditor(
         onExport(currentCharacter)
     }
 
-    val pickImage = rememberImagePickerLauncher { bytes ->
-        avatarData = bytes
+    val pickImage = rememberImagePickerLauncher { imagesList ->
+        avatarData = imagesList.firstOrNull()
     }
 
     Box(modifier = Modifier.fillMaxSize()) {

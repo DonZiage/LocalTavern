@@ -118,8 +118,8 @@ private fun PersonaEditDialog(
     var showImageMenu by remember { mutableStateOf(false) }
     var showFullImage by remember { mutableStateOf(false) }
 
-    val pickImage = rememberImagePickerLauncher { bytes ->
-        avatarData = bytes
+    val pickImage = rememberImagePickerLauncher { imagesList ->
+        avatarData = imagesList.firstOrNull()
     }
 
     val totalPersonaTokens = remember(name, description) {

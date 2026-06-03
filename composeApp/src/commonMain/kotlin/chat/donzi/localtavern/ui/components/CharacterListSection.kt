@@ -52,13 +52,15 @@ fun CharacterListSection(
     var characterToDelete by remember { mutableStateOf<CharacterEntity?>(null) }
     var showMultiDeleteConfirm by remember { mutableStateOf(false) }
 
-    val pickImage = rememberImagePickerLauncher { bytes ->
-        scope.launch {
-            val imported = withContext(Dispatchers.Default) {
-                CharacterManager.processImport(bytes)
-            }
-            imported?.let {
-                onImportCharacter(it.card, it.avatarData)
+    val pickImage = rememberImagePickerLauncher { imagesList ->
+        imagesList.firstOrNull()?.let { bytes ->
+            scope.launch {
+                val imported = withContext(Dispatchers.Default) {
+                    CharacterManager.processImport(bytes)
+                }
+                imported?.let {
+                    onImportCharacter(it.card, it.avatarData)
+                }
             }
         }
     }

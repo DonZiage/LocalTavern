@@ -1,7 +1,9 @@
 package chat.donzi.localtavern.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -24,7 +26,7 @@ import coil3.compose.AsyncImage
 
 @Composable
 fun ChatInputBar(
-    onSendMessage: (String, ByteArray?) -> Unit,
+    onSendMessage: (String, List<ByteArray>) -> Unit,
     onRegenerate: () -> Unit,
     canRegenerate: Boolean,
     onEnterSelectMode: () -> Unit,
@@ -37,49 +39,58 @@ fun ChatInputBar(
 ) {
     var textValue by remember { mutableStateOf(TextFieldValue("")) }
     var showMenu by remember { mutableStateOf(false) }
-    var attachedImageBytes by remember { mutableStateOf<ByteArray?>(null) }
-
-    val imagePickerLauncher = rememberImagePickerLauncher { bytes ->
-        attachedImageBytes = bytes
+    var attachedImages by remember { mutableStateOf<List<ByteArray>>(emptyList()) }
+    
+    val imagePickerLauncher = rememberImagePickerLauncher { imagesList ->
+        attachedImages = attachedImages + imagesList
     }
 
     fun handleSend() {
-        if ((textValue.text.isNotBlank() || attachedImageBytes != null) && !isGenerating) {
-            onSendMessage(textValue.text, attachedImageBytes)
+        if ((textValue.text.isNotBlank() || attachedImages.isNotEmpty()) && !isGenerating) {
+            onSendMessage(textValue.text, attachedImages)
             textValue = TextFieldValue("")
-            attachedImageBytes = null
+            attachedImages = emptyList()
         }
     }
 
     Column(modifier = Modifier.fillMaxWidth()) {
-        if (attachedImageBytes != null) {
-            Box(
+        if (attachedImages.isNotEmpty()) {
+            Row(
                 modifier = Modifier
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-                    .size(72.dp)
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                AsyncImage(
-                    model = attachedImageBytes,
-                    contentDescription = "Staged Attachment Preview",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(RoundedCornerShape(8.dp))
-                )
-                IconButton(
-                    onClick = { attachedImageBytes = null },
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .offset(x = 6.dp, y = (-6).dp)
-                        .size(20.dp)
-                        .background(MaterialTheme.colorScheme.error, CircleShape)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Remove Attachment",
-                        tint = MaterialTheme.colorScheme.onError,
-                        modifier = Modifier.size(12.dp)
-                    )
+                attachedImages.forEachIndexed { index, bytes ->
+                    Box(
+                        modifier = Modifier.size(72.dp)
+                    ) {
+                        AsyncImage(
+                            model = bytes,
+                            contentDescription = "Staged Attachment Preview",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(8.dp))
+                        )
+                        IconButton(
+                            onClick = { attachedImages = attachedImages.filterIndexed { i, _ -> i != index } },
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .offset(x = 6.dp, y = (-6).dp)
+                                .size(20.dp)
+                                .background(MaterialTheme.colorScheme.error, CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Remove Attachment",
+                                tint = MaterialTheme.colorScheme.onError,
+                                modifier = Modifier.size(12.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -155,7 +166,7 @@ fun ChatInputBar(
                     )
                 }
             } else {
-                val canSend = textValue.text.isNotBlank() || attachedImageBytes != null
+                val canSend = textValue.text.isNotBlank() || attachedImages.isNotEmpty()
                 IconButton(
                     onClick = { handleSend() },
                     enabled = canSend

@@ -42,6 +42,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 private suspend fun insertInitialGreetings(
     chatRepository: ChatRepository,
@@ -246,9 +247,9 @@ fun MainScreen(
 
                 activeTimeline.forEach { msg ->
                     if (msg.parentId != null && !updatedSiblings.containsKey(msg.id)) {
-                        val sibs = chatRepository.getMessageSiblings(sessionId, msg.parentId)
-                        if (sibs.isNotEmpty()) {
-                            sibs.forEach { updatedSiblings[it.id] = sibs }
+                        val siblingsList = chatRepository.getMessageSiblings(sessionId, msg.parentId)
+                        if (siblingsList.isNotEmpty()) {
+                            siblingsList.forEach { updatedSiblings[it.id] = siblingsList }
                         }
                     }
                 }
@@ -271,19 +272,14 @@ fun MainScreen(
 
             if (currentSession == null || currentSession.characterId != activeCharacter!!.id || currentSession.personaId != activePersonaId) {
                 sessionId = chatRepository.getOrCreateSession(activeCharacter!!.id, activePersonaId)
-
-                val currentMessages = chatRepository.getMessagesForSession(sessionId)
-                if (currentMessages.isEmpty()) {
-                    insertInitialGreetings(chatRepository, sessionId, activeCharacter!!)
-                }
                 activeSessionId = sessionId
-            } else {
-                val currentMessages = chatRepository.getMessagesForSession(sessionId)
-                if (currentMessages.isEmpty()) {
-                    insertInitialGreetings(chatRepository, sessionId, activeCharacter!!)
-                }
-                refreshMessages()
             }
+
+            val currentMessages = chatRepository.getMessagesForSession(sessionId)
+            if (currentMessages.isEmpty()) {
+                insertInitialGreetings(chatRepository, sessionId, activeCharacter!!)
+            }
+            refreshMessages()
         } else {
             activeSessionId = null
             messages = emptyList()
@@ -337,7 +333,7 @@ fun MainScreen(
                             val channelResult = if (timeoutLimitSeconds == 0L) {
                                 tokenChannel.receiveCatching()
                             } else {
-                                withTimeout(timeoutLimitSeconds * 1000L) { tokenChannel.receiveCatching() }
+                                withTimeout(timeoutLimitSeconds.seconds) { tokenChannel.receiveCatching() }
                             }
 
                             if (channelResult.isClosed) {
@@ -396,7 +392,7 @@ fun MainScreen(
         }
     }
 
-    val onSendMessage: (String, ByteArray?) -> Unit = { userMessage, userImageData ->
+    val onSendMessage: (String, List<ByteArray>) -> Unit = { userMessage, imageList ->
         coroutineScope.launch {
             var currentActiveCharacter = activeCharacter
             if (currentActiveCharacter == null) {
@@ -422,7 +418,7 @@ fun MainScreen(
                 }
 
                 val sessionDetails = chatRepository.getSessionById(sessionId)
-                chatRepository.insertMessage(sessionId, "user", userMessage, sessionDetails?.currentMessageId, userImageData)
+                chatRepository.insertMessage(sessionId, "user", userMessage, sessionDetails?.currentMessageId, imageList.firstOrNull())
                 refreshMessages()
 
                 val updatedSession = chatRepository.getSessionById(sessionId)
@@ -485,12 +481,10 @@ fun MainScreen(
                     messages = messages, siblingsMap = siblingsMap, hasApiProfile = hasApiProfile, hasPersona = hasPersona, hasCharacter = hasCharacter,
                     onNavigateToSettings = { onActiveDrawerChange(ActiveDrawer.Settings) }, onNavigateToPersonas = { autoEditPersonaTrigger = true; onActiveDrawerChange(ActiveDrawer.Characters) },
                     onNavigateToCharacters = { autoShowCharacterMenuTrigger = true; onActiveDrawerChange(ActiveDrawer.Characters) }, onSendMessage = onSendMessage,
-                    onEditMessage = { id, content, shouldClearImage ->
+                    onEditMessage = { id, content, updatedImages ->
                         coroutineScope.launch {
                             chatRepository.updateMessageContent(id, content)
-                            if (shouldClearImage) {
-                                chatRepository.updateMessageImage(id, null)
-                            }
+                            chatRepository.updateMessageImage(id, updatedImages.firstOrNull())
                             refreshMessages()
                         }
                     },

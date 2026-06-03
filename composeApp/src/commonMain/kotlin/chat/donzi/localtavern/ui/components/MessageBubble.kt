@@ -9,12 +9,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -113,13 +115,13 @@ fun parseMarkdownToAnnotatedString(text: String, defaultColor: Color): Annotated
 fun MessageBubble(
     content: String,
     isUser: Boolean,
-    onEdit: (String, Boolean) -> Unit,
+    onEdit: (String, List<ByteArray>) -> Unit,
     onCopy: () -> Unit = {},
     onDelete: () -> Unit = {},
     onAddImage: () -> Unit = {},
     onBranch: () -> Unit = {},
     avatarData: ByteArray? = null,
-    messageImageData: ByteArray? = null,
+    messageImages: List<ByteArray> = emptyList(),
     isSelectMode: Boolean = false,
     isSelected: Boolean = false,
     onSelectToggle: () -> Unit = {},
@@ -131,7 +133,7 @@ fun MessageBubble(
     var editedTextValue by remember(content) {
         mutableStateOf(TextFieldValue(content, selection = TextRange(content.length)))
     }
-    var isImageRemovedDuringEdit by remember(isEditing) { mutableStateOf(false) }
+    var editedImages by remember(messageImages, isEditing) { mutableStateOf(messageImages) }
 
     val focusRequester = remember { FocusRequester() }
     val bringIntoViewRequester = remember { BringIntoViewRequester() }
@@ -140,7 +142,9 @@ fun MessageBubble(
     var showActionsOnMobile by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showFullImage by remember { mutableStateOf(false) }
-    var showFullMessageImage by remember { mutableStateOf(false) }
+
+    var showGallery by remember { mutableStateOf(false) }
+    var galleryInitialIndex by remember { mutableStateOf(0) }
 
     val interactionSource = remember { MutableInteractionSource() }
     val isHovered by interactionSource.collectIsHoveredAsState()
@@ -182,7 +186,7 @@ fun MessageBubble(
                     editedTextValue = TextFieldValue(content, selection = TextRange(content.length))
                 },
                 onSave = {
-                    onEdit(editedTextValue.text, isImageRemovedDuringEdit)
+                    onEdit(editedTextValue.text, editedImages)
                     isEditing = false
                 }
             )
@@ -193,6 +197,7 @@ fun MessageBubble(
                 onShowMenuChange = { showMenu = it },
                 onEdit = {
                     editedTextValue = TextFieldValue(content, selection = TextRange(content.length))
+                    editedImages = messageImages
                     isEditing = true
                 },
                 onCopy = onCopy,
@@ -328,7 +333,7 @@ fun MessageBubble(
                                         }
                                         true
                                     } else {
-                                        onEdit(editedTextValue.text, isImageRemovedDuringEdit)
+                                        onEdit(editedTextValue.text, editedImages)
                                         isEditing = false
                                         true
                                     }
@@ -352,42 +357,174 @@ fun MessageBubble(
                     )
                 }
 
-                if (messageImageData != null && !isImageRemovedDuringEdit) {
-                    Box(
-                        modifier = Modifier
-                            .padding(top = if (content.isNotBlank() && content != "...") 8.dp else 0.dp)
-                            .let { if (isEditing) it.wrapContentSize() else it.fillMaxWidth().wrapContentHeight() }
-                    ) {
-                        AsyncImage(
-                            model = messageImageData,
-                            contentDescription = "Message Attached Image",
-                            contentScale = if (isEditing) ContentScale.Crop else ContentScale.FillWidth,
+                if (isEditing) {
+                    if (editedImages.isNotEmpty()) {
+                        Row(
                             modifier = Modifier
-                                .let {
-                                    if (isEditing) {
-                                        it.size(72.dp).clip(RoundedCornerShape(8.dp))
-                                    } else {
-                                        it.fillMaxWidth().wrapContentHeight().clip(RoundedCornerShape(12.dp))
+                                .padding(top = 8.dp)
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            editedImages.forEachIndexed { index, bytes ->
+                                Box(modifier = Modifier.size(72.dp)) {
+                                    AsyncImage(
+                                        model = bytes,
+                                        contentDescription = "Editing Image Preview",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .clip(RoundedCornerShape(8.dp))
+                                    )
+                                    IconButton(
+                                        onClick = {
+                                            editedImages = editedImages.filterIndexed { i, _ -> i != index }
+                                        },
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .offset(x = 6.dp, y = (-6).dp)
+                                            .size(20.dp)
+                                            .background(MaterialTheme.colorScheme.error, CircleShape)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Remove Image",
+                                            tint = MaterialTheme.colorScheme.onError,
+                                            modifier = Modifier.size(12.dp)
+                                        )
                                     }
                                 }
-                                .clickable { showFullMessageImage = true }
-                        )
-
-                        if (isEditing) {
-                            IconButton(
-                                onClick = { isImageRemovedDuringEdit = true },
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .offset(x = 6.dp, y = (-6).dp)
-                                    .size(20.dp)
-                                    .background(MaterialTheme.colorScheme.error, CircleShape)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Remove Image",
-                                    tint = MaterialTheme.colorScheme.onError,
-                                    modifier = Modifier.size(12.dp)
-                                )
+                            }
+                        }
+                    }
+                } else {
+                    if (messageImages.isNotEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .padding(top = if (content.isNotBlank() && content != "...") 8.dp else 0.dp)
+                                .fillMaxWidth()
+                                .wrapContentHeight()
+                        ) {
+                            when (messageImages.size) {
+                                1 -> {
+                                    AsyncImage(
+                                        model = messageImages[0],
+                                        contentDescription = "Message Attached Image",
+                                        contentScale = ContentScale.Fit,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 320.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .clickable {
+                                                galleryInitialIndex = 0
+                                                showGallery = true
+                                            }
+                                    )
+                                }
+                                2 -> {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().height(160.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        messageImages.forEachIndexed { index, bytes ->
+                                            AsyncImage(
+                                                model = bytes,
+                                                contentDescription = "Message Attached Image Split",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .fillMaxHeight()
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .clickable {
+                                                        galleryInitialIndex = index
+                                                        showGallery = true
+                                                    }
+                                            )
+                                        }
+                                    }
+                                }
+                                else -> {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(210.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        AsyncImage(
+                                            model = messageImages[0],
+                                            contentDescription = "Message Attached Image Collage Left",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier
+                                                .weight(1.2f)
+                                                .fillMaxHeight()
+                                                .clip(RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp))
+                                                .clickable {
+                                                    galleryInitialIndex = 0
+                                                    showGallery = true
+                                                }
+                                        )
+                                        Column(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .fillMaxHeight(),
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            AsyncImage(
+                                                model = messageImages[1],
+                                                contentDescription = "Message Attached Image Collage Top Right",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(topEnd = 12.dp))
+                                                    .clickable {
+                                                        galleryInitialIndex = 1
+                                                        showGallery = true
+                                                    }
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .fillMaxWidth()
+                                            ) {
+                                                AsyncImage(
+                                                    model = messageImages[2],
+                                                    contentDescription = "Message Attached Image Collage Bottom Right",
+                                                    contentScale = ContentScale.Crop,
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .clip(RoundedCornerShape(bottomEnd = 12.dp))
+                                                        .clickable {
+                                                            galleryInitialIndex = 2
+                                                            showGallery = true
+                                                        }
+                                                )
+                                                if (messageImages.size > 3) {
+                                                    val hiddenCount = messageImages.size - 3
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .fillMaxSize()
+                                                            .clip(RoundedCornerShape(bottomEnd = 12.dp))
+                                                            .background(Color.Black.copy(alpha = 0.55f))
+                                                            .clickable {
+                                                                galleryInitialIndex = 2
+                                                                showGallery = true
+                                                            },
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        Text(
+                                                            text = "+$hiddenCount",
+                                                            color = Color.White,
+                                                            fontSize = 18.sp,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -433,8 +570,8 @@ fun MessageBubble(
         FullscreenImageViewer(avatarData = avatarData, onDismiss = { showFullImage = false })
     }
 
-    if (showFullMessageImage && messageImageData != null && !isImageRemovedDuringEdit) {
-        FullscreenImageViewer(avatarData = messageImageData, onDismiss = { showFullMessageImage = false })
+    if (showGallery && messageImages.isNotEmpty()) {
+        FullscreenImageViewer(images = messageImages, initialIndex = galleryInitialIndex, onDismiss = { showGallery = false })
     }
 }
 

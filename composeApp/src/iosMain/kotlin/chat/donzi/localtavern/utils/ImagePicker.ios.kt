@@ -34,20 +34,38 @@ fun NSData.toByteArray(): ByteArray {
 
 @OptIn(BetaInteropApi::class)
 @Composable
-actual fun rememberImagePickerLauncher(onImagePicked: (ByteArray) -> Unit): () -> Unit {
+actual fun rememberImagePickerLauncher(onImagesPicked: (List<ByteArray>) -> Unit): () -> Unit {
     val delegate = remember {
         object : NSObject(), PHPickerViewControllerDelegateProtocol {
             override fun picker(picker: PHPickerViewController, didFinishPicking: List<*>) {
                 picker.dismissViewControllerAnimated(true, null)
-                val result = didFinishPicking.firstOrNull() as? PHPickerResult ?: return
-                val itemProvider = result.itemProvider
-                
-                if (itemProvider.hasItemConformingToTypeIdentifier(UTTypeImage.identifier)) {
-                    itemProvider.loadDataRepresentationForTypeIdentifier(UTTypeImage.identifier) { data, _ ->
-                        if (data != null) {
-                            val bytes = data.toByteArray()
+                if (didFinishPicking.isEmpty()) return
+
+                val results = didFinishPicking.filterIsInstance<PHPickerResult>()
+                if (results.isEmpty()) return
+
+                val imageList = mutableListOf<ByteArray>()
+                var remaining = results.size
+
+                results.forEach { result ->
+                    val itemProvider = result.itemProvider
+                    if (itemProvider.hasItemConformingToTypeIdentifier(UTTypeImage.identifier)) {
+                        itemProvider.loadDataRepresentationForTypeIdentifier(UTTypeImage.identifier) { data, _ ->
                             dispatch_async(dispatch_get_main_queue()) {
-                                onImagePicked(bytes)
+                                if (data != null) {
+                                    imageList.add(data.toByteArray())
+                                }
+                                remaining--
+                                if (remaining == 0 && imageList.isNotEmpty()) {
+                                    onImagesPicked(imageList)
+                                }
+                            }
+                        }
+                    } else {
+                        dispatch_async(dispatch_get_main_queue()) {
+                            remaining--
+                            if (remaining == 0 && imageList.isNotEmpty()) {
+                                onImagesPicked(imageList)
                             }
                         }
                     }
@@ -60,12 +78,12 @@ actual fun rememberImagePickerLauncher(onImagePicked: (ByteArray) -> Unit): () -
         {
             val configuration = PHPickerConfiguration()
             configuration.filter = PHPickerFilter.imagesFilter
-            configuration.selectionLimit = 1
+            configuration.selectionLimit = 0
             configuration.selection = PHPickerConfigurationSelectionOrdered
-            
+
             val picker = PHPickerViewController(configuration)
             picker.delegate = delegate
-            
+
             val rootViewController = UIApplication.sharedApplication.keyWindow?.rootViewController
             rootViewController?.presentViewController(
                 picker,

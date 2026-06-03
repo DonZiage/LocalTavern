@@ -2,23 +2,46 @@ package chat.donzi.localtavern.utils
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
-import java.awt.FileDialog
-import java.awt.Frame
-import java.io.File
+import javax.swing.JFileChooser
+import javax.swing.UIManager
+import javax.swing.filechooser.FileNameExtensionFilter
 
 @Composable
-actual fun rememberImagePickerLauncher(onImagePicked: (ByteArray) -> Unit): () -> Unit {
+actual fun rememberImagePickerLauncher(onImagesPicked: (List<ByteArray>) -> Unit): () -> Unit {
     return remember {
         {
-            val dialog = FileDialog(Frame(), "Select Image", FileDialog.LOAD)
-            dialog.setFilenameFilter { _, filename ->
-                val ext = filename.lowercase()
-                ext.endsWith(".png") || ext.endsWith(".jpg") || ext.endsWith(".jpeg") || ext.endsWith(".webp")
+            try {
+                UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName())
+            } catch (e: Exception) {
             }
-            dialog.isVisible = true
-            if (dialog.file != null) {
-                val file = File(dialog.directory, dialog.file)
-                onImagePicked(file.readBytes())
+
+            val chooser = JFileChooser().apply {
+                dialogTitle = "Select Images"
+                isMultiSelectionEnabled = true
+
+                fileFilter = FileNameExtensionFilter(
+                    "Supported Images (.png, .jpg, .jpeg, .webp)",
+                    "png", "jpg", "jpeg", "webp"
+                )
+
+                isAcceptAllFileFilterUsed = false
+            }
+
+            val result = chooser.showOpenDialog(null)
+            if (result == JFileChooser.APPROVE_OPTION) {
+                val selectedFiles = chooser.selectedFiles
+                if (!selectedFiles.isNullOrEmpty()) {
+                    val imageList = selectedFiles.mapNotNull { file ->
+                        try {
+                            file.readBytes()
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
+                    if (imageList.isNotEmpty()) {
+                        onImagesPicked(imageList)
+                    }
+                }
             }
         }
     }

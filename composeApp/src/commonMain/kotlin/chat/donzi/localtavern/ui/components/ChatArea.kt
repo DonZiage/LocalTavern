@@ -49,8 +49,8 @@ fun ChatArea(
     onNavigateToSettings: () -> Unit,
     onNavigateToPersonas: () -> Unit,
     onNavigateToCharacters: () -> Unit,
-    onSendMessage: (String, ByteArray?) -> Unit,
-    onEditMessage: (String, String, Boolean) -> Unit,
+    onSendMessage: (String, List<ByteArray>) -> Unit,
+    onEditMessage: (String, String, List<ByteArray>) -> Unit,
     onDeleteMessage: (String) -> Unit,
     onDeleteMessages: (List<String>) -> Unit = {},
     onRegenerate: () -> Unit,
@@ -72,9 +72,11 @@ fun ChatArea(
 
     val coroutineScope = rememberCoroutineScope()
 
-    val bubbleImagePicker = rememberImagePickerLauncher { bytes ->
-        imageTargetMessageId?.let { targetId ->
-            onAddImageToMessage(targetId, bytes)
+    val bubbleImagePicker = rememberImagePickerLauncher { imagesList ->
+        imagesList.firstOrNull()?.let { bytes ->
+            imageTargetMessageId?.let { targetId ->
+                onAddImageToMessage(targetId, bytes)
+            }
         }
         imageTargetMessageId = null
     }
@@ -254,7 +256,7 @@ fun ChatArea(
                 contentPadding = PaddingValues(8.dp),
                 reverseLayout = true
             ) {
-                items(messages.reversed()) { message ->
+                items(messages.reversed(), key = { it.id }) { message ->
                     val isUserMessage = message.role == "user"
                     val currentAvatar = if (isUserMessage) {
                         activePersonaAvatar
@@ -284,7 +286,7 @@ fun ChatArea(
                         MessageBubble(
                             content = displayContent,
                             isUser = isUserMessage,
-                            onEdit = { newContent, clearImg -> onEditMessage(message.id, newContent, clearImg) },
+                            onEdit = { newContent, updatedImages -> onEditMessage(message.id, newContent, updatedImages) },
                             onDelete = { messageToDelete = message },
                             onAddImage = {
                                 imageTargetMessageId = message.id
@@ -292,7 +294,7 @@ fun ChatArea(
                             },
                             onBranch = { onBranchMessage(message) },
                             avatarData = currentAvatar,
-                            messageImageData = message.imageData,
+                            messageImages = listOfNotNull(message.imageData),
                             isSelectMode = isSelectMode,
                             isSelected = selectedMessageIds.contains(message.id),
                             onSelectToggle = { onSelectMessageToggle(message.id) },
