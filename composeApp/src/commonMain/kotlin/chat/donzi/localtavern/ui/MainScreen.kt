@@ -28,6 +28,7 @@ import chat.donzi.localtavern.ui.components.SidePanels
 import chat.donzi.localtavern.ui.components.ChatArea
 import chat.donzi.localtavern.ui.components.CharacterDefinitionEditor
 import chat.donzi.localtavern.ui.components.ExportNotificationBubble
+import chat.donzi.localtavern.ui.components.ErrorNotificationBubble
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import androidx.compose.ui.geometry.Offset
 import chat.donzi.localtavern.utils.ContextManager
@@ -160,6 +161,10 @@ fun MainScreen(
     var exportedDir by remember { mutableStateOf("") }
     val snackbarHostState = remember { SnackbarHostState() }
 
+    var showStructuredErrorNotification by remember { mutableStateOf(false) }
+    var structuredErrorMessage by remember { mutableStateOf("") }
+    var structuredErrorIsWarning by remember { mutableStateOf(false) }
+
     val hasPersona = remember(personas) {
         personas.any { it.name != "User" || !it.description.isNullOrBlank() || it.avatarData != null }
     }
@@ -193,6 +198,13 @@ fun MainScreen(
         if (showExportNotification) {
             delay(5000.milliseconds)
             showExportNotification = false
+        }
+    }
+
+    LaunchedEffect(showStructuredErrorNotification) {
+        if (showStructuredErrorNotification) {
+            delay(5000.milliseconds)
+            showStructuredErrorNotification = false
         }
     }
 
@@ -322,11 +334,21 @@ fun MainScreen(
 
                     try {
                         while (true) {
-                            val token = if (timeoutLimitSeconds == 0L) {
-                                tokenChannel.receiveCatching().getOrNull()
+                            val channelResult = if (timeoutLimitSeconds == 0L) {
+                                tokenChannel.receiveCatching()
                             } else {
-                                withTimeout(timeoutLimitSeconds * 1000L) { tokenChannel.receiveCatching().getOrNull() }
-                            } ?: break
+                                withTimeout(timeoutLimitSeconds * 1000L) { tokenChannel.receiveCatching() }
+                            }
+
+                            if (channelResult.isClosed) {
+                                val cause = channelResult.exceptionOrNull()
+                                if (cause != null) {
+                                    throw cause
+                                }
+                                break
+                            }
+
+                            val token = channelResult.getOrNull() ?: break
 
                             if (!receivedFirstToken) {
                                 receivedFirstToken = true
@@ -341,20 +363,30 @@ fun MainScreen(
                         refreshMessages()
                     } catch (_: TimeoutCancellationException) {
                         streamJob.cancel()
-                        val errorText = if (fullResponse.isBlank()) "Error: Response timeout exceeded." else "$fullResponse\n\n[Timeout Error]"
-                        chatRepository.updateMessageContent(aiMessageId, errorText)
+                        if (fullResponse.isBlank()) {
+                            chatRepository.deleteMessage(aiMessageId)
+                        }
+                        structuredErrorMessage = "Response timeout exceeded."
+                        structuredErrorIsWarning = true
+                        showStructuredErrorNotification = true
                         refreshMessages()
                     } catch (_: kotlinx.coroutines.CancellationException) {
                         streamJob.cancel()
                         refreshMessages()
                     } catch (e: Exception) {
                         streamJob.cancel()
-                        val errorText = if (fullResponse.isBlank()) "Error: ${e.message}" else "$fullResponse\n\n[Error]"
-                        chatRepository.updateMessageContent(aiMessageId, errorText)
+                        if (fullResponse.isBlank()) {
+                            chatRepository.deleteMessage(aiMessageId)
+                        }
+                        structuredErrorMessage = e.message ?: "Unknown error occurred"
+                        structuredErrorIsWarning = false
+                        showStructuredErrorNotification = true
                         refreshMessages()
                     }
                 } else {
-                    activeSessionId?.let { chatRepository.insertMessage(it, "assistant", "No active connection.", targetParentId) }
+                    structuredErrorMessage = "No active API connection configured."
+                    structuredErrorIsWarning = false
+                    showStructuredErrorNotification = true
                     refreshMessages()
                 }
             } finally {
@@ -602,14 +634,28 @@ fun MainScreen(
         }
 
         if (showChatManagerDialog && activeCharacter != null && activePersonaId != null) {
-            ChatManagerDialog(characterId = activeCharacter!!.id, personaId = activePersonaId, activeSessionId = activeSessionId, chatRepository = chatRepository, onDismissRequest = { showChatManagerDialog = false }, onSessionSelected = { id -> activeSessionId =
-                id.ifBlank { null }; showChatManagerDialog = false })
+            ChatManagerDialog(
+                characterId = activeCharacter!!.id,
+                personaId = activePersonaId,
+                activeSessionId = activeSessionId,
+                chatRepository = chatRepository,
+                onDismissRequest = { showChatManagerDialog = false },
+                onSessionSelected = { id -> activeSessionId = id.ifBlank { null }; showChatManagerDialog = false }
+            )
         }
 
         ExportNotificationBubble(
             visible = showExportNotification,
             exportedDir = exportedDir,
             onDismiss = { showExportNotification = false },
+            modifier = Modifier.align(Alignment.TopCenter)
+        )
+
+        ErrorNotificationBubble(
+            visible = showStructuredErrorNotification,
+            message = structuredErrorMessage,
+            isWarning = structuredErrorIsWarning,
+            onDismiss = { showStructuredErrorNotification = false },
             modifier = Modifier.align(Alignment.TopCenter)
         )
     }

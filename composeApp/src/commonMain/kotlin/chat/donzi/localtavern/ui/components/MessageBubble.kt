@@ -48,7 +48,6 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
-import chat.donzi.localtavern.data.database.MessageEntity
 import kotlinx.coroutines.launch
 
 @Composable
