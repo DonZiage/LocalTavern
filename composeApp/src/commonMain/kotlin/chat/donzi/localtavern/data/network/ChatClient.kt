@@ -10,6 +10,7 @@ import io.ktor.utils.io.*
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -34,13 +35,35 @@ data class ModelInfo(
 )
 
 class ChatClient(private val httpClient: HttpClient) {
-    private fun JsonObjectBuilder.putChatMessages(isChatCompletion: Boolean, messages: List<ChatMessage>) {
+
+    private fun JsonObjectBuilder.putChatMessages(
+        isChatCompletion: Boolean,
+        messages: List<ChatMessage>,
+        ignoreImages: Boolean = false
+    ) {
         if (isChatCompletion) {
             put("messages", buildJsonArray {
                 messages.forEach { msg ->
                     add(buildJsonObject {
                         put("role", msg.role)
-                        put("content", msg.content)
+
+                        if (!ignoreImages && msg.imageBase64 != null) {
+                            put("content", buildJsonArray {
+                                add(buildJsonObject {
+                                    put("type", "text")
+                                    put("text", msg.content)
+                                })
+                                add(buildJsonObject {
+                                    put("type", "image_url")
+                                    put("image_url", buildJsonObject {
+                                        val mime = msg.imageMimeType ?: "image/jpeg"
+                                        put("url", "data:$mime;base64,${msg.imageBase64}")
+                                    })
+                                })
+                            })
+                        } else {
+                            put("content", msg.content)
+                        }
                     })
                 }
             })
@@ -101,25 +124,30 @@ class ChatClient(private val httpClient: HttpClient) {
         }
     }
 
-    @Suppress("unused")
     suspend fun sendChatRequest(
         baseUrl: String,
         apiKey: String,
         model: String,
         messages: List<ChatMessage>,
-        isChatCompletion: Boolean = true
+        isChatCompletion: Boolean = true,
+        ignoreImages: Boolean = false
     ): String {
         val endpoint = if (isChatCompletion) "$baseUrl/chat/completions" else "$baseUrl/completions"
+        val hasImages = messages.any { it.imageBase64 != null }
+
         val response = httpClient.post(endpoint) {
             header(HttpHeaders.Authorization, "Bearer $apiKey")
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject {
                 put("model", model)
-                putChatMessages(isChatCompletion, messages)
+                putChatMessages(isChatCompletion, messages, ignoreImages = ignoreImages)
             })
         }
 
         if (response.status != HttpStatusCode.OK) {
+            if (hasImages && !ignoreImages && isChatCompletion) {
+                return sendChatRequest(baseUrl, apiKey, model, messages, isChatCompletion, ignoreImages = true)
+            }
             return "Error: ${response.status.description}"
         }
 
@@ -145,49 +173,121 @@ class ChatClient(private val httpClient: HttpClient) {
         isChatCompletion: Boolean = true
     ): Flow<String> = flow {
         val endpoint = if (isChatCompletion) "$baseUrl/chat/completions" else "$baseUrl/completions"
+        val hasImages = messages.any { it.imageBase64 != null }
+
+        var streamingSuccess = false
+        var lastUsedIgnoreImages = false
+        var fallbackToNonStreaming = false
 
         try {
+            var failedWithImages = false
+            
             httpClient.preparePost(endpoint) {
                 header(HttpHeaders.Authorization, "Bearer $apiKey")
                 contentType(ContentType.Application.Json)
                 setBody(buildJsonObject {
                     put("model", model)
                     put("stream", true)
-                    putChatMessages(isChatCompletion, messages)
+                    putChatMessages(isChatCompletion, messages, ignoreImages = false)
                 })
             }.execute { response ->
+                val contentType = response.contentType()
                 if (response.status != HttpStatusCode.OK) {
-                    emit("Error: ${response.status.description}")
+                    if (hasImages && isChatCompletion) {
+                        failedWithImages = true
+                    } else {
+                        fallbackToNonStreaming = true
+                    }
                     return@execute
                 }
 
-                val channel: ByteReadChannel = response.bodyAsChannel()
-                while (!channel.isClosedForRead) {
-                    currentCoroutineContext().ensureActive()
-                    @Suppress("DEPRECATION")
-                    val line = channel.readUTF8Line() ?: break
-                    if (line.startsWith("data: ")) {
-                        val data = line.substring(6)
-                        if (data == "[DONE]") break
+                if (contentType?.match(ContentType.Application.Json) == true) {
+                    fallbackToNonStreaming = true
+                    return@execute
+                }
 
-                        try {
-                            val json = Json { ignoreUnknownKeys = true }
-                            val element = json.parseToJsonElement(data)
-                            val content = if (isChatCompletion) {
-                                element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("delta")?.jsonObject?.get("content")?.jsonPrimitive?.content
-                            } else {
-                                element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("text")?.jsonPrimitive?.content
-                            }
-                            if (content != null) {
-                                emit(content)
-                            }
-                        } catch (_: Exception) {
-                        }
+                streamingSuccess = processResponseStream(response, isChatCompletion)
+            }
+
+            if (failedWithImages && !streamingSuccess) {
+                lastUsedIgnoreImages = true
+                httpClient.preparePost(endpoint) {
+                    header(HttpHeaders.Authorization, "Bearer $apiKey")
+                    contentType(ContentType.Application.Json)
+                    setBody(buildJsonObject {
+                        put("model", model)
+                        put("stream", true)
+                        putChatMessages(isChatCompletion, messages, ignoreImages = true)
+                    })
+                }.execute { response ->
+                    val contentType = response.contentType()
+                    if (response.status != HttpStatusCode.OK || contentType?.match(ContentType.Application.Json) == true) {
+                        fallbackToNonStreaming = true
+                        return@execute
                     }
+
+                    streamingSuccess = processResponseStream(response, isChatCompletion)
                 }
             }
+
+            if (fallbackToNonStreaming && !streamingSuccess) {
+                val nonStreamedResponse = sendChatRequest(
+                    baseUrl = baseUrl, apiKey = apiKey, model = model,
+                    messages = messages, isChatCompletion = isChatCompletion,
+                    ignoreImages = lastUsedIgnoreImages
+                )
+                emit(nonStreamedResponse)
+                streamingSuccess = true
+            }
+
         } catch (e: Exception) {
-            emit("Error: ${e.message}")
+            if (!streamingSuccess) {
+                try {
+                    val nonStreamedResponse = sendChatRequest(
+                        baseUrl = baseUrl, apiKey = apiKey, model = model,
+                        messages = messages, isChatCompletion = isChatCompletion,
+                        ignoreImages = lastUsedIgnoreImages
+                    )
+                    emit(nonStreamedResponse)
+                } catch (_: Exception) {
+                    emit("Error: ${e.message}")
+                }
+            }
         }
+    }
+
+    private suspend fun FlowCollector<String>.processResponseStream(
+        response: HttpResponse,
+        isChatCompletion: Boolean
+    ): Boolean {
+        var success = false
+        val channel: ByteReadChannel = response.bodyAsChannel()
+        while (!channel.isClosedForRead) {
+            currentCoroutineContext().ensureActive()
+            @Suppress("DEPRECATION")
+            val line = channel.readUTF8Line() ?: break
+            if (line.startsWith("data: ")) {
+                val data = line.substring(6)
+                if (data == "[DONE]") {
+                    success = true
+                    break
+                }
+
+                try {
+                    val json = Json { ignoreUnknownKeys = true }
+                    val element = json.parseToJsonElement(data)
+                    val content = if (isChatCompletion) {
+                        element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("delta")?.jsonObject?.get("content")?.jsonPrimitive?.content
+                    } else {
+                        element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("text")?.jsonPrimitive?.content
+                    }
+                    if (content != null) {
+                        success = true
+                        emit(content)
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+        return success
     }
 }

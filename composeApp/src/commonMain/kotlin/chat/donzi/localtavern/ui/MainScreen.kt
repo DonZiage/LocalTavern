@@ -396,7 +396,7 @@ fun MainScreen(
         }
     }
 
-    val onSendMessage: (String) -> Unit = { userMessage ->
+    val onSendMessage: (String, ByteArray?) -> Unit = { userMessage, userImageData ->
         coroutineScope.launch {
             var currentActiveCharacter = activeCharacter
             if (currentActiveCharacter == null) {
@@ -422,7 +422,7 @@ fun MainScreen(
                 }
 
                 val sessionDetails = chatRepository.getSessionById(sessionId)
-                chatRepository.insertMessage(sessionId, "user", userMessage, sessionDetails?.currentMessageId)
+                chatRepository.insertMessage(sessionId, "user", userMessage, sessionDetails?.currentMessageId, userImageData)
                 refreshMessages()
 
                 val updatedSession = chatRepository.getSessionById(sessionId)
@@ -485,7 +485,15 @@ fun MainScreen(
                     messages = messages, siblingsMap = siblingsMap, hasApiProfile = hasApiProfile, hasPersona = hasPersona, hasCharacter = hasCharacter,
                     onNavigateToSettings = { onActiveDrawerChange(ActiveDrawer.Settings) }, onNavigateToPersonas = { autoEditPersonaTrigger = true; onActiveDrawerChange(ActiveDrawer.Characters) },
                     onNavigateToCharacters = { autoShowCharacterMenuTrigger = true; onActiveDrawerChange(ActiveDrawer.Characters) }, onSendMessage = onSendMessage,
-                    onEditMessage = { id, content -> coroutineScope.launch { chatRepository.updateMessageContent(id, content); refreshMessages() } },
+                    onEditMessage = { id, content, shouldClearImage ->
+                        coroutineScope.launch {
+                            chatRepository.updateMessageContent(id, content)
+                            if (shouldClearImage) {
+                                chatRepository.updateMessageImage(id, null)
+                            }
+                            refreshMessages()
+                        }
+                    },
                     onDeleteMessage = { id ->
                         coroutineScope.launch {
                             activeSessionId?.let { sessionId ->
@@ -555,7 +563,14 @@ fun MainScreen(
                     onGenerateNewVariation = { lastMessageId -> coroutineScope.launch { activeSessionId?.let { sessionId -> val existingMsg = messages.find { it.id == lastMessageId }; requestAiResponse(sessionId, existingMsg?.parentId) } } },
                     isSelectMode = isSelectMode, selectedMessageIds = selectedMessageIds,
                     onSelectMessageToggle = { id -> val index = messages.indexOfFirst { it.id == id }; if (index != -1) { selectedMessageIds = messages.subList(index, messages.size).map { it.id }.toSet() } },
-                    onEnterSelectMode = { isSelectMode = true; selectedMessageIds = emptySet() }, isGenerating = isGenerating, onStopGeneration = { currentResponseJob?.cancel() }, onManageChats = { showChatManagerDialog = true }
+                    onEnterSelectMode = { isSelectMode = true; selectedMessageIds = emptySet() }, isGenerating = isGenerating, onStopGeneration = { currentResponseJob?.cancel() }, onManageChats = { showChatManagerDialog = true },
+
+                    onAddImageToMessage = { targetMessageId, pickedBytes ->
+                        coroutineScope.launch {
+                            chatRepository.updateMessageImage(targetMessageId, pickedBytes)
+                            refreshMessages()
+                        }
+                    }
                 )
             }
         }

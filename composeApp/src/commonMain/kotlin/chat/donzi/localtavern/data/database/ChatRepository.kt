@@ -422,7 +422,7 @@ class ChatRepository(private val database: LocalTavernDB) {
             }
 
             if (lastInsertedNewId != null) {
-                queries.updateSessionCurrentMessage(currentMessageId = lastInsertedNewId!!, lastTimestamp = now, updatedAt = now, id = newSessionId)
+                queries.updateSessionCurrentMessage(currentMessageId = lastInsertedNewId, lastTimestamp = now, updatedAt = now, id = newSessionId)
             }
 
             newSessionId

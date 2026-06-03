@@ -113,7 +113,7 @@ fun parseMarkdownToAnnotatedString(text: String, defaultColor: Color): Annotated
 fun MessageBubble(
     content: String,
     isUser: Boolean,
-    onEdit: (String) -> Unit,
+    onEdit: (String, Boolean) -> Unit,
     onCopy: () -> Unit = {},
     onDelete: () -> Unit = {},
     onAddImage: () -> Unit = {},
@@ -131,6 +131,8 @@ fun MessageBubble(
     var editedTextValue by remember(content) {
         mutableStateOf(TextFieldValue(content, selection = TextRange(content.length)))
     }
+    var isImageRemovedDuringEdit by remember(isEditing) { mutableStateOf(false) }
+
     val focusRequester = remember { FocusRequester() }
     val bringIntoViewRequester = remember { BringIntoViewRequester() }
     val coroutineScope = rememberCoroutineScope()
@@ -180,7 +182,7 @@ fun MessageBubble(
                     editedTextValue = TextFieldValue(content, selection = TextRange(content.length))
                 },
                 onSave = {
-                    onEdit(editedTextValue.text)
+                    onEdit(editedTextValue.text, isImageRemovedDuringEdit)
                     isEditing = false
                 }
             )
@@ -301,20 +303,6 @@ fun MessageBubble(
                 .padding(12.dp)
         ) {
             Column {
-                if (messageImageData != null) {
-                    AsyncImage(
-                        model = messageImageData,
-                        contentDescription = "Message Attached Image",
-                        contentScale = ContentScale.FillWidth,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .wrapContentHeight()
-                            .padding(bottom = if (content.isNotBlank() && content != "...") 8.dp else 0.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable { showFullMessageImage = true }
-                    )
-                }
-
                 if (content == "...") {
                     AnimatedEllipsis(color = textColor)
                 } else if (isEditing) {
@@ -327,7 +315,7 @@ fun MessageBubble(
                             }
                         },
                         modifier = Modifier
-                            .fillMaxWidth()
+                            .widthIn(min = 40.dp)
                             .focusRequester(focusRequester)
                             .bringIntoViewRequester(bringIntoViewRequester)
                             .onPreviewKeyEvent { event ->
@@ -340,7 +328,7 @@ fun MessageBubble(
                                         }
                                         true
                                     } else {
-                                        onEdit(editedTextValue.text)
+                                        onEdit(editedTextValue.text, isImageRemovedDuringEdit)
                                         isEditing = false
                                         true
                                     }
@@ -362,6 +350,47 @@ fun MessageBubble(
                         fontSize = 16.sp,
                         lineHeight = 22.sp
                     )
+                }
+
+                if (messageImageData != null && !isImageRemovedDuringEdit) {
+                    Box(
+                        modifier = Modifier
+                            .padding(top = if (content.isNotBlank() && content != "...") 8.dp else 0.dp)
+                            .let { if (isEditing) it.wrapContentSize() else it.fillMaxWidth().wrapContentHeight() }
+                    ) {
+                        AsyncImage(
+                            model = messageImageData,
+                            contentDescription = "Message Attached Image",
+                            contentScale = if (isEditing) ContentScale.Crop else ContentScale.FillWidth,
+                            modifier = Modifier
+                                .let {
+                                    if (isEditing) {
+                                        it.size(72.dp).clip(RoundedCornerShape(8.dp))
+                                    } else {
+                                        it.fillMaxWidth().wrapContentHeight().clip(RoundedCornerShape(12.dp))
+                                    }
+                                }
+                                .clickable { showFullMessageImage = true }
+                        )
+
+                        if (isEditing) {
+                            IconButton(
+                                onClick = { isImageRemovedDuringEdit = true },
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .offset(x = 6.dp, y = (-6).dp)
+                                    .size(20.dp)
+                                    .background(MaterialTheme.colorScheme.error, CircleShape)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Remove Image",
+                                    tint = MaterialTheme.colorScheme.onError,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -404,7 +433,7 @@ fun MessageBubble(
         FullscreenImageViewer(avatarData = avatarData, onDismiss = { showFullImage = false })
     }
 
-    if (showFullMessageImage && messageImageData != null) {
+    if (showFullMessageImage && messageImageData != null && !isImageRemovedDuringEdit) {
         FullscreenImageViewer(avatarData = messageImageData, onDismiss = { showFullMessageImage = false })
     }
 }
@@ -487,7 +516,7 @@ fun MessageActions(
     }
 }
 
-private fun TextFieldValue.insertNewline(): TextFieldValue {
+internal fun TextFieldValue.insertNewline(): TextFieldValue {
     val currentText = this.text
     val selection = this.selection
     val newText = currentText.substring(0, selection.min) + "\n" + currentText.substring(selection.max)

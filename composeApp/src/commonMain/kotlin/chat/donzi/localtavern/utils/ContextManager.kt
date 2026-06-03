@@ -6,8 +6,11 @@ import chat.donzi.localtavern.data.database.PersonaEntity
 @kotlinx.serialization.Serializable
 data class ChatMessage(
     val role: String,
-    val content: String
+    val content: String,
+    val imageBase64: String? = null,
+    val imageMimeType: String? = null
 )
+
 
 object ContextManager {
 

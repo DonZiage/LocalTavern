@@ -3,6 +3,7 @@ package chat.donzi.localtavern.ui.components
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
@@ -22,7 +23,8 @@ fun ChatOptionsMenu(
     canDelete: Boolean,
     onManageChats: () -> Unit,
     canManageChats: Boolean,
-    onGoToParent: (() -> Unit)? = null
+    onGoToParent: (() -> Unit)? = null,
+    onAttachImage: (() -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
 
@@ -44,6 +46,21 @@ fun ChatOptionsMenu(
             )
             HorizontalDivider()
         }
+
+        if (onAttachImage != null) {
+            DropdownMenuItem(
+                text = { Text("Attach Image") },
+                onClick = {
+                    onDismissRequest()
+                    coroutineScope.launch {
+                        delay(50.milliseconds)
+                        onAttachImage()
+                    }
+                },
+                leadingIcon = { Icon(Icons.Default.AddPhotoAlternate, contentDescription = null) }
+            )
+        }
+
         DropdownMenuItem(
             text = { Text("Chats") },
             onClick = {

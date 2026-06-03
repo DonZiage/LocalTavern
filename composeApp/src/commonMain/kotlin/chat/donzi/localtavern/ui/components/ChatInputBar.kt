@@ -1,24 +1,30 @@
 package chat.donzi.localtavern.ui.components
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.*
-import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import chat.donzi.localtavern.utils.rememberImagePickerLauncher
+import coil3.compose.AsyncImage
 
 @Composable
 fun ChatInputBar(
-    onSendMessage: (String) -> Unit,
+    onSendMessage: (String, ByteArray?) -> Unit,
     onRegenerate: () -> Unit,
     canRegenerate: Boolean,
     onEnterSelectMode: () -> Unit,
@@ -31,104 +37,136 @@ fun ChatInputBar(
 ) {
     var textValue by remember { mutableStateOf(TextFieldValue("")) }
     var showMenu by remember { mutableStateOf(false) }
+    var attachedImageBytes by remember { mutableStateOf<ByteArray?>(null) }
+
+    val imagePickerLauncher = rememberImagePickerLauncher { bytes ->
+        attachedImageBytes = bytes
+    }
 
     fun handleSend() {
-        if (textValue.text.isNotBlank() && !isGenerating) {
-            onSendMessage(textValue.text)
+        if ((textValue.text.isNotBlank() || attachedImageBytes != null) && !isGenerating) {
+            onSendMessage(textValue.text, attachedImageBytes)
             textValue = TextFieldValue("")
+            attachedImageBytes = null
         }
     }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(12.dp)
-            .onKeyEvent { event ->
-                if (isGenerating && event.type == KeyEventType.KeyDown &&
-                    (event.key == Key.Enter || event.key == Key.NumPadEnter) &&
-                    !event.isShiftPressed) {
-                    onStopGeneration()
-                    true
-                } else false
-            },
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box {
-            IconButton(onClick = { showMenu = true }) {
-                Icon(Icons.Default.Menu, contentDescription = "Chat Options")
-            }
-            ChatOptionsMenu(
-                expanded = showMenu,
-                onDismissRequest = { showMenu = false },
-                onRegenerate = onRegenerate,
-                canRegenerate = canRegenerate,
-                onEnterSelectMode = onEnterSelectMode,
-                canDelete = canDelete,
-                onManageChats = onManageChats,
-                canManageChats = canManageChats,
-                onGoToParent = onGoToParent
-            )
-        }
-
-        TextField(
-            value = textValue,
-            onValueChange = { textValue = it },
-            placeholder = { Text("Message...") },
-            enabled = !isGenerating,
-            modifier = Modifier
-                .weight(1f)
-                .onPreviewKeyEvent { event ->
-                    if (!isGenerating && event.type == KeyEventType.KeyDown &&
-                        (event.key == Key.Enter || event.key == Key.NumPadEnter)) {
-                        if (event.isShiftPressed) {
-                            textValue = textValue.insertNewline()
-                            true
-                        } else {
-                            handleSend()
-                            true
-                        }
-                    } else {
-                        false
-                    }
-                },
-            shape = RoundedCornerShape(24.dp),
-            colors = TextFieldDefaults.colors(
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent,
-                disabledIndicatorColor = Color.Transparent,
-                errorIndicatorColor = Color.Transparent
-            )
-        )
-
-        if (isGenerating) {
-            IconButton(onClick = onStopGeneration) {
-                Icon(
-                    imageVector = Icons.Default.Stop,
-                    contentDescription = "Stop Response Generation",
-                    tint = MaterialTheme.colorScheme.error
-                )
-            }
-        } else {
-            IconButton(
-                onClick = { handleSend() },
-                enabled = textValue.text.isNotBlank()
+    Column(modifier = Modifier.fillMaxWidth()) {
+        if (attachedImageBytes != null) {
+            Box(
+                modifier = Modifier
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .size(72.dp)
             ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Send,
-                    contentDescription = "Send",
-                    tint = if (textValue.text.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray
+                AsyncImage(
+                    model = attachedImageBytes,
+                    contentDescription = "Staged Attachment Preview",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(8.dp))
                 )
+                IconButton(
+                    onClick = { attachedImageBytes = null },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = 6.dp, y = (-6).dp)
+                        .size(20.dp)
+                        .background(MaterialTheme.colorScheme.error, CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Remove Attachment",
+                        tint = MaterialTheme.colorScheme.onError,
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+                .onKeyEvent { event ->
+                    if (isGenerating && event.type == KeyEventType.KeyDown &&
+                        (event.key == Key.Enter || event.key == Key.NumPadEnter) &&
+                        !event.isShiftPressed) {
+                        onStopGeneration()
+                        true
+                    } else false
+                },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box {
+                IconButton(onClick = { showMenu = true }) {
+                    Icon(Icons.Default.Menu, contentDescription = "Chat Options")
+                }
+                ChatOptionsMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { showMenu = false },
+                    onRegenerate = onRegenerate,
+                    canRegenerate = canRegenerate,
+                    onEnterSelectMode = onEnterSelectMode,
+                    canDelete = canDelete,
+                    onManageChats = onManageChats,
+                    canManageChats = canManageChats,
+                    onGoToParent = onGoToParent,
+                    onAttachImage = { imagePickerLauncher() }
+                )
+            }
+
+            TextField(
+                value = textValue,
+                onValueChange = { textValue = it },
+                placeholder = { Text("Message...") },
+                enabled = !isGenerating,
+                modifier = Modifier
+                    .weight(1f)
+                    .onPreviewKeyEvent { event ->
+                        if (!isGenerating && event.type == KeyEventType.KeyDown &&
+                            (event.key == Key.Enter || event.key == Key.NumPadEnter)) {
+                            if (event.isShiftPressed) {
+                                textValue = textValue.insertNewline()
+                                true
+                            } else {
+                                handleSend()
+                                true
+                            }
+                        } else {
+                            false
+                        }
+                    },
+                shape = RoundedCornerShape(24.dp),
+                colors = TextFieldDefaults.colors(
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    disabledIndicatorColor = Color.Transparent,
+                    errorIndicatorColor = Color.Transparent
+                )
+            )
+
+            if (isGenerating) {
+                IconButton(onClick = onStopGeneration) {
+                    Icon(
+                        imageVector = Icons.Default.Stop,
+                        contentDescription = "Stop Response Generation",
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
+            } else {
+                val canSend = textValue.text.isNotBlank() || attachedImageBytes != null
+                IconButton(
+                    onClick = { handleSend() },
+                    enabled = canSend
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Send",
+                        tint = if (canSend) MaterialTheme.colorScheme.primary else Color.Gray
+                    )
+                }
             }
         }
     }
-}
-
-private fun TextFieldValue.insertNewline(): TextFieldValue {
-    val currentText = this.text
-    val selection = this.selection
-    val newText = currentText.substring(0, selection.min) + "\n" + currentText.substring(selection.max)
-    return TextFieldValue(
-        text = newText,
-        selection = TextRange(selection.min + 1)
-    )
 }

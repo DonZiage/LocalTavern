@@ -29,6 +29,7 @@ import androidx.compose.ui.window.Dialog
 import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.data.database.MessageEntity
 import chat.donzi.localtavern.utils.ContextManager
+import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import kotlinx.coroutines.launch
 
 private enum class OnboardingStep {
@@ -48,8 +49,8 @@ fun ChatArea(
     onNavigateToSettings: () -> Unit,
     onNavigateToPersonas: () -> Unit,
     onNavigateToCharacters: () -> Unit,
-    onSendMessage: (String) -> Unit,
-    onEditMessage: (String, String) -> Unit,
+    onSendMessage: (String, ByteArray?) -> Unit,
+    onEditMessage: (String, String, Boolean) -> Unit,
     onDeleteMessage: (String) -> Unit,
     onDeleteMessages: (List<String>) -> Unit = {},
     onRegenerate: () -> Unit,
@@ -63,9 +64,20 @@ fun ChatArea(
     onStopGeneration: () -> Unit = {},
     onManageChats: () -> Unit,
     onBranchMessage: (MessageEntity) -> Unit = {},
-    onGoToParentChat: (() -> Unit)? = null
+    onGoToParentChat: (() -> Unit)? = null,
+    onAddImageToMessage: (String, ByteArray) -> Unit = { _, _ -> }
 ) {
     var messageToDelete by remember { mutableStateOf<MessageEntity?>(null) }
+    var imageTargetMessageId by remember { mutableStateOf<String?>(null) }
+
+    val coroutineScope = rememberCoroutineScope()
+
+    val bubbleImagePicker = rememberImagePickerLauncher { bytes ->
+        imageTargetMessageId?.let { targetId ->
+            onAddImageToMessage(targetId, bytes)
+        }
+        imageTargetMessageId = null
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         if (activeCharacter == null && messages.isEmpty()) {
@@ -186,9 +198,9 @@ fun ChatArea(
         } else {
             val focusRequester = remember { FocusRequester() }
             val listState = rememberLazyListState()
-            val coroutineScope = rememberCoroutineScope()
             val lastMessage = messages.lastOrNull()
             val siblings = lastMessage?.let { siblingsMap[it.id] ?: listOf(it) } ?: emptyList()
+
             val currentIndex = lastMessage?.let { siblings.indexOfFirst { child -> child.id == it.id } }?.coerceAtLeast(0) ?: 0
             val totalCount = siblings.size
 
@@ -272,10 +284,15 @@ fun ChatArea(
                         MessageBubble(
                             content = displayContent,
                             isUser = isUserMessage,
-                            onEdit = { newContent -> onEditMessage(message.id, newContent) },
+                            onEdit = { newContent, clearImg -> onEditMessage(message.id, newContent, clearImg) },
                             onDelete = { messageToDelete = message },
+                            onAddImage = {
+                                imageTargetMessageId = message.id
+                                bubbleImagePicker()
+                            },
                             onBranch = { onBranchMessage(message) },
                             avatarData = currentAvatar,
+                            messageImageData = message.imageData,
                             isSelectMode = isSelectMode,
                             isSelected = selectedMessageIds.contains(message.id),
                             onSelectToggle = { onSelectMessageToggle(message.id) },
