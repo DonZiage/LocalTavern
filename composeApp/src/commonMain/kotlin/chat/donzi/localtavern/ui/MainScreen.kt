@@ -44,27 +44,36 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
+private val greetingsMutex = Mutex()
 
 private suspend fun insertInitialGreetings(
     chatRepository: ChatRepository,
     sessionId: String,
     character: CharacterEntity
 ) {
-    val primaryGreeting = character.firstMes ?: ""
-    val altGreetingsList = character.altGreetings?.split("|||")?.filter { it.isNotBlank() } ?: emptyList()
-    val allGreetings = mutableListOf<String>()
+    greetingsMutex.withLock {
+        // Double-check logic under lock to completely mitigate concurrent race duplication
+        if (chatRepository.getMessagesForSession(sessionId).isNotEmpty()) return
 
-    if (primaryGreeting.isNotBlank()) allGreetings.add(primaryGreeting)
-    allGreetings.addAll(altGreetingsList)
+        val primaryGreeting = character.firstMes ?: ""
+        val altGreetingsList = character.altGreetings?.split("|||")?.filter { it.isNotBlank() } ?: emptyList()
+        val allGreetings = mutableListOf<String>()
 
-    var primaryMessageId: String? = null
-    allGreetings.forEachIndexed { index, greeting ->
-        val isActive = index == 0
-        val msgId = chatRepository.insertMessageRaw(sessionId, "assistant", greeting, null, isActive)
-        if (isActive) primaryMessageId = msgId
-    }
-    primaryMessageId?.let {
-        chatRepository.updateSessionCurrentMessage(sessionId, it)
+        if (primaryGreeting.isNotBlank()) allGreetings.add(primaryGreeting)
+        allGreetings.addAll(altGreetingsList)
+
+        var primaryMessageId: String? = null
+        allGreetings.forEachIndexed { index, greeting ->
+            val isActive = index == 0
+            val msgId = chatRepository.insertMessageRaw(sessionId, "assistant", greeting, null, isActive)
+            if (isActive) primaryMessageId = msgId
+        }
+        primaryMessageId?.let {
+            chatRepository.updateSessionCurrentMessage(sessionId, it)
+        }
     }
 }
 
@@ -289,10 +298,11 @@ fun MainScreen(
     }
 
     fun requestAiResponse(sessionId: String, targetParentId: String? = null) {
+        if (isGenerating) return
+        isGenerating = true
         currentResponseJob?.cancel()
         currentResponseJob = coroutineScope.launch {
             try {
-                isGenerating = true
                 val activeConnection = chatRepository.getActiveApiConnection()
                 if (activeConnection != null) {
                     val aiMessageId = chatRepository.insertMessage(sessionId, "assistant", "...", targetParentId)
@@ -394,36 +404,36 @@ fun MainScreen(
     }
 
     val onSendMessage: (String, List<ByteArray>) -> Unit = { userMessage, imageList ->
-        coroutineScope.launch {
-            var currentActiveCharacter = activeCharacter
-            if (currentActiveCharacter == null) {
-                var assistant = chatRepository.getAssistant()
-                if (assistant == null) {
-                    chatRepository.createAssistant()
-                    assistant = chatRepository.getAssistant()
-                    refreshData()
+        // Labeled return compiler error resolved by using a standard conditional scope block instead
+        if (!isGenerating) {
+            coroutineScope.launch {
+                var currentActiveCharacter = activeCharacter
+                if (currentActiveCharacter == null) {
+                    var assistant = chatRepository.getAssistant()
+                    if (assistant == null) {
+                        chatRepository.createAssistant()
+                        assistant = chatRepository.getAssistant()
+                        refreshData()
+                    }
+                    if (assistant != null) {
+                        activeCharacter = assistant
+                        currentActiveCharacter = assistant
+                    }
                 }
-                if (assistant != null) {
-                    activeCharacter = assistant
-                    currentActiveCharacter = assistant
-                }
-            }
 
-            if (currentActiveCharacter != null && activePersonaId != null) {
-                val sessionId = chatRepository.getOrCreateSession(currentActiveCharacter.id, activePersonaId)
-                activeSessionId = sessionId
+                if (currentActiveCharacter != null && activePersonaId != null) {
+                    val sessionId = chatRepository.getOrCreateSession(currentActiveCharacter.id, activePersonaId)
+                    activeSessionId = sessionId
 
-                val currentMessages = chatRepository.getMessagesForSession(sessionId)
-                if (currentMessages.isEmpty()) {
                     insertInitialGreetings(chatRepository, sessionId, currentActiveCharacter)
+
+                    val updatedSession = chatRepository.getSessionById(sessionId)
+                    chatRepository.insertMessage(sessionId, "user", userMessage, updatedSession?.currentMessageId, imageList)
+                    refreshMessages()
+
+                    val updatedSession2 = chatRepository.getSessionById(sessionId)
+                    requestAiResponse(sessionId, updatedSession2?.currentMessageId)
                 }
-
-                val sessionDetails = chatRepository.getSessionById(sessionId)
-                chatRepository.insertMessage(sessionId, "user", userMessage, sessionDetails?.currentMessageId, imageList)
-                refreshMessages()
-
-                val updatedSession = chatRepository.getSessionById(sessionId)
-                requestAiResponse(sessionId, updatedSession?.currentMessageId)
             }
         }
     }
@@ -555,7 +565,19 @@ fun MainScreen(
                         }
                     },
                     onSelectVariation = { variationId -> coroutineScope.launch { activeSessionId?.let { sessionId -> val msg = messages.find { it.id == variationId } ?: siblingsMap[variationId]?.find { it.id == variationId }; chatRepository.selectVariation(sessionId, variationId, msg?.parentId); refreshMessages() } } },
-                    onGenerateNewVariation = { lastMessageId -> coroutineScope.launch { activeSessionId?.let { sessionId -> val existingMsg = messages.find { it.id == lastMessageId }; requestAiResponse(sessionId, existingMsg?.parentId) } } },
+                    onGenerateNewVariation = { lastMessageId ->
+                        if (!isGenerating) {
+                            coroutineScope.launch {
+                                activeSessionId?.let { sessionId ->
+                                    val existingMsg = messages.find { it.id == lastMessageId }
+                                        ?: siblingsMap[lastMessageId]?.find { it.id == lastMessageId }
+                                    if (existingMsg != null) {
+                                        requestAiResponse(sessionId, existingMsg.parentId)
+                                    }
+                                }
+                            }
+                        }
+                    },
                     isSelectMode = isSelectMode, selectedMessageIds = selectedMessageIds,
                     onSelectMessageToggle = { id -> val index = messages.indexOfFirst { it.id == id }; if (index != -1) { selectedMessageIds = messages.subList(index, messages.size).map { it.id }.toSet() } },
                     onEnterSelectMode = { isSelectMode = true; selectedMessageIds = emptySet() }, isGenerating = isGenerating, onStopGeneration = { currentResponseJob?.cancel() }, onManageChats = { showChatManagerDialog = true },
