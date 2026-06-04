@@ -6,6 +6,57 @@ import kotlinx.coroutines.IO
 import kotlinx.coroutines.withContext
 import kotlin.time.Clock
 
+private fun Int.writeTo(bytes: ByteArray, offset: Int) {
+    bytes[offset] = (this shr 24).toByte()
+    bytes[offset + 1] = (this shr 16).toByte()
+    bytes[offset + 2] = (this shr 8).toByte()
+    bytes[offset + 3] = this.toByte()
+}
+
+private fun ByteArray.readInt(offset: Int): Int {
+    return ((this[offset].toInt() and 0xFF) shl 24) or
+            ((this[offset + 1].toInt() and 0xFF) shl 16) or
+            ((this[offset + 2].toInt() and 0xFF) shl 8) or
+            (this[offset + 3].toInt() and 0xFF)
+}
+
+internal fun serializeImageList(images: List<ByteArray>?): ByteArray? {
+    if (images.isNullOrEmpty()) return null
+    val totalSize = 4 + images.sumOf { 4 + it.size }
+    val result = ByteArray(totalSize)
+    var offset = 0
+    images.size.writeTo(result, offset)
+    offset += 4
+    for (image in images) {
+        image.size.writeTo(result, offset)
+        offset += 4
+        image.copyInto(result, destinationOffset = offset)
+        offset += image.size
+    }
+    return result
+}
+
+public fun deserializeImageList(bytes: ByteArray?): List<ByteArray> {
+    if (bytes == null || bytes.isEmpty()) return emptyList()
+    try {
+        var offset = 0
+        val count = bytes.readInt(offset)
+        offset += 4
+        val list = ArrayList<ByteArray>(count)
+        for (i in 0 until count) {
+            val size = bytes.readInt(offset)
+            offset += 4
+            val img = ByteArray(size)
+            bytes.copyInto(img, destinationOffset = 0, startIndex = offset, endIndex = offset + size)
+            offset += size
+            list.add(img)
+        }
+        return list
+    } catch (e: Exception) {
+        return emptyList()
+    }
+}
+
 class ChatRepository(private val database: LocalTavernDB) {
     private val queries = database.localTavernDBQueries
 
@@ -281,14 +332,14 @@ class ChatRepository(private val database: LocalTavernDB) {
         }
     }
 
-    suspend fun insertMessage(sessionId: String, role: String, content: String, parentId: String?, imageData: ByteArray? = null): String = withContext(Dispatchers.IO) {
+    suspend fun insertMessage(sessionId: String, role: String, content: String, parentId: String?, imageDataList: List<ByteArray>? = null): String = withContext(Dispatchers.IO) {
         val now = currentTimeMillis()
         database.transactionWithResult {
             val newId = generateUuid()
             queries.insertMessageWithParent(
                 id = newId, sessionId = sessionId, role = role, content = content,
                 timestamp = now, parentId = parentId, isActivePath = 1L,
-                updatedAt = now, isDeleted = 0L, imageData = imageData
+                updatedAt = now, isDeleted = 0L, imageData = serializeImageList(imageDataList)
             )
             queries.deactivateSiblings(updatedAt = now, sessionId = sessionId, parentId = parentId, id = newId)
             queries.updateSessionCurrentMessage(currentMessageId = newId, lastTimestamp = now, updatedAt = now, id = sessionId)
@@ -296,13 +347,13 @@ class ChatRepository(private val database: LocalTavernDB) {
         }
     }
 
-    suspend fun insertMessageRaw(sessionId: String, role: String, content: String, parentId: String?, isActivePath: Boolean, imageData: ByteArray? = null): String = withContext(Dispatchers.IO) {
+    suspend fun insertMessageRaw(sessionId: String, role: String, content: String, parentId: String?, isActivePath: Boolean, imageDataList: List<ByteArray>? = null): String = withContext(Dispatchers.IO) {
         val newId = generateUuid()
         val now = currentTimeMillis()
         queries.insertMessageWithParent(
             id = newId, sessionId = sessionId, role = role, content = content,
             timestamp = now, parentId = parentId, isActivePath = if (isActivePath) 1L else 0L,
-            updatedAt = now, isDeleted = 0L, imageData = imageData
+            updatedAt = now, isDeleted = 0L, imageData = serializeImageList(imageDataList)
         )
         newId
     }
@@ -311,8 +362,8 @@ class ChatRepository(private val database: LocalTavernDB) {
         queries.updateMessageContent(content = content, updatedAt = currentTimeMillis(), id = id)
     }
 
-    suspend fun updateMessageImage(id: String, imageData: ByteArray?) = withContext(Dispatchers.IO) {
-        queries.updateMessageImage(imageData = imageData, updatedAt = currentTimeMillis(), id = id)
+    suspend fun updateMessageImage(id: String, imageDataList: List<ByteArray>?) = withContext(Dispatchers.IO) {
+        queries.updateMessageImage(imageData = serializeImageList(imageDataList), updatedAt = currentTimeMillis(), id = id)
     }
 
     suspend fun deleteMessage(id: String) = withContext(Dispatchers.IO) {

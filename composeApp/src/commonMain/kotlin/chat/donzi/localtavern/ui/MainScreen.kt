@@ -22,6 +22,7 @@ import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.data.database.PersonaEntity
 import chat.donzi.localtavern.data.database.MessageEntity
 import chat.donzi.localtavern.data.database.ChatSession
+import chat.donzi.localtavern.data.database.deserializeImageList
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.ui.components.ActiveDrawer
 import chat.donzi.localtavern.ui.components.SidePanels
@@ -418,7 +419,7 @@ fun MainScreen(
                 }
 
                 val sessionDetails = chatRepository.getSessionById(sessionId)
-                chatRepository.insertMessage(sessionId, "user", userMessage, sessionDetails?.currentMessageId, imageList.firstOrNull())
+                chatRepository.insertMessage(sessionId, "user", userMessage, sessionDetails?.currentMessageId, imageList)
                 refreshMessages()
 
                 val updatedSession = chatRepository.getSessionById(sessionId)
@@ -484,7 +485,7 @@ fun MainScreen(
                     onEditMessage = { id, content, updatedImages ->
                         coroutineScope.launch {
                             chatRepository.updateMessageContent(id, content)
-                            chatRepository.updateMessageImage(id, updatedImages.firstOrNull())
+                            chatRepository.updateMessageImage(id, updatedImages)
                             refreshMessages()
                         }
                     },
@@ -559,9 +560,12 @@ fun MainScreen(
                     onSelectMessageToggle = { id -> val index = messages.indexOfFirst { it.id == id }; if (index != -1) { selectedMessageIds = messages.subList(index, messages.size).map { it.id }.toSet() } },
                     onEnterSelectMode = { isSelectMode = true; selectedMessageIds = emptySet() }, isGenerating = isGenerating, onStopGeneration = { currentResponseJob?.cancel() }, onManageChats = { showChatManagerDialog = true },
 
-                    onAddImageToMessage = { targetMessageId, pickedBytes ->
+                    onAddImageToMessage = { targetMessageId, pickedBytesList ->
                         coroutineScope.launch {
-                            chatRepository.updateMessageImage(targetMessageId, pickedBytes)
+                            val targetMsg = messages.find { it.id == targetMessageId }
+                            val existingImages = deserializeImageList(targetMsg?.imageData)
+                            val combinedImages = existingImages + pickedBytesList
+                            chatRepository.updateMessageImage(targetMessageId, combinedImages)
                             refreshMessages()
                         }
                     }

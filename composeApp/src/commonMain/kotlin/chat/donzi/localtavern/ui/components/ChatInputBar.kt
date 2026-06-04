@@ -19,11 +19,27 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import coil3.compose.AsyncImage
 
+/**
+ * Unique internal extension to prevent "Conflicting overloads" with other
+ * string or text field helpers across your Multiplatform codebase.
+ */
+private fun TextFieldValue.localTavernInsertNewline(): TextFieldValue {
+    val selectionStart = selection.start
+    val selectionEnd = selection.end
+    val newText = text.substring(0, selectionStart) + "\n" + text.substring(selectionEnd)
+    return TextFieldValue(
+        text = newText,
+        selection = TextRange(selectionStart + 1)
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatInputBar(
     onSendMessage: (String, List<ByteArray>) -> Unit,
@@ -40,7 +56,7 @@ fun ChatInputBar(
     var textValue by remember { mutableStateOf(TextFieldValue("")) }
     var showMenu by remember { mutableStateOf(false) }
     var attachedImages by remember { mutableStateOf<List<ByteArray>>(emptyList()) }
-    
+
     val imagePickerLauncher = rememberImagePickerLauncher { imagesList ->
         attachedImages = attachedImages + imagesList
     }
@@ -138,7 +154,7 @@ fun ChatInputBar(
                         if (!isGenerating && event.type == KeyEventType.KeyDown &&
                             (event.key == Key.Enter || event.key == Key.NumPadEnter)) {
                             if (event.isShiftPressed) {
-                                textValue = textValue.insertNewline()
+                                textValue = textValue.localTavernInsertNewline()
                                 true
                             } else {
                                 handleSend()

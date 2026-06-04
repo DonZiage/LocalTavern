@@ -13,20 +13,12 @@ actual fun rememberImagePickerLauncher(onImagesPicked: (List<ByteArray>) -> Unit
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia()
     ) { uris ->
-        if (uris.isNotEmpty()) {
-            val imageList = uris.mapNotNull { uri ->
-                try {
-                    context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                        inputStream.readBytes()
-                    }
-                } catch (e: Exception) {
-                    null
-                }
-            }
-            if (imageList.isNotEmpty()) {
-                onImagesPicked(imageList)
+        val byteArrays = uris.mapNotNull { uri ->
+            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                inputStream.readBytes()
             }
         }
+        onImagesPicked(byteArrays)
     }
 
     return remember {

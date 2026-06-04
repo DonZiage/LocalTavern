@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.data.database.MessageEntity
+import chat.donzi.localtavern.data.database.deserializeImageList
 import chat.donzi.localtavern.utils.ContextManager
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import kotlinx.coroutines.launch
@@ -65,7 +66,7 @@ fun ChatArea(
     onManageChats: () -> Unit,
     onBranchMessage: (MessageEntity) -> Unit = {},
     onGoToParentChat: (() -> Unit)? = null,
-    onAddImageToMessage: (String, ByteArray) -> Unit = { _, _ -> }
+    onAddImageToMessage: (String, List<ByteArray>) -> Unit = { _, _ -> }
 ) {
     var messageToDelete by remember { mutableStateOf<MessageEntity?>(null) }
     var imageTargetMessageId by remember { mutableStateOf<String?>(null) }
@@ -73,9 +74,9 @@ fun ChatArea(
     val coroutineScope = rememberCoroutineScope()
 
     val bubbleImagePicker = rememberImagePickerLauncher { imagesList ->
-        imagesList.firstOrNull()?.let { bytes ->
+        if (imagesList.isNotEmpty()) {
             imageTargetMessageId?.let { targetId ->
-                onAddImageToMessage(targetId, bytes)
+                onAddImageToMessage(targetId, imagesList)
             }
         }
         imageTargetMessageId = null
@@ -294,7 +295,7 @@ fun ChatArea(
                             },
                             onBranch = { onBranchMessage(message) },
                             avatarData = currentAvatar,
-                            messageImages = listOfNotNull(message.imageData),
+                            messageImages = deserializeImageList(message.imageData),
                             isSelectMode = isSelectMode,
                             isSelected = selectedMessageIds.contains(message.id),
                             onSelectToggle = { onSelectMessageToggle(message.id) },

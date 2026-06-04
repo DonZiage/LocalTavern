@@ -16,31 +16,23 @@ actual fun rememberImagePickerLauncher(onImagesPicked: (List<ByteArray>) -> Unit
             }
 
             val chooser = JFileChooser().apply {
-                dialogTitle = "Select Images"
                 isMultiSelectionEnabled = true
-
-                fileFilter = FileNameExtensionFilter(
-                    "Supported Images (.png, .jpg, .jpeg, .webp)",
-                    "png", "jpg", "jpeg", "webp"
-                )
-
-                isAcceptAllFileFilterUsed = false
+                fileFilter = FileNameExtensionFilter("Images", "jpg", "jpeg", "png", "webp")
+                dialogTitle = "Select Images"
             }
 
             val result = chooser.showOpenDialog(null)
             if (result == JFileChooser.APPROVE_OPTION) {
-                val selectedFiles = chooser.selectedFiles
-                if (!selectedFiles.isNullOrEmpty()) {
-                    val imageList = selectedFiles.mapNotNull { file ->
-                        try {
-                            file.readBytes()
-                        } catch (e: Exception) {
-                            null
-                        }
+                val files = chooser.selectedFiles
+                val byteArrays = files.mapNotNull { file ->
+                    try {
+                        file.readBytes()
+                    } catch (e: Exception) {
+                        null
                     }
-                    if (imageList.isNotEmpty()) {
-                        onImagesPicked(imageList)
-                    }
+                }
+                if (byteArrays.isNotEmpty()) {
+                    onImagesPicked(byteArrays)
                 }
             }
         }
