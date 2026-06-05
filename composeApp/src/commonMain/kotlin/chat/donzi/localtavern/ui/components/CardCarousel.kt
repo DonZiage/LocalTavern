@@ -87,10 +87,8 @@ fun <T> CardCarousel(
         }
     }
 
-    // Dedicated state to trace active trackpad/mouse scroll wheel ticks
     var mouseScrollInteractionCount by remember { mutableStateOf(0) }
 
-    // Debounce listener targeting wheel scrolling stream completions exclusively
     LaunchedEffect(mouseScrollInteractionCount) {
         if (mouseScrollInteractionCount > 0) {
             delay(250.milliseconds)

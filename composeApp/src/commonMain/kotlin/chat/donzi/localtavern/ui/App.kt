@@ -25,7 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 
 @Composable
-fun App(driverFactory: DriverFactory) {
+fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
     val database = remember { LocalTavernDB(driverFactory.createDriver()) }
     val chatRepository = remember { ChatRepository(database) }
     val coroutineScope = rememberCoroutineScope()
@@ -81,6 +81,9 @@ fun App(driverFactory: DriverFactory) {
     }
 
     if (!isInitialized) {
+        SideEffect {
+            onThemeChanged(isDarkMode)
+        }
         LocalTavernTheme(darkTheme = isDarkMode) {
             Surface(
                 modifier = Modifier.fillMaxSize(),
@@ -105,6 +108,9 @@ fun App(driverFactory: DriverFactory) {
                 }
             }
         ) { syncedDarkTheme, triggerTransition ->
+            SideEffect {
+                onThemeChanged(syncedDarkTheme)
+            }
             MainScreen(
                 chatRepository = chatRepository,
                 chatClient = chatClient,
