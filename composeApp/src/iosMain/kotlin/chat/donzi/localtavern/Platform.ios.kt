@@ -16,16 +16,16 @@ actual fun saveFile(fileName: String, bytes: ByteArray): String? {
         val fileManager = NSFileManager.defaultManager
         val documentsDir = fileManager.URLsForDirectory(NSDocumentDirectory, NSUserDomainMask).first() as NSURL
         val exportDir = documentsDir.URLByAppendingPathComponent("LocalTavern/ExportedCharacters")!!
-        
+
         if (!fileManager.fileExistsAtPath(exportDir.path!!)) {
             fileManager.createDirectoryAtURL(exportDir, withIntermediateDirectories = true, attributes = null, error = null)
         }
-        
+
         val fileURL = exportDir.URLByAppendingPathComponent(fileName)!!
         val data = bytes.usePinned { pinned ->
             NSData.dataWithBytes(pinned.addressOf(0), bytes.size.toULong())
         }
-        
+
         if (data.writeToURL(fileURL, true)) {
             fileURL.path
         } else {
@@ -55,3 +55,5 @@ actual fun convertToPng(bytes: ByteArray): ByteArray {
         bytes
     }
 }
+
+actual val isDesktop: Boolean = false

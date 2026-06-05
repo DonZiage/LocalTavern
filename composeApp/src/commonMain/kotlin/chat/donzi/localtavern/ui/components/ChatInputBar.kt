@@ -1,6 +1,7 @@
 package chat.donzi.localtavern.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -25,10 +26,6 @@ import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import coil3.compose.AsyncImage
 
-/**
- * Unique internal extension to prevent "Conflicting overloads" with other
- * string or text field helpers across your Multiplatform codebase.
- */
 private fun TextFieldValue.localTavernInsertNewline(): TextFieldValue {
     val selectionStart = selection.start
     val selectionEnd = selection.end
@@ -91,19 +88,21 @@ fun ChatInputBar(
                                 .fillMaxSize()
                                 .clip(RoundedCornerShape(8.dp))
                         )
-                        IconButton(
-                            onClick = { attachedImages = attachedImages.filterIndexed { i, _ -> i != index } },
+                        Box(
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
-                                .offset(x = 6.dp, y = (-6).dp)
-                                .size(20.dp)
+                                .offset(x = 4.dp, y = (-4).dp)
+                                .size(18.dp)
                                 .background(MaterialTheme.colorScheme.error, CircleShape)
+                                .clip(CircleShape)
+                                .clickable { attachedImages = attachedImages.filterIndexed { i, _ -> i != index } },
+                            contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Close,
                                 contentDescription = "Remove Attachment",
                                 tint = MaterialTheme.colorScheme.onError,
-                                modifier = Modifier.size(12.dp)
+                                modifier = Modifier.size(10.dp)
                             )
                         }
                     }

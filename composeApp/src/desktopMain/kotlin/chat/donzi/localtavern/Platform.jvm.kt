@@ -5,14 +5,13 @@ import java.awt.Desktop
 import org.jetbrains.skia.Image
 import org.jetbrains.skia.EncodedImageFormat
 
-
 actual fun saveFile(fileName: String, bytes: ByteArray): String? {
     return try {
         val userHome = System.getProperty("user.home")
         val downloads = File(userHome, "Downloads")
         val exportDir = File(downloads, "LocalTavern/ExportedCharacters")
         if (!exportDir.exists()) exportDir.mkdirs()
-        
+
         val file = File(exportDir, fileName)
         file.writeBytes(bytes)
         file.absolutePath
@@ -44,3 +43,5 @@ actual fun convertToPng(bytes: ByteArray): ByteArray {
         bytes
     }
 }
+
+actual val isDesktop: Boolean = true

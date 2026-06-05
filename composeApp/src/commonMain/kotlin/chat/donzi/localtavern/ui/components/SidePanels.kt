@@ -90,72 +90,13 @@ fun SidePanels(
                 .width(drawerWidth)
                 .align(Alignment.CenterStart)
         ) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 8.dp
-            ) {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 64.dp)
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "Settings",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                        ThemeToggle(
-                            isDarkMode = isDarkMode,
-                            onToggleDarkMode = onToggleDarkMode
-                        )
-                    }
-
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        var apiExpanded by remember { mutableStateOf(true) }
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { apiExpanded = !apiExpanded }
-                                .padding(vertical = 12.dp, horizontal = 16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                "API Connection",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Icon(
-                                if (apiExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                contentDescription = null
-                            )
-                        }
-                        AnimatedVisibility(
-                            visible = apiExpanded,
-                            modifier = Modifier.weight(1f),
-                            enter = expandVertically() + fadeIn(),
-                            exit = shrinkVertically() + fadeOut()
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .verticalScroll(rememberScrollState())
-                            ) {
-                                ApiConnectionSettings(
-                                    chatRepository = chatRepository,
-                                    chatClient = chatClient,
-                                    onApiChanged = onApiChanged
-                                )
-                            }
-                        }
-                    }
-                }
-            }
+            SettingsPanelContent(
+                chatRepository = chatRepository,
+                chatClient = chatClient,
+                isDarkMode = isDarkMode,
+                onToggleDarkMode = onToggleDarkMode,
+                onApiChanged = onApiChanged
+            )
         }
 
         AnimatedVisibility(
@@ -168,61 +109,178 @@ fun SidePanels(
                 .width(drawerWidth)
                 .align(Alignment.CenterEnd)
         ) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 8.dp
-            ) {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 64.dp)
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "Characters",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+            CharactersPanelContent(
+                personas = personas,
+                activePersonaId = activePersonaId,
+                onPersonaSelect = onPersonaSelect,
+                onPersonaAdd = onPersonaAdd,
+                onPersonaUpdate = onPersonaUpdate,
+                onPersonaDelete = onPersonaDelete,
+                characters = characters,
+                onCharacterSelect = onCharacterSelect,
+                onCharactersDelete = onCharactersDelete,
+                onCharacterImport = onCharacterImport,
+                onCharacterExport = onCharacterExport,
+                onCharacterCreate = onCharacterCreate,
+                onCharacterEdit = onCharacterEdit,
+                autoEditDefaultPersona = autoEditDefaultPersona,
+                onAutoEditConsumed = onAutoEditConsumed,
+                autoShowNewCharacterMenu = autoShowNewCharacterMenu,
+                onAutoShowMenuConsumed = onAutoShowMenuConsumed
+            )
+        }
+    }
+}
 
+@Composable
+fun SettingsPanelContent(
+    chatRepository: ChatRepository,
+    chatClient: ChatClient,
+    isDarkMode: Boolean,
+    onToggleDarkMode: (Boolean, Offset) -> Unit,
+    onApiChanged: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 8.dp
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 64.dp)
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Settings",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                ThemeToggle(
+                    isDarkMode = isDarkMode,
+                    onToggleDarkMode = onToggleDarkMode
+                )
+            }
+
+            Column(modifier = Modifier.fillMaxSize()) {
+                var apiExpanded by remember { mutableStateOf(false) }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { apiExpanded = !apiExpanded }
+                        .padding(vertical = 12.dp, horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        "API Connection",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Icon(
+                        if (apiExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = null
+                    )
+                }
+                AnimatedVisibility(
+                    visible = apiExpanded,
+                    modifier = Modifier.weight(1f),
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut()
+                ) {
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
                             .verticalScroll(rememberScrollState())
                     ) {
-                        CollapsibleSettingsSection(title = "Personas") {
-                            PersonaManagementSection(
-                                personas = personas,
-                                activePersonaId = activePersonaId,
-                                onSelect = onPersonaSelect,
-                                onAdd = onPersonaAdd,
-                                onUpdate = onPersonaUpdate,
-                                onDelete = onPersonaDelete,
-                                autoEditDefaultPersona = autoEditDefaultPersona,
-                                onAutoEditConsumed = onAutoEditConsumed
-                            )
-                        }
-
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp).alpha(0.3f))
-
-                        CollapsibleSettingsSection(title = "Characters") {
-                            CharacterListSection(
-                                characters = characters,
-                                modifier = Modifier.heightIn(max = 1000.dp),
-                                onSelect = onCharacterSelect,
-                                onDeleteSelected = onCharactersDelete,
-                                onImportCharacter = onCharacterImport,
-                                onCreateCharacter = onCharacterCreate,
-                                onEditCharacter = onCharacterEdit,
-                                onExportCharacter = onCharacterExport,
-                                autoShowNewCharacterMenu = autoShowNewCharacterMenu,
-                                onAutoShowMenuConsumed = onAutoShowMenuConsumed
-                            )
-                        }
+                        ApiConnectionSettings(
+                            chatRepository = chatRepository,
+                            chatClient = chatClient,
+                            onApiChanged = onApiChanged
+                        )
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun CharactersPanelContent(
+    personas: List<PersonaEntity>,
+    activePersonaId: String?,
+    onPersonaSelect: (String) -> Unit,
+    onPersonaAdd: (String, String?, ByteArray?) -> Unit,
+    onPersonaUpdate: (String, String, String?, ByteArray?) -> Unit,
+    onPersonaDelete: (String) -> Unit,
+    characters: List<CharacterEntity>,
+    onCharacterSelect: (CharacterEntity) -> Unit,
+    onCharactersDelete: (Set<String>) -> Unit,
+    onCharacterImport: (SillyTavernCardV2, ByteArray?) -> Unit,
+    onCharacterExport: (CharacterEntity) -> Unit,
+    onCharacterCreate: (String) -> Unit,
+    onCharacterEdit: (CharacterEntity) -> Unit,
+    autoEditDefaultPersona: Boolean,
+    onAutoEditConsumed: () -> Unit,
+    autoShowNewCharacterMenu: Boolean,
+    onAutoShowMenuConsumed: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 8.dp
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 64.dp)
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Characters",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                CollapsibleSettingsSection(title = "Personas") {
+                    PersonaManagementSection(
+                        personas = personas,
+                        activePersonaId = activePersonaId,
+                        onSelect = onPersonaSelect,
+                        onAdd = onPersonaAdd,
+                        onUpdate = onPersonaUpdate,
+                        onDelete = onPersonaDelete,
+                        autoEditDefaultPersona = autoEditDefaultPersona,
+                        onAutoEditConsumed = onAutoEditConsumed
+                    )
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp).alpha(0.3f))
+
+                CollapsibleSettingsSection(title = "Characters") {
+                    CharacterListSection(
+                        characters = characters,
+                        modifier = Modifier.heightIn(max = 1000.dp),
+                        onSelect = onCharacterSelect,
+                        onDeleteSelected = onCharactersDelete,
+                        onImportCharacter = onCharacterImport,
+                        onCreateCharacter = onCharacterCreate,
+                        onEditCharacter = onCharacterEdit,
+                        onExportCharacter = onCharacterExport,
+                        autoShowNewCharacterMenu = autoShowNewCharacterMenu,
+                        onAutoShowMenuConsumed = onAutoShowMenuConsumed
+                    )
                 }
             }
         }

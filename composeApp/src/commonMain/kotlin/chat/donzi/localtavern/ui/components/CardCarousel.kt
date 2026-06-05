@@ -61,6 +61,45 @@ fun <T> CardCarousel(
 
     val snapFlingBehavior = rememberSnapFlingBehavior(lazyListState = listState)
 
+    val performSnap = suspend {
+        if (draggedItemId == null && !isCentering) {
+            val layoutInfo = listState.layoutInfo
+            val visibleItems = layoutInfo.visibleItemsInfo
+            if (visibleItems.isNotEmpty()) {
+                val viewportWidth = layoutInfo.viewportSize.width
+                val viewportCenter = viewportWidth / 2
+                val closestItem = visibleItems.minByOrNull { item ->
+                    kotlin.math.abs((item.offset + item.size / 2).toFloat() - viewportCenter.toFloat())
+                }
+                closestItem?.let { item ->
+                    val targetOffset = (viewportWidth - item.size) / 2
+                    if (kotlin.math.abs(item.offset - targetOffset) > 1) {
+                        try {
+                            isCentering = true
+                            listState.animateScrollToItem(item.index, -targetOffset)
+                        } catch (_: Exception) {
+                        } finally {
+                            isCentering = false
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Dedicated state to trace active trackpad/mouse scroll wheel ticks
+    var mouseScrollInteractionCount by remember { mutableStateOf(0) }
+
+    // Debounce listener targeting wheel scrolling stream completions exclusively
+    LaunchedEffect(mouseScrollInteractionCount) {
+        if (mouseScrollInteractionCount > 0) {
+            delay(250.milliseconds)
+            if (draggedItemId == null && !isCentering) {
+                performSnap()
+            }
+        }
+    }
+
     LaunchedEffect(items) {
         val newlyAddedItemIndex = items.indexOfFirst { !reorderableItems.contains(it) }
 
@@ -108,32 +147,6 @@ fun <T> CardCarousel(
         )
     }
 
-    val performSnap = suspend {
-        if (draggedItemId == null && !isCentering) {
-            val layoutInfo = listState.layoutInfo
-            val visibleItems = layoutInfo.visibleItemsInfo
-            if (visibleItems.isNotEmpty()) {
-                val viewportWidth = layoutInfo.viewportSize.width
-                val viewportCenter = viewportWidth / 2
-                val closestItem = visibleItems.minByOrNull { item ->
-                    kotlin.math.abs((item.offset + item.size / 2).toFloat() - viewportCenter.toFloat())
-                }
-                closestItem?.let { item ->
-                    val targetOffset = (viewportWidth - item.size) / 2
-                    if (kotlin.math.abs(item.offset - targetOffset) > 1) {
-                        try {
-                            isCentering = true
-                            listState.animateScrollToItem(item.index, -targetOffset)
-                        } catch (_: Exception) {
-                        } finally {
-                            isCentering = false
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -146,6 +159,7 @@ fun <T> CardCarousel(
                             val delta = event.changes.first().scrollDelta
                             val scrollAmount = delta.y * 64f + delta.x * 64f
                             if (scrollAmount != 0f) {
+                                mouseScrollInteractionCount++
                                 scope.launch {
                                     listState.scrollBy(scrollAmount)
                                 }

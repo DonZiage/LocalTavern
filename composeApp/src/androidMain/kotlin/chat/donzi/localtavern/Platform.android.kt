@@ -12,7 +12,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import java.io.ByteArrayOutputStream
 
-
 object AndroidAppContext {
     private var applicationContext: Context? = null
 
@@ -121,3 +120,5 @@ actual fun convertToPng(bytes: ByteArray): ByteArray {
         bytes
     }
 }
+
+actual val isDesktop: Boolean = false
