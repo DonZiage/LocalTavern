@@ -282,26 +282,24 @@ fun MessageBubble(
                     shape = RoundedCornerShape(16.dp)
                 )
                 .let { modifier -> if (!isUser) modifier.animateContentSize() else modifier }
-                .let { modifier ->
+                .pointerInput(isSwipeable) {
                     if (isSwipeable) {
-                        modifier.pointerInput(Unit) {
-                            var totalDrag = 0f
-                            detectHorizontalDragGestures(
-                                onDragEnd = {
-                                    if (totalDrag > 80f) {
-                                        onSwipeRight()
-                                    } else if (totalDrag < -80f) {
-                                        onSwipeLeft()
-                                    }
-                                    totalDrag = 0f
-                                },
-                                onDragCancel = { totalDrag = 0f },
-                                onHorizontalDrag = { _, dragAmount ->
-                                    totalDrag += dragAmount
+                        var totalDrag = 0f
+                        detectHorizontalDragGestures(
+                            onDragEnd = {
+                                if (totalDrag > 80f) {
+                                    onSwipeRight()
+                                } else if (totalDrag < -80f) {
+                                    onSwipeLeft()
                                 }
-                            )
-                        }
-                    } else modifier
+                                totalDrag = 0f
+                            },
+                            onDragCancel = { totalDrag = 0f },
+                            onHorizontalDrag = { _, dragAmount ->
+                                totalDrag += dragAmount
+                            }
+                        )
+                    }
                 }
                 .weight(1f, fill = false)
                 .widthIn(max = 460.dp)

@@ -34,6 +34,7 @@ import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import androidx.compose.ui.geometry.Offset
 import chat.donzi.localtavern.utils.ContextManager
 import chat.donzi.localtavern.utils.ChatMessage
+import chat.donzi.localtavern.utils.ImageAttachment
 import chat.donzi.localtavern.utils.toDomain
 import chat.donzi.localtavern.utils.CharacterManager
 import kotlinx.coroutines.Job
@@ -55,7 +56,6 @@ private suspend fun insertInitialGreetings(
     character: CharacterEntity
 ) {
     greetingsMutex.withLock {
-        // Double-check logic under lock to completely mitigate concurrent race duplication
         if (chatRepository.getMessagesForSession(sessionId).isNotEmpty()) return
 
         val primaryGreeting = character.firstMes ?: ""
@@ -124,6 +124,34 @@ private fun formatTimestampToDateTime(timestamp: Long): String {
     val minuteStr = if (minute < 10) "0$minute" else "$minute"
 
     return "$monthNum/$dayNum/$shortYear $hour12:${minuteStr}$amPm"
+}
+
+private fun detectMimeType(bytes: ByteArray): String {
+    if (bytes.size >= 4 &&
+        bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() &&
+        bytes[2] == 0x4E.toByte() && bytes[3] == 0x47.toByte()) {
+        return "image/png"
+    }
+    if (bytes.size >= 3 &&
+        bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() &&
+        bytes[2] == 0xFF.toByte()) {
+        return "image/jpeg"
+    }
+    if (bytes.size >= 12 &&
+        bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() &&
+        bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte() &&
+        bytes[8] == 'W'.code.toByte() && bytes[9] == 'E'.code.toByte() &&
+        bytes[10] == 'B'.code.toByte() && bytes[11] == 'P'.code.toByte()
+    ) {
+        return "image/webp"
+    }
+    if (bytes.size >= 3 &&
+        bytes[0] == 'G'.code.toByte() && bytes[1] == 'I'.code.toByte() &&
+        bytes[2] == 'F'.code.toByte()
+    ) {
+        return "image/gif"
+    }
+    return "image/jpeg"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -312,9 +340,23 @@ fun MainScreen(
                     var receivedFirstToken = false
                     val dbMessages = chatRepository.getMessagesForSession(sessionId)
 
+                    @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
                     val chatHistory = dbMessages
                         .filter { it.id != aiMessageId }
-                        .map { ChatMessage(role = it.role, content = it.content) }
+                        .map { msg ->
+                            val parsedImages = deserializeImageList(msg.imageData)
+                            val attachmentsList = parsedImages.map { imgBytes ->
+                                ImageAttachment(
+                                    base64 = kotlin.io.encoding.Base64.encode(imgBytes),
+                                    mimeType = detectMimeType(imgBytes)
+                                )
+                            }
+                            ChatMessage(
+                                role = msg.role,
+                                content = msg.content,
+                                images = attachmentsList
+                            )
+                        }
 
                     val blocks = chatRepository.getAllPromptBlocks().map { it.toDomain() }
                     val messagesPayload = ContextManager.buildPayload(
@@ -404,7 +446,6 @@ fun MainScreen(
     }
 
     val onSendMessage: (String, List<ByteArray>) -> Unit = { userMessage, imageList ->
-        // Labeled return compiler error resolved by using a standard conditional scope block instead
         if (!isGenerating) {
             coroutineScope.launch {
                 var currentActiveCharacter = activeCharacter

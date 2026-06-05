@@ -4,13 +4,17 @@ import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.data.database.PersonaEntity
 
 @kotlinx.serialization.Serializable
+data class ImageAttachment(
+    val base64: String,
+    val mimeType: String
+)
+
+@kotlinx.serialization.Serializable
 data class ChatMessage(
     val role: String,
     val content: String,
-    val imageBase64: String? = null,
-    val imageMimeType: String? = null
+    val images: List<ImageAttachment> = emptyList()
 )
-
 
 object ContextManager {
 

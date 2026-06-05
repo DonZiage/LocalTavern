@@ -47,19 +47,20 @@ class ChatClient(private val httpClient: HttpClient) {
                     add(buildJsonObject {
                         put("role", msg.role)
 
-                        if (!ignoreImages && msg.imageBase64 != null) {
+                        if (!ignoreImages && msg.images.isNotEmpty()) {
                             put("content", buildJsonArray {
                                 add(buildJsonObject {
                                     put("type", "text")
                                     put("text", msg.content)
                                 })
-                                add(buildJsonObject {
-                                    put("type", "image_url")
-                                    put("image_url", buildJsonObject {
-                                        val mime = msg.imageMimeType ?: "image/jpeg"
-                                        put("url", "data:$mime;base64,${msg.imageBase64}")
+                                msg.images.forEach { img ->
+                                    add(buildJsonObject {
+                                        put("type", "image_url")
+                                        put("image_url", buildJsonObject {
+                                            put("url", "data:${img.mimeType};base64,${img.base64}")
+                                        })
                                     })
-                                })
+                                }
                             })
                         } else {
                             put("content", msg.content)
@@ -133,7 +134,7 @@ class ChatClient(private val httpClient: HttpClient) {
         ignoreImages: Boolean = false
     ): String {
         val endpoint = if (isChatCompletion) "$baseUrl/chat/completions" else "$baseUrl/completions"
-        val hasImages = messages.any { it.imageBase64 != null }
+        val hasImages = messages.any { it.images.isNotEmpty() }
 
         val response = httpClient.post(endpoint) {
             header(HttpHeaders.Authorization, "Bearer $apiKey")
@@ -173,7 +174,7 @@ class ChatClient(private val httpClient: HttpClient) {
         isChatCompletion: Boolean = true
     ): Flow<String> = flow {
         val endpoint = if (isChatCompletion) "$baseUrl/chat/completions" else "$baseUrl/completions"
-        val hasImages = messages.any { it.imageBase64 != null }
+        val hasImages = messages.any { it.images.isNotEmpty() }
 
         var streamingSuccess = false
         var lastUsedIgnoreImages = false
@@ -181,7 +182,7 @@ class ChatClient(private val httpClient: HttpClient) {
 
         try {
             var failedWithImages = false
-            
+
             httpClient.preparePost(endpoint) {
                 header(HttpHeaders.Authorization, "Bearer $apiKey")
                 contentType(ContentType.Application.Json)

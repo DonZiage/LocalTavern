@@ -259,10 +259,13 @@ fun ChatArea(
             ) {
                 items(messages.reversed(), key = { it.id }) { message ->
                     val isUserMessage = message.role == "user"
-                    val currentAvatar = if (isUserMessage) {
-                        activePersonaAvatar
-                    } else {
-                        activeCharacter?.avatarData
+
+                    val currentAvatar = remember(isUserMessage, activePersonaAvatar, activeCharacter?.avatarData) {
+                        if (isUserMessage) {
+                            activePersonaAvatar
+                        } else {
+                            activeCharacter?.avatarData
+                        }
                     }
 
                     val isLastMessage = messages.lastOrNull()?.id == message.id
@@ -280,6 +283,10 @@ fun ChatArea(
                         )
                     }
 
+                    val messageImages = remember(message.id, message.imageData?.contentHashCode()) {
+                        deserializeImageList(message.imageData)
+                    }
+
                     Column(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalAlignment = if (isUserMessage) Alignment.End else Alignment.Start
@@ -295,7 +302,7 @@ fun ChatArea(
                             },
                             onBranch = { onBranchMessage(message) },
                             avatarData = currentAvatar,
-                            messageImages = deserializeImageList(message.imageData),
+                            messageImages = messageImages,
                             isSelectMode = isSelectMode,
                             isSelected = selectedMessageIds.contains(message.id),
                             onSelectToggle = { onSelectMessageToggle(message.id) },
