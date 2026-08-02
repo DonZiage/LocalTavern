@@ -1,6 +1,5 @@
 package chat.donzi.localtavern.data.security
 
-import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.alloc

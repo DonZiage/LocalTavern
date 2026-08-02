@@ -1,6 +1,5 @@
 package chat.donzi.localtavern.utils
 
-import kotlinx.cinterop.CValuesRef
 import kotlinx.cinterop.DoubleVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UByteVar
