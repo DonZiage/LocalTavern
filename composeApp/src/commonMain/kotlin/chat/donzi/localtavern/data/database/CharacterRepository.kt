@@ -10,6 +10,19 @@ import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.encodeToString
+
+private val cardJson = Json {
+    ignoreUnknownKeys = true
+    isLenient = true
+    encodeDefaults = true
+}
+
+private fun encodeJsonObject(value: JsonObject?): String? = value?.let { cardJson.encodeToString(it) }
+
+private fun encodeTags(tags: List<String>): String? = tags.takeIf { it.isNotEmpty() }?.let { cardJson.encodeToString(it) }
 
 class CharacterRepository(database: LocalTavernDB) : BaseRepository(database) {
 
@@ -43,7 +56,14 @@ class CharacterRepository(database: LocalTavernDB) : BaseRepository(database) {
             avatarData = null,
             isAssistant = 1L,
             updatedAt = now,
-            isDeleted = 0L
+            isDeleted = 0L,
+            systemPrompt = null,
+            postHistoryInstructions = null,
+            creator = null,
+            characterVersion = null,
+            tags = null,
+            extensions = null,
+            characterBook = null
         )
         newId
     }
@@ -71,7 +91,14 @@ class CharacterRepository(database: LocalTavernDB) : BaseRepository(database) {
             avatarData = avatarData,
             isAssistant = 0L,
             updatedAt = now,
-            isDeleted = 0L
+            isDeleted = 0L,
+            systemPrompt = card.system_prompt,
+            postHistoryInstructions = card.post_history_instructions,
+            creator = card.creator,
+            characterVersion = card.character_version,
+            tags = encodeTags(card.tags),
+            extensions = encodeJsonObject(card.extensions),
+            characterBook = encodeJsonObject(card.character_book)
         )
         newId
     }
@@ -92,7 +119,14 @@ class CharacterRepository(database: LocalTavernDB) : BaseRepository(database) {
             avatarData = null,
             isAssistant = 0L,
             updatedAt = now,
-            isDeleted = 0L
+            isDeleted = 0L,
+            systemPrompt = null,
+            postHistoryInstructions = null,
+            creator = null,
+            characterVersion = null,
+            tags = null,
+            extensions = null,
+            characterBook = null
         )
         newId
     }
@@ -108,6 +142,9 @@ class CharacterRepository(database: LocalTavernDB) : BaseRepository(database) {
         altGreetings: List<String> = emptyList(),
         avatarData: ByteArray? = null
     ) = withContext(Dispatchers.IO) {
+        // The character editor does not touch the round-trip-only card fields;
+        // carry the stored values forward so a save cannot strip them.
+        val existing = queries.selectCharacterById(id).executeAsOneOrNull()
         queries.updateCharacter(
             name = name,
             description = description,
@@ -117,6 +154,13 @@ class CharacterRepository(database: LocalTavernDB) : BaseRepository(database) {
             mesExample = mesExample.joinToString("|||").ifBlank { null },
             altGreetings = altGreetings.joinToString("|||").ifBlank { null },
             avatarData = avatarData,
+            systemPrompt = existing?.systemPrompt,
+            postHistoryInstructions = existing?.postHistoryInstructions,
+            creator = existing?.creator,
+            characterVersion = existing?.characterVersion,
+            tags = existing?.tags,
+            extensions = existing?.extensions,
+            characterBook = existing?.characterBook,
             updatedAt = currentTimeMillis(),
             id = id
         )

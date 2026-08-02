@@ -320,7 +320,14 @@ fun MainScreen(
                             onSelectMessageToggle = { id ->
                                 val index = messages.indexOfFirst { it.id == id }
                                 if (index != -1) {
-                                    selectedMessageIds = messages.subList(index, messages.size).map { it.id }.toSet()
+                                    val rangeIds = messages.subList(index, messages.size).map { it.id }.toSet()
+                                    // Toggle: tapping an already-selected message
+                                    // deselects it (and everything below it).
+                                    selectedMessageIds = if (id in selectedMessageIds) {
+                                        selectedMessageIds - rangeIds
+                                    } else {
+                                        selectedMessageIds + rangeIds
+                                    }
                                 }
                             },
                             onEnterSelectMode = { isSelectMode = true; selectedMessageIds = emptySet() },

@@ -7,6 +7,18 @@ import chat.donzi.localtavern.domain.Persona
 import chat.donzi.localtavern.domain.PromptBlock
 import chat.donzi.localtavern.domain.Session
 import chat.donzi.localtavern.utils.deserializeImageList
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
+
+private val json = Json {
+    ignoreUnknownKeys = true
+    isLenient = true
+}
+
+// SillyTavern v2 separates example dialogue with "<START>"; the app's own
+// exports historically used "|||". Accept both so imported cards round-trip.
+private val exampleSeparator = Regex("(?:\\|\\|\\||<START>)")
 
 fun CharacterEntity.toDomain(): Character = Character(
     id = id,
@@ -15,12 +27,26 @@ fun CharacterEntity.toDomain(): Character = Character(
     personality = personality ?: "",
     scenario = scenario ?: "",
     firstMes = firstMes,
-    mesExample = mesExample?.split("|||")?.filter { it.isNotBlank() } ?: emptyList(),
+    mesExample = mesExample?.split(exampleSeparator)?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList(),
     creatorNotes = creatorNotes,
     altGreetings = altGreetings?.split("|||")?.filter { it.isNotBlank() } ?: emptyList(),
     avatarData = avatarData,
-    isAssistant = isAssistant == 1L
+    isAssistant = isAssistant == 1L,
+    systemPrompt = systemPrompt,
+    postHistoryInstructions = postHistoryInstructions,
+    creator = creator,
+    characterVersion = characterVersion,
+    tags = tags?.let { raw ->
+        runCatching { json.decodeFromJsonElement<List<String>>(json.parseToJsonElement(raw)) }.getOrNull()
+    } ?: emptyList(),
+    extensions = parseJsonObject(extensions),
+    characterBook = parseJsonObject(characterBook)
 )
+
+private fun parseJsonObject(raw: String?): JsonObject? {
+    if (raw.isNullOrBlank()) return null
+    return runCatching { json.parseToJsonElement(raw) as? JsonObject }.getOrNull()
+}
 
 fun PersonaEntity.toDomain(): Persona = Persona(
     id = id,

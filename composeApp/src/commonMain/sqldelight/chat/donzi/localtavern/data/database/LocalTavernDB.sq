@@ -11,7 +11,14 @@ CREATE TABLE CharacterEntity (
     avatarData BLOB,
     isAssistant INTEGER NOT NULL DEFAULT 0,
     updatedAt INTEGER NOT NULL DEFAULT 0,
-    isDeleted INTEGER NOT NULL DEFAULT 0
+    isDeleted INTEGER NOT NULL DEFAULT 0,
+    systemPrompt TEXT,
+    postHistoryInstructions TEXT,
+    creator TEXT,
+    characterVersion TEXT,
+    tags TEXT,
+    extensions TEXT,
+    characterBook TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_character_assistant ON CharacterEntity(isAssistant);
@@ -136,8 +143,8 @@ selectAllPromptBlocks:
 SELECT * FROM PromptBlockEntity WHERE isDeleted = 0 ORDER BY displayOrder ASC;
 
 insertCharacter:
-INSERT INTO CharacterEntity(id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant, updatedAt, isDeleted)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO CharacterEntity(id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant, updatedAt, isDeleted, systemPrompt, postHistoryInstructions, creator, characterVersion, tags, extensions, characterBook)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 updateCharacter:
 UPDATE CharacterEntity
@@ -149,6 +156,13 @@ SET name = ?,
     mesExample = ?,
     altGreetings = ?,
     avatarData = ?,
+    systemPrompt = ?,
+    postHistoryInstructions = ?,
+    creator = ?,
+    characterVersion = ?,
+    tags = ?,
+    extensions = ?,
+    characterBook = ?,
     updatedAt = ?
 WHERE id = ?;
 

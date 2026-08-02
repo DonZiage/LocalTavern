@@ -60,6 +60,10 @@ fun ThemeTransition(
     val revealProgress = remember { Animatable(1f) }
     var animationCenter by remember { mutableStateOf(Offset.Zero) }
     var transitionJob by remember { mutableStateOf<Job?>(null) }
+    // Only record frames into the offscreen layer while a transition is in
+    // flight; the layer is consumed by toImageBitmap() during the capture and
+    // would otherwise re-render the whole UI offscreen on every frame.
+    var isCapturing by remember { mutableStateOf(false) }
 
     LaunchedEffect(initialThemeIsDark) {
         isDark = initialThemeIsDark
@@ -74,27 +78,32 @@ fun ThemeTransition(
         // Persist the new theme immediately so a transition cancelled mid-flight
         // (second toggle, window close) is not silently lost.
         onThemeSaved(targetDark)
+        isCapturing = true
         transitionJob = coroutineScope.launch {
-            // If a reveal is still in flight, finish it first so the snapshot
-            // below is not a partially-clipped frame.
-            if (revealProgress.value < 1f) {
-                revealProgress.animateTo(1f, animationSpec = tween(180))
+            try {
+                // If a reveal is still in flight, finish it first so the snapshot
+                // below is not a partially-clipped frame.
+                if (revealProgress.value < 1f) {
+                    revealProgress.animateTo(1f, animationSpec = tween(180))
+                }
+                val captured = try {
+                    graphicsLayer.toImageBitmap()
+                } catch (_: Exception) {
+                    null
+                }
+                isDark = targetDark
+                if (captured == null) return@launch
+                snapshot = captured
+                revealProgress.snapTo(0f)
+                delay(50.milliseconds)
+                revealProgress.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(500, easing = FastOutSlowInEasing)
+                )
+                snapshot = null
+            } finally {
+                isCapturing = false
             }
-            val captured = try {
-                graphicsLayer.toImageBitmap()
-            } catch (_: Exception) {
-                null
-            }
-            isDark = targetDark
-            if (captured == null) return@launch
-            snapshot = captured
-            revealProgress.snapTo(0f)
-            delay(50.milliseconds)
-            revealProgress.animateTo(
-                targetValue = 1f,
-                animationSpec = tween(500, easing = FastOutSlowInEasing)
-            )
-            snapshot = null
         }
     }
 
@@ -119,8 +128,10 @@ fun ThemeTransition(
                         }
                     }
                     .drawWithContent {
-                        graphicsLayer.record {
-                            this@drawWithContent.drawContent()
+                        if (isCapturing) {
+                            graphicsLayer.record {
+                                this@drawWithContent.drawContent()
+                            }
                         }
                         drawContent()
                     }

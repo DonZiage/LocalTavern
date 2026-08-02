@@ -42,10 +42,14 @@ fun PersonaManagement(
         personas.indexOfFirst { it.id == activePersonaId }.takeIf { it >= 0 }
     }
 
-    LaunchedEffect(autoEditDefaultPersona, personas) {
+    LaunchedEffect(autoEditDefaultPersona, personas, activePersonaId) {
         if (autoEditDefaultPersona) {
-            if (personas.isNotEmpty()) {
-                editingPersona = personas.firstOrNull()
+            // Open the editor for the *active* persona (the "default"), not
+            // just whichever persona happens to be first in the list.
+            val defaultPersona = personas.firstOrNull { it.id == activePersonaId }
+                ?: personas.firstOrNull()
+            if (defaultPersona != null) {
+                editingPersona = defaultPersona
             }
             // Always consume the trigger, even when there is no persona yet, so
             // it cannot pop the dialog later when the first persona appears.
@@ -328,7 +332,7 @@ fun PersonaCard(
                 modifier = Modifier.align(Alignment.TopEnd),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onEdit, modifier = Modifier.size(28.dp)) {
+                IconButton(onClick = onEdit, modifier = Modifier.size(40.dp)) {
                     Icon(
                         Icons.Default.Edit,
                         null,
@@ -336,7 +340,7 @@ fun PersonaCard(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                     )
                 }
-                IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
+                IconButton(onClick = onDelete, modifier = Modifier.size(40.dp)) {
                     Icon(
                         Icons.Default.Delete,
                         null,

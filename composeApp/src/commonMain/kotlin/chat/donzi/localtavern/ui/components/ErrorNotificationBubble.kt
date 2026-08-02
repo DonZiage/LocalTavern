@@ -76,10 +76,13 @@ fun ErrorNotificationBubble(
                             }
                         },
                         onHorizontalDrag = { change, dragAmount ->
+                            // Only accumulate while the pointer is actually
+                            // down; otherwise a stale drag can push the card
+                            // off-screen without the user touching it.
                             if (change.pressed) {
                                 change.consume()
+                                swipeOffsetX += dragAmount
                             }
-                            swipeOffsetX += dragAmount
                         }
                     )
                 }

@@ -464,7 +464,7 @@ fun ChatArea(
                                     messageToDelete = null
                                 },
                                 colors = ButtonDefaults.textButtonColors(
-                                    contentColor = Color(0xFF7B1FA2)
+                                    contentColor = MaterialTheme.colorScheme.primary
                                 )
                             ) {
                                 Text("Swipe")
@@ -476,7 +476,7 @@ fun ChatArea(
                                     messageToDelete = null
                                 },
                                 colors = ButtonDefaults.textButtonColors(
-                                    contentColor = Color(0xFF7B1FA2)
+                                    contentColor = MaterialTheme.colorScheme.primary
                                 )
                             ) {
                                 Text("Message")

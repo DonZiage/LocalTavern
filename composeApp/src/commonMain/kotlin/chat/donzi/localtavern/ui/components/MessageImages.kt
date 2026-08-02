@@ -81,8 +81,10 @@ fun MessageImages(
         return
     }
 
-    var galleryInitialIndex by remember { mutableStateOf(0) }
-    var showGallery by remember { mutableStateOf(false) }
+    // Key the gallery state on the image set so an edit/refresh that changes
+    // the message's images cannot leave a stale index or an open viewer.
+    var galleryInitialIndex by remember(images) { mutableStateOf(0) }
+    var showGallery by remember(images) { mutableStateOf(false) }
 
     Box(
         modifier = modifier

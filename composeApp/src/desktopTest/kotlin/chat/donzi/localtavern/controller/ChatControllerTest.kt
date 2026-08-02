@@ -396,6 +396,50 @@ data: [DONE]
     }
 
     @Test
+    fun deleteMessagesRaw_deletingTailRepointsCurrentToLastRemaining() = runTest {
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        val db = TestDb()
+        val sessionRepository = SessionRepository(db.database, testDispatcher)
+        val controller = ChatController(
+            sessionRepository,
+            ApiSettingsRepository(db.database, testDispatcher),
+            ChatClient(HttpClient(MockEngine { respond(
+                content = ByteReadChannel("data: [DONE]"),
+                status = HttpStatusCode.OK,
+                headers = headersOf(HttpHeaders.ContentType, "text/event-stream")
+            ) })),
+            CoroutineScope(testDispatcher + SupervisorJob()),
+            payloadDispatcher = testDispatcher
+        )
+
+        val sessionId = sessionRepository.createNewSession(CHARACTER.id, PERSONA.id)
+        val greetingId = sessionRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
+        sessionRepository.updateSessionCurrentMessage(sessionId, greetingId)
+        val u1 = sessionRepository.insertMessage(sessionId, "user", "Hi", greetingId)
+        val a1 = sessionRepository.insertMessage(sessionId, "assistant", "Reply A", u1)
+        val u2 = sessionRepository.insertMessage(sessionId, "user", "Follow-up", a1)
+        val a2 = sessionRepository.insertMessage(sessionId, "assistant", "Reply B", u2)
+
+        controller.refresh(sessionId)
+        testScheduler.advanceUntilIdle()
+
+        // Delete only the tail; the session must still point at the last
+        // surviving message so the next reply is not parented to a deleted id.
+        controller.deleteMessagesRaw(sessionId, listOf(u2, a2))
+        testScheduler.advanceUntilIdle()
+
+        val timeline = sessionRepository.getMessagesForSession(sessionId)
+        assertEquals(listOf(greetingId, u1, a1), timeline.map { it.id })
+        assertEquals(a1, sessionRepository.getSessionById(sessionId)?.currentMessageId)
+
+        // The next user message must attach to the surviving tail.
+        val u3 = sessionRepository.insertMessage(sessionId, "user", "Again", a1)
+        val session = sessionRepository.getSessionById(sessionId)
+        assertEquals(u3, session?.currentMessageId)
+        assertEquals(4, sessionRepository.getMessagesForSession(sessionId).size)
+    }
+
+    @Test
     fun generationCompletion_doesNotOverwriteViewOfAnotherSession() = runTest {
         val (controller, db) = newController("""{"choices":[{"delta":{"content":"Done"}}]}""", "[DONE]")
         val seed = seedSession(db)

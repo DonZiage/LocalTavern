@@ -124,6 +124,7 @@ sqldelight {
     databases {
         create("LocalTavernDB") {
             packageName.set("chat.donzi.localtavern.data.database")
+            version = 2
         }
     }
 }

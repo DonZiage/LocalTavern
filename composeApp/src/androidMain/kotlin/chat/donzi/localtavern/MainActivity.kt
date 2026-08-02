@@ -12,6 +12,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         AndroidAppContext.setContext(applicationContext)
+        AndroidAppContext.setActivity(this)
 
         val driverFactory = DriverFactory(this)
 

@@ -44,7 +44,7 @@ class SessionRepository(
         queries.selectSiblings(sessionId, parentId).executeAsList().map { it.toDomain() }
     }
 
-    suspend fun updateSessionCurrentMessage(sessionId: String, messageId: String) = withContext(ioDispatcher) {
+    suspend fun updateSessionCurrentMessage(sessionId: String, messageId: String?) = withContext(ioDispatcher) {
         val now = currentTimeMillis()
         queries.updateSessionCurrentMessage(currentMessageId = messageId, lastTimestamp = now, updatedAt = now, id = sessionId)
     }

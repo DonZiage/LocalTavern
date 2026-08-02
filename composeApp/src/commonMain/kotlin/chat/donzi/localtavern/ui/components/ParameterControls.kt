@@ -3,8 +3,10 @@ package chat.donzi.localtavern.ui.components
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontWeight
@@ -71,18 +73,42 @@ fun ParameterControls(
             }
         )
 
-        ParameterSlider(
-            label = "Response Limit",
-            value = if (workingConnection.responseLimit == 0L) 4160f else workingConnection.responseLimit.toFloat().coerceAtLeast(64f),
-            range = 64f..4160f,
-            steps = 63,
-            format = { if (it > 4096f) "Unlimited" else it.toInt().toString() },
-            onValueChange = {
-                val newValue = if (it > 4096f) 0L else it.toLong()
-                workingConnection = workingConnection.copy(responseLimit = newValue)
-                persistParams()
+        Column(modifier = Modifier.fillMaxWidth()) {
+            ParameterSlider(
+                label = "Response Limit",
+                // 0 means "Unlimited"; keep the slider on the real 64..4096
+                // range so every position maps to a real value (no dead zone).
+                value = workingConnection.responseLimit.coerceIn(64L, 4096L).toFloat(),
+                range = 64f..4096f,
+                steps = 63,
+                format = { it.toInt().toString() },
+                enabled = workingConnection.responseLimit != 0L,
+                onValueChange = {
+                    workingConnection = workingConnection.copy(responseLimit = it.toLong())
+                    persistParams()
+                }
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    "Unlimited response length",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Switch(
+                    checked = workingConnection.responseLimit == 0L,
+                    onCheckedChange = { unlimited ->
+                        workingConnection = workingConnection.copy(
+                            responseLimit = if (unlimited) 0L else 1024L
+                        )
+                        persistParams()
+                    }
+                )
             }
-        )
+        }
 
         Spacer(modifier = Modifier.height(8.dp))
         HorizontalDivider(modifier = Modifier.alpha(0.3f))

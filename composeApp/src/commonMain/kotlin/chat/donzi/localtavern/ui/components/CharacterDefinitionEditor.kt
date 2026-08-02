@@ -18,7 +18,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
@@ -65,8 +64,6 @@ fun CharacterDefinitionEditor(
 
     var showImageMenu by remember { mutableStateOf(false) }
     var showFullImage by remember { mutableStateOf(false) }
-
-    val deleteRed = Color(0xFFD32F2F)
 
     fun persist() = onSave(
         name, description, personality, scenario, firstMes,
@@ -154,7 +151,10 @@ fun CharacterDefinitionEditor(
                 Button(
                     onClick = { confirmDelete = true },
                     modifier = Modifier.height(36.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = deleteRed, contentColor = Color.White),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
                 ) {
                     Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -248,7 +248,7 @@ fun CharacterDefinitionEditor(
             onDismissRequest = { confirmDelete = false },
             title = { Text("Delete Character?") },
             text = { Text("\"${character.name}\" will be permanently removed.") },
-            confirmButton = { TextButton(onClick = { confirmDelete = false; onDelete() }) { Text("Delete", color = deleteRed) } },
+            confirmButton = { TextButton(onClick = { confirmDelete = false; onDelete() }) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
             dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } }
         )
     }

@@ -114,148 +114,170 @@ class ChatController(
                     var lastStateTime = 0L
                     var lastPersistTime = 0L
 
-                    @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
-                    val messagesPayload = withContext(payloadDispatcher) {
-                        val dbMessages = sessionRepository.getMessagesForSession(sessionId)
+                    // The placeholder is inserted before the payload is built
+                    // and the stream is opened. Any failure in that phase must
+                    // remove the placeholder, or a phantom "..." message would
+                    // remain in the session with no error surfaced.
+                    try {
+                        @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
+                        val messagesPayload = withContext(payloadDispatcher) {
+                            val dbMessages = sessionRepository.getMessagesForSession(sessionId)
 
-                        val chatHistory = dbMessages
-                            .filter { it.id != aiMessageId }
-                            .map { msg ->
-                                val attachmentsList = msg.images.map { imgBytes ->
-                                    ImageAttachment(
-                                        base64 = kotlin.io.encoding.Base64.encode(imgBytes),
-                                        mimeType = detectMimeType(imgBytes)
+                            val chatHistory = dbMessages
+                                .filter { it.id != aiMessageId }
+                                .map { msg ->
+                                    val attachmentsList = msg.images.map { imgBytes ->
+                                        ImageAttachment(
+                                            base64 = kotlin.io.encoding.Base64.encode(imgBytes),
+                                            mimeType = detectMimeType(imgBytes)
+                                        )
+                                    }
+                                    ChatMessage(
+                                        role = msg.role,
+                                        content = msg.content,
+                                        images = attachmentsList
                                     )
                                 }
-                                ChatMessage(
-                                    role = msg.role,
-                                    content = msg.content,
-                                    images = attachmentsList
-                                )
-                            }
 
-                        val blocks = apiSettingsRepository.getAllPromptBlocks()
-                        ContextManager.buildPayload(
-                            blocks = blocks, character = character, persona = persona, chatHistory = chatHistory,
-                            contextLimit = activeConnection.contextLimit, responseLimit = activeConnection.responseLimit
+                            val blocks = apiSettingsRepository.getAllPromptBlocks()
+                            ContextManager.buildPayload(
+                                blocks = blocks, character = character, persona = persona, chatHistory = chatHistory,
+                                contextLimit = activeConnection.contextLimit, responseLimit = activeConnection.responseLimit
+                            )
+                        }
+
+                        val timeoutLimitSeconds = activeConnection.timeoutLimit
+                        val tokenChannel = Channel<String>(Channel.UNLIMITED)
+
+                        val generationParams = GenerationParams(
+                            temperature = activeConnection.temperature,
+                            topP = activeConnection.topP,
+                            topK = activeConnection.topK,
+                            presencePenalty = activeConnection.presencePenalty,
+                            frequencyPenalty = activeConnection.frequencyPenalty,
+                            maxTokens = activeConnection.responseLimit
                         )
-                    }
 
-                    val timeoutLimitSeconds = activeConnection.timeoutLimit
-                    val tokenChannel = Channel<String>(Channel.UNLIMITED)
+                        val streamJob = scope.launch {
+                            try {
+                                chatClient.streamChatRequest(
+                                    baseUrl = activeConnection.baseUrl ?: "", apiKey = activeConnection.apiKey ?: "",
+                                    model = activeConnection.model ?: "", messages = messagesPayload,
+                                    isChatCompletion = activeConnection.isChatCompletion,
+                                    params = generationParams, provider = activeConnection.provider,
+                                    timeoutSeconds = activeConnection.timeoutLimit
+                                ).collect { token -> tokenChannel.send(token) }
+                            } catch (e: Exception) {
+                                tokenChannel.close(e)
+                                return@launch
+                            }
+                            tokenChannel.close()
+                        }
 
-                    val generationParams = GenerationParams(
-                        temperature = activeConnection.temperature,
-                        topP = activeConnection.topP,
-                        topK = activeConnection.topK,
-                        presencePenalty = activeConnection.presencePenalty,
-                        frequencyPenalty = activeConnection.frequencyPenalty,
-                        maxTokens = activeConnection.responseLimit
-                    )
+                        val responseDeadline = if (timeoutLimitSeconds == 0L) {
+                            null
+                        } else {
+                            Clock.System.now().plus(timeoutLimitSeconds.seconds)
+                        }
 
-                    val streamJob = scope.launch {
                         try {
-                            chatClient.streamChatRequest(
-                                baseUrl = activeConnection.baseUrl ?: "", apiKey = activeConnection.apiKey ?: "",
-                                model = activeConnection.model ?: "", messages = messagesPayload,
-                                isChatCompletion = activeConnection.isChatCompletion,
-                                params = generationParams, provider = activeConnection.provider,
-                                timeoutSeconds = activeConnection.timeoutLimit
-                            ).collect { token -> tokenChannel.send(token) }
-                        } catch (e: Exception) {
-                            tokenChannel.close(e)
-                            return@launch
-                        }
-                        tokenChannel.close()
-                    }
-
-                    val responseDeadline = if (timeoutLimitSeconds == 0L) {
-                        null
-                    } else {
-                        Clock.System.now().plus(timeoutLimitSeconds.seconds)
-                    }
-
-                    try {
-                        while (true) {
-                            val channelResult = when {
-                                responseDeadline == null -> tokenChannel.receiveCatching()
-                                else -> {
-                                    val remaining = responseDeadline - Clock.System.now()
-                                    if (remaining <= Duration.ZERO) {
-                                        withTimeout(Duration.ZERO) { tokenChannel.receiveCatching() }
-                                    } else {
-                                        withTimeout(remaining) { tokenChannel.receiveCatching() }
+                            while (true) {
+                                val channelResult = when {
+                                    responseDeadline == null -> tokenChannel.receiveCatching()
+                                    else -> {
+                                        val remaining = responseDeadline - Clock.System.now()
+                                        if (remaining <= Duration.ZERO) {
+                                            withTimeout(Duration.ZERO) { tokenChannel.receiveCatching() }
+                                        } else {
+                                            withTimeout(remaining) { tokenChannel.receiveCatching() }
+                                        }
                                     }
                                 }
-                            }
 
-                            if (channelResult.isClosed) {
-                                val cause = channelResult.exceptionOrNull()
-                                if (cause != null) {
-                                    throw cause
+                                if (channelResult.isClosed) {
+                                    val cause = channelResult.exceptionOrNull()
+                                    if (cause != null) {
+                                        throw cause
+                                    }
+                                    break
                                 }
-                                break
-                            }
 
-                            val token = channelResult.getOrNull() ?: break
+                                val token = channelResult.getOrNull() ?: break
 
-                            responseBuilder.append(token)
+                                responseBuilder.append(token)
 
-                            val now = Clock.System.now().toEpochMilliseconds()
-                            // Throttle UI and DB updates so fast token streams do
-                            // not rebuild the message list (and re-encode the full
-                            // response string) on every single token.
-                            if (now - lastStateTime >= 50) {
-                                lastStateTime = now
-                                val snapshot = responseBuilder.toString()
-                                _state.update { st ->
-                                    if (viewedSessionId != sessionId) {
-                                        st
-                                    } else {
-                                        st.copy(messages = st.messages.map { msg -> if (msg.id == aiMessageId) msg.copy(content = snapshot) else msg })
+                                val now = Clock.System.now().toEpochMilliseconds()
+                                // Throttle UI and DB updates so fast token streams do
+                                // not rebuild the message list (and re-encode the full
+                                // response string) on every single token.
+                                if (now - lastStateTime >= 50) {
+                                    lastStateTime = now
+                                    val snapshot = responseBuilder.toString()
+                                    _state.update { st ->
+                                        if (viewedSessionId != sessionId) {
+                                            st
+                                        } else {
+                                            st.copy(messages = st.messages.map { msg -> if (msg.id == aiMessageId) msg.copy(content = snapshot) else msg })
+                                        }
                                     }
                                 }
+                                if (now - lastPersistTime >= 250) {
+                                    lastPersistTime = now
+                                    sessionRepository.updateMessageContent(aiMessageId, responseBuilder.toString())
+                                }
                             }
-                            if (now - lastPersistTime >= 250) {
-                                lastPersistTime = now
-                                sessionRepository.updateMessageContent(aiMessageId, responseBuilder.toString())
+                            val fullResponse = responseBuilder.toString()
+                            if (fullResponse.isBlank()) {
+                                sessionRepository.deleteMessage(aiMessageId)
+                            } else {
+                                sessionRepository.updateMessageContent(aiMessageId, fullResponse)
                             }
-                        }
-                        val fullResponse = responseBuilder.toString()
-                        if (fullResponse.isBlank()) {
-                            sessionRepository.deleteMessage(aiMessageId)
-                        } else {
-                            sessionRepository.updateMessageContent(aiMessageId, fullResponse)
-                        }
-                        refreshIfViewed(sessionId)
-                    } catch (_: TimeoutCancellationException) {
-                        streamJob.cancel()
-                        val partialResponse = responseBuilder.toString()
-                        if (partialResponse.isBlank()) {
-                            sessionRepository.deleteMessage(aiMessageId)
-                        } else {
-                            sessionRepository.updateMessageContent(aiMessageId, partialResponse)
-                        }
-                        _state.update { it.copy(errorMessage = "Response timeout exceeded.", errorIsWarning = true) }
-                        refreshIfViewed(sessionId)
-                    } catch (_: CancellationException) {
-                        streamJob.cancel()
-                        withContext(NonCancellable) {
+                            refreshIfViewed(sessionId)
+                        } catch (_: TimeoutCancellationException) {
+                            streamJob.cancel()
                             val partialResponse = responseBuilder.toString()
                             if (partialResponse.isBlank()) {
                                 sessionRepository.deleteMessage(aiMessageId)
                             } else {
                                 sessionRepository.updateMessageContent(aiMessageId, partialResponse)
                             }
+                            _state.update { it.copy(errorMessage = "Response timeout exceeded.", errorIsWarning = true) }
+                            refreshIfViewed(sessionId)
+                        } catch (_: CancellationException) {
+                            streamJob.cancel()
+                            withContext(NonCancellable) {
+                                val partialResponse = responseBuilder.toString()
+                                if (partialResponse.isBlank()) {
+                                    sessionRepository.deleteMessage(aiMessageId)
+                                } else {
+                                    sessionRepository.updateMessageContent(aiMessageId, partialResponse)
+                                }
+                            }
+                            refreshIfViewed(sessionId)
+                        } catch (e: Exception) {
+                            streamJob.cancel()
+                            val partialResponse = responseBuilder.toString()
+                            if (partialResponse.isBlank()) {
+                                sessionRepository.deleteMessage(aiMessageId)
+                            } else {
+                                sessionRepository.updateMessageContent(aiMessageId, partialResponse)
+                            }
+                            _state.update { it.copy(errorMessage = e.message ?: "Unknown error occurred", errorIsWarning = false) }
+                            refreshIfViewed(sessionId)
+                        }
+                    } catch (e: CancellationException) {
+                        // Generation was stopped before any token was handled;
+                        // drop the placeholder so it cannot linger in the session.
+                        withContext(NonCancellable) {
+                            sessionRepository.deleteMessage(aiMessageId)
                         }
                         refreshIfViewed(sessionId)
+                        throw e
                     } catch (e: Exception) {
-                        streamJob.cancel()
-                        val partialResponse = responseBuilder.toString()
-                        if (partialResponse.isBlank()) {
+                        // Payload build or stream setup failed before any token
+                        // was handled; remove the placeholder and surface the error.
+                        withContext(NonCancellable) {
                             sessionRepository.deleteMessage(aiMessageId)
-                        } else {
-                            sessionRepository.updateMessageContent(aiMessageId, partialResponse)
                         }
                         _state.update { it.copy(errorMessage = e.message ?: "Unknown error occurred", errorIsWarning = false) }
                         refreshIfViewed(sessionId)
@@ -339,6 +361,16 @@ class ChatController(
     fun deleteMessagesRaw(sessionId: String, ids: List<String>) {
         scope.launch {
             ids.forEach { sessionRepository.deleteMessage(it) }
+            // The bulk delete has no per-message sibling/parent fix-up; repoint
+            // a dangling currentMessageId at the last surviving message (or
+            // clear it) so the next user message is not parented to a deleted
+            // node.
+            val session = sessionRepository.getSessionById(sessionId)
+            val currentId = session?.currentMessageId
+            if (currentId != null && currentId in ids) {
+                val remaining = sessionRepository.getMessagesForSession(sessionId)
+                sessionRepository.updateSessionCurrentMessage(sessionId, remaining.lastOrNull()?.id)
+            }
             refresh(sessionId)
         }
     }

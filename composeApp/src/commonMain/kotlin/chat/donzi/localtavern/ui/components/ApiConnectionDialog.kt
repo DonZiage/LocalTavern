@@ -37,10 +37,10 @@ fun ApiConnectionDialog(
 
     val maskedApiKey = remember(initialConnection?.apiKey) {
         val key = initialConnection?.apiKey ?: ""
-        if (key.length >= 6) {
-            "${key.take(2)}-••••${key.takeLast(4)}"
-        } else if (key.isNotEmpty()) {
-            "••••"
+        // Reveal only the last 4 characters; the first characters of a stored
+        // secret should never be displayed.
+        if (key.isNotEmpty()) {
+            "••••${key.takeLast(4)}"
         } else {
             ""
         }

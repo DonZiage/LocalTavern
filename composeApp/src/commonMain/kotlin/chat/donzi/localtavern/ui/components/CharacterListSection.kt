@@ -144,7 +144,7 @@ fun CharacterListSection(
                                 },
                                 trailingIcon = {
                                     if (query.isNotEmpty()) {
-                                        IconButton(onClick = { query = "" }, modifier = Modifier.size(24.dp)) {
+                                        IconButton(onClick = { query = "" }, modifier = Modifier.size(40.dp)) {
                                             Icon(Icons.Default.Close, null, modifier = Modifier.size(16.dp))
                                         }
                                     }

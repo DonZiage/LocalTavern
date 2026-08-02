@@ -13,7 +13,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -76,8 +75,9 @@ fun ApiConnectionItem(
                 StatusIndicator(
                     status,
                     modifier = Modifier
-                        .size(16.dp)
+                        .size(32.dp)
                         .clickable { retryTrigger++ }
+                        .padding(8.dp)
                         .clip(CircleShape),
                     size = 16.dp
                 )
@@ -128,9 +128,9 @@ fun ApiConnectionItem(
                 modifier = Modifier.padding(start = 24.dp)
             )
 
-            val blueColor = Color(0xFF2196F3)
             val primaryColor = MaterialTheme.colorScheme.primary
             val primaryContainerColor = MaterialTheme.colorScheme.primaryContainer
+            val uncheckedColor = MaterialTheme.colorScheme.outline
 
             Row(
                 modifier = Modifier.fillMaxWidth().weight(1f),
@@ -153,9 +153,9 @@ fun ApiConnectionItem(
                             checkedThumbColor = primaryColor,
                             checkedTrackColor = primaryContainerColor,
                             checkedBorderColor = primaryColor,
-                            uncheckedThumbColor = blueColor,
-                            uncheckedTrackColor = blueColor.copy(alpha = 0.2f),
-                            uncheckedBorderColor = blueColor,
+                            uncheckedThumbColor = uncheckedColor,
+                            uncheckedTrackColor = uncheckedColor.copy(alpha = 0.2f),
+                            uncheckedBorderColor = uncheckedColor,
                         )
                     )
                     Text("Chat", style = MaterialTheme.typography.labelMedium)

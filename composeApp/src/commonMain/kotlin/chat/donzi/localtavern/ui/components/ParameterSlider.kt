@@ -38,6 +38,7 @@ fun ParameterSlider(
     range: ClosedFloatingPointRange<Float>,
     steps: Int = 0,
     format: (Float) -> String = { ((it * 100).roundToInt() / 100.0).toString() },
+    enabled: Boolean = true,
     onValueChange: (Float) -> Unit
 ) {
     var sliderValue by remember(value) { mutableFloatStateOf(value) }
@@ -52,7 +53,7 @@ fun ParameterSlider(
         ) {
             Text(label, style = MaterialTheme.typography.labelMedium)
             
-            if (isEditing) {
+            if (isEditing && enabled) {
                 BasicTextField(
                     value = textValue,
                     onValueChange = { textValue = it },
@@ -88,10 +89,10 @@ fun ParameterSlider(
                 )
             } else {
                 Text(
-                    format(sliderValue), 
-                    style = MaterialTheme.typography.labelMedium, 
+                    format(sliderValue),
+                    style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.clickable { isEditing = true }
+                    modifier = Modifier.clickable(enabled = enabled) { isEditing = true }
                 )
             }
         }
@@ -104,6 +105,7 @@ fun ParameterSlider(
             onValueChangeFinished = { onValueChange(sliderValue) },
             valueRange = range,
             steps = steps,
+            enabled = enabled,
             thumb = {
                 SliderDefaults.Thumb(
                     interactionSource = remember { MutableInteractionSource() },

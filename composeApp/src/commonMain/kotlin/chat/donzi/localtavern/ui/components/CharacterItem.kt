@@ -61,9 +61,12 @@ fun CharacterItem(
         ) {
             Box(modifier = Modifier.size(50.dp)) {
                 if (avatarData != null) {
+                    // Hash once per avatar instance; contentHashCode() is an
+                    // O(n) scan that should not run on every recomposition.
+                    val avatarCacheKey = remember(id, avatarData) { avatarData.contentHashCode() }
                     val imageRequest = ImageRequest.Builder(LocalPlatformContext.current)
                         .data(avatarData)
-                        .memoryCacheKey("char_item_${id}_${avatarData.contentHashCode()}")
+                        .memoryCacheKey("char_item_${id}_$avatarCacheKey")
                         .build()
 
                     AsyncImage(

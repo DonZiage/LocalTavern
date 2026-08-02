@@ -97,9 +97,18 @@ object CharacterManager {
             personality = character.personality,
             scenario = character.scenario,
             first_mes = character.firstMes ?: "",
-            mes_example = character.mesExample.joinToString("|||"),
-            system_prompt = "",
-            alternate_greetings = character.altGreetings
+            // SillyTavern v2 separates example dialogue with "<START>" (the
+            // legacy TavernAI "|||" separator is accepted on import).
+            mes_example = character.mesExample.joinToString("<START>"),
+            creator_notes = character.creatorNotes ?: "",
+            system_prompt = character.systemPrompt ?: "",
+            post_history_instructions = character.postHistoryInstructions ?: "",
+            alternate_greetings = character.altGreetings,
+            creator = character.creator ?: "",
+            character_version = character.characterVersion ?: "",
+            tags = character.tags,
+            extensions = character.extensions,
+            character_book = character.characterBook
         )
         return json.encodeToString(
             SillyTavernWrapper(

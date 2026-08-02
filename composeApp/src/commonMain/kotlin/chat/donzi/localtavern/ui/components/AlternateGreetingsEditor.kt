@@ -23,7 +23,8 @@ fun Modifier.horizontalMouseWheelScroll(scrollState: ScrollState): Modifier = th
         while (true) {
             val event = awaitPointerEvent()
             if (event.type == PointerEventType.Scroll) {
-                val delta = event.changes.first().scrollDelta
+                val change = event.changes.firstOrNull() ?: continue
+                val delta = change.scrollDelta
                 val scrollAmount = (delta.y + delta.x) * 40f
 
                 if (scrollAmount != 0f) {

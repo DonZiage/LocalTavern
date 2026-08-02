@@ -79,6 +79,9 @@ fun SystemPromptSettings(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             blocks.forEachIndexed { index, block ->
+                // Key by id so the per-row animation/drag state follows the
+                // block after a drop reorders the list.
+                key(block.id) {
                 val isDragging = block.id == draggedBlockId
 
                 val targetTranslationY = when {
@@ -160,6 +163,7 @@ fun SystemPromptSettings(
                         onBlockMutate(block.copy(isEnabled = isEnabled))
                     }
                 )
+                }
             }
         }
     }

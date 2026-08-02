@@ -142,7 +142,7 @@ fun <T> CardCarousel(
                         itemToDelete = null
                     }
                 ) {
-                    Text("Delete", color = Color(0xFFD32F2F))
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
@@ -374,7 +374,9 @@ fun <T> CardCarousel(
                     }
                 }
 
-                item(key = "carousel_add_card") {
+                // Namespace the key with the title so it can never collide with
+                // a real item key (which could crash the LazyRow on duplicates).
+                item(key = "carousel_add_card:$title") {
                     OutlinedCard(
                         onClick = {
                             if (!isCentering) {
@@ -383,8 +385,7 @@ fun <T> CardCarousel(
                         },
                         modifier = Modifier
                             .width(itemWidthDp)
-                            .height(cardHeight)
-                            .graphicsLayer { },
+                            .height(cardHeight),
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Column(

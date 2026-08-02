@@ -25,7 +25,10 @@ actual fun rememberImagePickerLauncher(
     // the latest lambda (the callers may close over changing state).
     val currentOnImagesPicked by rememberUpdatedState(onImagesPicked)
     val launcher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickMultipleVisualMedia()
+        // Cap the selection up front so the picker never yields more images
+        // than the sanitizer keeps; otherwise every picked photo is read at
+        // full resolution into memory before the truncation happens.
+        contract = ActivityResultContracts.PickMultipleVisualMedia(ImageSanitizer.MAX_PICKED_IMAGES)
     ) { uris ->
         scope.launch {
             val byteArrays = withContext(Dispatchers.IO) {

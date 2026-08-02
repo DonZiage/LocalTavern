@@ -34,10 +34,11 @@ fun ProviderPicker(
         onExpandedChange = { mainProviderExpanded = it }
     ) {
         OutlinedTextField(
-            value = selectedProvider.ifEmpty { "Select Provider" },
+            value = selectedProvider,
             onValueChange = {},
             readOnly = true,
-            label = { Text("1. Select Provider") },
+            placeholder = { Text("Select Provider") },
+            label = { Text("1. Provider") },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = mainProviderExpanded) },
             modifier = modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable).fillMaxWidth(),
             singleLine = true

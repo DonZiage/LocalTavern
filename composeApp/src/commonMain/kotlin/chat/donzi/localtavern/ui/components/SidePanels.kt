@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -65,6 +66,12 @@ fun SidePanels(
     var personasExpanded by remember { mutableStateOf(true) }
     var charactersExpanded by remember { mutableStateOf(true) }
 
+    // Hoisted above the AnimatedVisibility so the scroll position survives
+    // drawer close/reopen (a rememberScrollState() inside the drawer content
+    // is discarded every time the content leaves composition).
+    val settingsScrollState = rememberScrollState()
+    val charactersScrollState = rememberScrollState()
+
     Box(modifier = Modifier.fillMaxSize().zIndex(100f)) {
         AnimatedVisibility(
             visible = activeDrawer != ActiveDrawer.None,
@@ -103,7 +110,8 @@ fun SidePanels(
                 onToggleDarkMode = onToggleDarkMode,
                 onApiChanged = onApiChanged,
                 apiSectionExpanded = settingsApiExpanded,
-                onApiSectionExpandedChange = { settingsApiExpanded = it }
+                onApiSectionExpandedChange = { settingsApiExpanded = it },
+                scrollState = settingsScrollState
             )
         }
 
@@ -140,7 +148,8 @@ fun SidePanels(
                 personasExpanded = personasExpanded,
                 onPersonasExpandedChange = { personasExpanded = it },
                 charactersExpanded = charactersExpanded,
-                onCharactersExpandedChange = { charactersExpanded = it }
+                onCharactersExpandedChange = { charactersExpanded = it },
+                scrollState = charactersScrollState
             )
         }
     }
@@ -154,7 +163,8 @@ fun SettingsPanelContent(
     onToggleDarkMode: (Boolean, Offset) -> Unit,
     onApiChanged: () -> Unit,
     apiSectionExpanded: Boolean,
-    onApiSectionExpandedChange: (Boolean) -> Unit
+    onApiSectionExpandedChange: (Boolean) -> Unit,
+    scrollState: ScrollState = rememberScrollState()
 ) {
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -209,7 +219,7 @@ fun SettingsPanelContent(
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .verticalScroll(rememberScrollState())
+                            .verticalScroll(scrollState)
                     ) {
                         ApiConnectionSettings(
                             apiSettingsRepository = apiSettingsRepository,
@@ -245,7 +255,8 @@ fun CharactersPanelContent(
     personasExpanded: Boolean,
     onPersonasExpandedChange: (Boolean) -> Unit,
     charactersExpanded: Boolean,
-    onCharactersExpandedChange: (Boolean) -> Unit
+    onCharactersExpandedChange: (Boolean) -> Unit,
+    scrollState: ScrollState = rememberScrollState()
 ) {
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -270,7 +281,7 @@ fun CharactersPanelContent(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(scrollState)
             ) {
                 CollapsibleSettingsSection(
                     title = "Personas",

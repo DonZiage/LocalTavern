@@ -1,10 +1,15 @@
 package chat.donzi.localtavern
 
+import android.Manifest
+import android.app.Activity
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Environment
 import java.io.File
 import android.content.Intent
 import android.content.Context
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import android.media.MediaScannerConnection
 import androidx.core.net.toUri
@@ -14,6 +19,7 @@ import java.io.ByteArrayOutputStream
 
 object AndroidAppContext {
     private var applicationContext: Context? = null
+    private var currentActivity: Activity? = null
 
     fun setContext(context: Context) {
         if (applicationContext == null) {
@@ -21,7 +27,12 @@ object AndroidAppContext {
         }
     }
 
+    fun setActivity(activity: Activity) {
+        currentActivity = activity
+    }
+
     fun getContext(): Context? = applicationContext
+    fun getActivity(): Activity? = currentActivity
 }
 
 actual fun saveFile(fileName: String, bytes: ByteArray): String? {
@@ -44,6 +55,23 @@ actual fun saveFile(fileName: String, bytes: ByteArray): String? {
             outputStream.use { output -> output.write(bytes) }
             uri.toString()
         } else {
+            // Pre-Q the public Downloads directory needs the runtime permission;
+            // the manifest declaration alone is not enough. Request it here —
+            // the user retries the export once granted.
+            val permissionGranted = ContextCompat.checkSelfPermission(
+                context, Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!permissionGranted) {
+                AndroidAppContext.getActivity()?.let { activity ->
+                    ActivityCompat.requestPermissions(
+                        activity,
+                        arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                        REQUEST_CODE_WRITE_EXTERNAL_STORAGE
+                    )
+                }
+                return null
+            }
+
             val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             val exportDir = File(downloads, "LocalTavern/ExportedCharacters")
             if (!exportDir.exists()) exportDir.mkdirs()
@@ -59,6 +87,8 @@ actual fun saveFile(fileName: String, bytes: ByteArray): String? {
         null
     }
 }
+
+private const val REQUEST_CODE_WRITE_EXTERNAL_STORAGE = 101
 
 actual fun openDirectory(path: String) {
     val context = AndroidAppContext.getContext() ?: return
@@ -118,10 +148,23 @@ actual fun openDirectory(path: String) {
 
 actual fun convertToPng(bytes: ByteArray): ByteArray {
     return try {
-        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return bytes
-        val outputStream = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
-        outputStream.toByteArray()
+        // Decode bounds first and sample down so a huge photo is never
+        // materialized at full resolution just to be re-encoded as PNG.
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sampleSize = 1
+        while (bounds.outWidth / sampleSize > 2048 || bounds.outHeight / sampleSize > 2048) {
+            sampleSize *= 2
+        }
+        val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOptions) ?: return bytes
+        try {
+            val outputStream = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
+            outputStream.toByteArray()
+        } finally {
+            bitmap.recycle()
+        }
     } catch (e: Exception) {
         e.printStackTrace()
         bytes
