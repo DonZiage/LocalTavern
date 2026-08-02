@@ -12,8 +12,9 @@ import kotlinx.coroutines.withContext
 
 class SessionRepository(
     database: LocalTavernDB,
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
-) : BaseRepository(database) {
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    clock: LogicalClock = LogicalClock(database)
+) : BaseRepository(database, clock) {
 
     suspend fun getSessionById(id: String): Session? = withContext(ioDispatcher) {
         queries.selectSessionById(id).executeAsOneOrNull()?.toDomain()
@@ -21,6 +22,7 @@ class SessionRepository(
 
     suspend fun getOrCreateSession(characterId: String, personaId: String): String = withContext(ioDispatcher) {
         val now = currentTimeMillis()
+        val ts = nextTimestamp()
         // The lookup and the insert must be one atomic step: two concurrent
         // calls (e.g. a double-tap on send) must not both see "no session"
         // and each create a duplicate row.
@@ -33,7 +35,7 @@ class SessionRepository(
                 queries.insertChatSession(
                     id = newId, characterId = characterId, personaId = personaId, title = null,
                     lastTimestamp = now, currentMessageId = null, parentSessionId = null,
-                    updatedAt = now, isDeleted = 0L
+                    updatedAt = ts, isDeleted = 0L
                 )
                 newId
             }
@@ -54,11 +56,13 @@ class SessionRepository(
 
     suspend fun updateSessionCurrentMessage(sessionId: String, messageId: String?) = withContext(ioDispatcher) {
         val now = currentTimeMillis()
-        queries.updateSessionCurrentMessage(currentMessageId = messageId, lastTimestamp = now, updatedAt = now, id = sessionId)
+        val ts = nextTimestamp()
+        queries.updateSessionCurrentMessage(currentMessageId = messageId, lastTimestamp = now, updatedAt = ts, id = sessionId)
     }
 
     suspend fun selectVariation(sessionId: String, messageId: String, parentId: String?) = withContext(ioDispatcher) {
         val now = currentTimeMillis()
+        val ts = nextTimestamp()
         database.transaction {
             val allMessages = queries.selectAllMessagesForSession(sessionId).executeAsList()
             val ancestorIds = buildSet {
@@ -68,25 +72,26 @@ class SessionRepository(
                 }
             }
             allMessages.filter { it.id !in ancestorIds }.forEach { msg ->
-                queries.deactivateMessage(updatedAt = now, sessionId = sessionId, id = msg.id)
+                queries.deactivateMessage(updatedAt = ts, sessionId = sessionId, id = msg.id)
             }
-            queries.activateMessage(updatedAt = now, id = messageId)
-            queries.updateSessionCurrentMessage(currentMessageId = messageId, lastTimestamp = now, updatedAt = now, id = sessionId)
+            queries.activateMessage(updatedAt = ts, id = messageId)
+            queries.updateSessionCurrentMessage(currentMessageId = messageId, lastTimestamp = now, updatedAt = ts, id = sessionId)
         }
     }
 
     suspend fun insertMessage(sessionId: String, role: String, content: String, parentId: String?, imageDataList: List<ByteArray>? = null): String = withContext(ioDispatcher) {
         val now = currentTimeMillis()
+        val ts = nextTimestamp()
         database.transactionWithResult {
             val newId = generateUuid()
             queries.insertMessageWithParent(
                 id = newId, sessionId = sessionId, role = role, content = content,
                 timestamp = now, parentId = parentId, isActivePath = 1L,
-                updatedAt = now, isDeleted = 0L, imageData = serializeImageList(imageDataList),
+                updatedAt = ts, isDeleted = 0L, imageData = serializeImageList(imageDataList),
                 reasoningText = null, costEstimate = null
             )
-            queries.deactivateSiblings(updatedAt = now, sessionId = sessionId, parentId = parentId, id = newId)
-            queries.updateSessionCurrentMessage(currentMessageId = newId, lastTimestamp = now, updatedAt = now, id = sessionId)
+            queries.deactivateSiblings(updatedAt = ts, sessionId = sessionId, parentId = parentId, id = newId)
+            queries.updateSessionCurrentMessage(currentMessageId = newId, lastTimestamp = now, updatedAt = ts, id = sessionId)
             newId
         }
     }
@@ -94,10 +99,11 @@ class SessionRepository(
     suspend fun insertMessageRaw(sessionId: String, role: String, content: String, parentId: String?, isActivePath: Boolean, imageDataList: List<ByteArray>? = null): String = withContext(ioDispatcher) {
         val newId = generateUuid()
         val now = currentTimeMillis()
+        val ts = nextTimestamp()
         queries.insertMessageWithParent(
             id = newId, sessionId = sessionId, role = role, content = content,
             timestamp = now, parentId = parentId, isActivePath = if (isActivePath) 1L else 0L,
-            updatedAt = now, isDeleted = 0L, imageData = serializeImageList(imageDataList),
+            updatedAt = ts, isDeleted = 0L, imageData = serializeImageList(imageDataList),
             reasoningText = null, costEstimate = null
         )
         newId
@@ -114,55 +120,56 @@ class SessionRepository(
             allGreetings.addAll(character.altGreetings)
 
             val now = currentTimeMillis()
+            val ts = nextTimestamp()
             var primaryMessageId: String? = null
             allGreetings.forEachIndexed { index, greeting ->
                 val isActive = index == 0
                 // Monotonic timestamps keep the greeting swipe order stable
                 // (all greetings inserted in the same millisecond otherwise tie).
-                val msgId = insertGreetingMessageRaw(sessionId, "assistant", greeting, null, isActive, now + index)
+                val msgId = insertGreetingMessageRaw(sessionId, "assistant", greeting, null, isActive, now + index, ts)
                 if (isActive) primaryMessageId = msgId
             }
             primaryMessageId?.let {
                 val now = currentTimeMillis()
-                queries.updateSessionCurrentMessage(currentMessageId = it, lastTimestamp = now, updatedAt = now, id = sessionId)
+                queries.updateSessionCurrentMessage(currentMessageId = it, lastTimestamp = now, updatedAt = ts, id = sessionId)
             }
         }
     }
 
-    private fun insertGreetingMessageRaw(sessionId: String, role: String, content: String, parentId: String?, isActivePath: Boolean, timestamp: Long): String {
+    private fun insertGreetingMessageRaw(sessionId: String, role: String, content: String, parentId: String?, isActivePath: Boolean, timestamp: Long, updatedAt: Long): String {
         val newId = generateUuid()
         queries.insertMessageWithParent(
             id = newId, sessionId = sessionId, role = role, content = content,
             timestamp = timestamp, parentId = parentId, isActivePath = if (isActivePath) 1L else 0L,
-            updatedAt = timestamp, isDeleted = 0L, imageData = null,
+            updatedAt = updatedAt, isDeleted = 0L, imageData = null,
             reasoningText = null, costEstimate = null
         )
         return newId
     }
 
     suspend fun updateMessageContent(id: String, content: String) = withContext(ioDispatcher) {
-        queries.updateMessageContent(content = content, updatedAt = currentTimeMillis(), id = id)
+        queries.updateMessageContent(content = content, updatedAt = nextTimestamp(), id = id)
     }
 
     suspend fun updateMessageReasoning(id: String, reasoningText: String?) = withContext(ioDispatcher) {
-        queries.updateMessageReasoning(reasoningText = reasoningText, updatedAt = currentTimeMillis(), id = id)
+        queries.updateMessageReasoning(reasoningText = reasoningText, updatedAt = nextTimestamp(), id = id)
     }
 
     suspend fun updateMessageCostEstimate(id: String, costEstimateUsd: Double?) = withContext(ioDispatcher) {
-        queries.updateMessageCostEstimate(costEstimate = costEstimateUsd, updatedAt = currentTimeMillis(), id = id)
+        queries.updateMessageCostEstimate(costEstimate = costEstimateUsd, updatedAt = nextTimestamp(), id = id)
     }
 
     suspend fun updateMessageContentAndReasoning(id: String, content: String, reasoningText: String?) = withContext(ioDispatcher) {
         queries.updateMessageContentAndReasoning(
             content = content,
             reasoningText = reasoningText,
-            updatedAt = currentTimeMillis(),
+            updatedAt = nextTimestamp(),
             id = id
         )
     }
 
     suspend fun updateMessageImage(id: String, imageDataList: List<ByteArray>?) = withContext(ioDispatcher) {
-        queries.updateMessageImage(imageData = serializeImageList(imageDataList), updatedAt = currentTimeMillis(), id = id)
+        queries.updateMessageImage(imageData = serializeImageList(imageDataList), updatedAt = nextTimestamp(), id = id)
     }
 
     suspend fun appendImagesToMessage(sessionId: String, messageId: String, newImages: List<ByteArray>) = withContext(ioDispatcher) {
@@ -174,7 +181,7 @@ class SessionRepository(
             val combined = deserializeImageList(existing) + newImages
             queries.updateMessageImage(
                 imageData = serializeImageList(combined),
-                updatedAt = currentTimeMillis(),
+                updatedAt = nextTimestamp(),
                 id = messageId
             )
         }
@@ -184,13 +191,14 @@ class SessionRepository(
         database.transaction {
             val message = queries.selectMessageById(id).executeAsOneOrNull()
             val now = currentTimeMillis()
-            queries.deleteMessage(updatedAt = now, id = id)
+            val ts = nextTimestamp()
+            queries.deleteMessage(updatedAt = ts, id = id)
             if (message != null) {
                 val sessionId = message.sessionId
                 val allMessages = queries.selectAllMessagesForSession(sessionId).executeAsList()
                 val descendants = collectDescendantIds(allMessages, id)
                 descendants.forEach { descendantId ->
-                    queries.deactivateMessage(updatedAt = now, sessionId = sessionId, id = descendantId)
+                    queries.deactivateMessage(updatedAt = ts, sessionId = sessionId, id = descendantId)
                 }
                 val session = queries.selectSessionById(sessionId).executeAsOneOrNull()
                 val currentId = session?.currentMessageId
@@ -198,7 +206,7 @@ class SessionRepository(
                     queries.updateSessionCurrentMessage(
                         currentMessageId = message.parentId,
                         lastTimestamp = now,
-                        updatedAt = now,
+                        updatedAt = ts,
                         id = sessionId
                     )
                 }
@@ -224,13 +232,14 @@ class SessionRepository(
     // greeting root twice.
     suspend fun syncGreetingRoots(sessionId: String, textList: List<String>) = withContext(ioDispatcher) {
         val now = currentTimeMillis()
+        val ts = nextTimestamp()
         database.transaction {
             val allMessages = queries.selectAllMessagesForSession(sessionId).executeAsList()
             val currentRoots = allMessages.filter { it.parentId == null && it.isActivePath == 1L }
 
             currentRoots.forEachIndexed { index, existingMessage ->
                 if (index < textList.size) {
-                    queries.updateMessageContent(content = textList[index], updatedAt = now, id = existingMessage.id)
+                    queries.updateMessageContent(content = textList[index], updatedAt = ts, id = existingMessage.id)
                 } else {
                     // Only delete a root that is not part of a live conversation.
                     // Deleting a root cascades to its entire subtree (deactivating
@@ -239,9 +248,9 @@ class SessionRepository(
                     val hasActiveConversation = allMessages.any { it.parentId == existingMessage.id && it.isActivePath == 1L }
                     if (!hasActiveConversation) {
                         val descendants = collectDescendantIds(allMessages, existingMessage.id)
-                        queries.deleteMessage(updatedAt = now, id = existingMessage.id)
+                        queries.deleteMessage(updatedAt = ts, id = existingMessage.id)
                         descendants.forEach { descendantId ->
-                            queries.deactivateMessage(updatedAt = now, sessionId = sessionId, id = descendantId)
+                            queries.deactivateMessage(updatedAt = ts, sessionId = sessionId, id = descendantId)
                         }
                         val session = queries.selectSessionById(sessionId).executeAsOneOrNull()
                         val currentId = session?.currentMessageId
@@ -249,7 +258,7 @@ class SessionRepository(
                             queries.updateSessionCurrentMessage(
                                 currentMessageId = existingMessage.parentId,
                                 lastTimestamp = now,
-                                updatedAt = now,
+                                updatedAt = ts,
                                 id = sessionId
                             )
                         }
@@ -270,7 +279,7 @@ class SessionRepository(
                     queries.insertMessageWithParent(
                         id = newId, sessionId = sessionId, role = "assistant", content = textList[i],
                         timestamp = now + i, parentId = null, isActivePath = if (activateFirst) 1L else 0L,
-                        updatedAt = now, isDeleted = 0L, imageData = null,
+                        updatedAt = ts, isDeleted = 0L, imageData = null,
                         reasoningText = null, costEstimate = null
                     )
                 }
@@ -285,10 +294,11 @@ class SessionRepository(
     suspend fun createNewSession(characterId: String, personaId: String): String = withContext(ioDispatcher) {
         val newId = generateUuid()
         val now = currentTimeMillis()
+        val ts = nextTimestamp()
         queries.insertChatSession(
             id = newId, characterId = characterId, personaId = personaId, title = null,
             lastTimestamp = now, currentMessageId = null, parentSessionId = null,
-            updatedAt = now, isDeleted = 0L
+            updatedAt = ts, isDeleted = 0L
         )
         newId
     }
@@ -300,6 +310,7 @@ class SessionRepository(
         newTitle: String
     ): String = withContext(ioDispatcher) {
         val now = currentTimeMillis()
+        val ts = nextTimestamp()
         database.transactionWithResult {
             val originalSession = queries.selectSessionById(originalSessionId).executeAsOneOrNull()
                 ?: throw IllegalArgumentException("Original session not found")
@@ -313,7 +324,7 @@ class SessionRepository(
                 lastTimestamp = now,
                 currentMessageId = null,
                 parentSessionId = originalSessionId,
-                updatedAt = now,
+                updatedAt = ts,
                 isDeleted = 0L
             )
 
@@ -330,14 +341,14 @@ class SessionRepository(
                 queries.insertMessageWithParent(
                     id = newMsgId, sessionId = newSessionId, role = msg.role, content = msg.content,
                     timestamp = msg.timestamp, parentId = lastInsertedNewId, isActivePath = 1L,
-                    updatedAt = now, isDeleted = 0L, imageData = serializeImageList(msg.images),
+                    updatedAt = ts, isDeleted = 0L, imageData = serializeImageList(msg.images),
                     reasoningText = msg.reasoningText, costEstimate = msg.costEstimateUsd
                 )
                 lastInsertedNewId = newMsgId
             }
 
             if (lastInsertedNewId != null) {
-                queries.updateSessionCurrentMessage(currentMessageId = lastInsertedNewId, lastTimestamp = now, updatedAt = now, id = newSessionId)
+                queries.updateSessionCurrentMessage(currentMessageId = lastInsertedNewId, lastTimestamp = now, updatedAt = ts, id = newSessionId)
             }
 
             newSessionId
@@ -345,10 +356,10 @@ class SessionRepository(
     }
 
     suspend fun deleteSession(sessionId: String) = withContext(ioDispatcher) {
-        val now = currentTimeMillis()
+        val ts = nextTimestamp()
         database.transaction {
-            queries.deleteMessagesForSession(updatedAt = now, sessionId = sessionId)
-            queries.deleteSession(updatedAt = now, id = sessionId)
+            queries.deleteMessagesForSession(updatedAt = ts, sessionId = sessionId)
+            queries.deleteSession(updatedAt = ts, id = sessionId)
         }
     }
 
@@ -357,28 +368,28 @@ class SessionRepository(
     // entity the UI can no longer load.
     suspend fun deleteSessionsForCharacters(characterIds: Set<String>) = withContext(ioDispatcher) {
         if (characterIds.isEmpty()) return@withContext
-        val now = currentTimeMillis()
+        val ts = nextTimestamp()
         database.transaction {
             characterIds.forEach { characterId ->
                 queries.selectSessionsForCharacter(characterId).executeAsList().forEach { session ->
-                    queries.deleteMessagesForSession(updatedAt = now, sessionId = session.id)
-                    queries.deleteSession(updatedAt = now, id = session.id)
+                    queries.deleteMessagesForSession(updatedAt = ts, sessionId = session.id)
+                    queries.deleteSession(updatedAt = ts, id = session.id)
                 }
             }
         }
     }
 
     suspend fun deleteSessionsForPersona(personaId: String) = withContext(ioDispatcher) {
-        val now = currentTimeMillis()
+        val ts = nextTimestamp()
         database.transaction {
             queries.selectSessionsForPersona(personaId).executeAsList().forEach { session ->
-                queries.deleteMessagesForSession(updatedAt = now, sessionId = session.id)
-                queries.deleteSession(updatedAt = now, id = session.id)
+                queries.deleteMessagesForSession(updatedAt = ts, sessionId = session.id)
+                queries.deleteSession(updatedAt = ts, id = session.id)
             }
         }
     }
 
     suspend fun updateSessionTitle(sessionId: String, title: String?) = withContext(ioDispatcher) {
-        queries.updateSessionTitle(title = title, updatedAt = currentTimeMillis(), id = sessionId)
+        queries.updateSessionTitle(title = title, updatedAt = nextTimestamp(), id = sessionId)
     }
 }

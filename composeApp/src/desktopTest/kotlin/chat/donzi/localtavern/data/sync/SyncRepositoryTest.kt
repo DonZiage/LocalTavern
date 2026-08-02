@@ -1,8 +1,11 @@
 package chat.donzi.localtavern.data.sync
 
 import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
+import chat.donzi.localtavern.data.database.CharacterRepository
 import chat.donzi.localtavern.data.database.LocalTavernDB
+import chat.donzi.localtavern.data.database.LogicalClock
 import chat.donzi.localtavern.data.database.SyncPeer
+import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.data.security.ApiKeyCipher
 import chat.donzi.localtavern.data.security.ReversibleTestSecretCrypto
 import kotlinx.coroutines.test.TestScope
@@ -17,23 +20,33 @@ import kotlin.test.assertTrue
 // the roles of the two devices.
 class SyncRepositoryTest {
 
-    private class Device(val repo: SyncRepository, val db: LocalTavernDB) {
+    private class Device(
+        val repo: SyncRepository,
+        val db: LocalTavernDB,
+        val clock: LogicalClock
+    ) {
         val personas get() = db.localTavernDBQueries.selectAllPersonas().executeAsList()
         val personaAny get() = db.localTavernDBQueries.selectPersonaByIdAny("p1").executeAsOneOrNull()
         fun connAny(id: String) = db.localTavernDBQueries.selectApiConnectionByIdAny(id).executeAsOneOrNull()
+        fun charRepo() = CharacterRepository(db, clock = clock)
     }
 
-    private fun TestScope.newDevice(deviceId: String, apiKeyCipher: ApiKeyCipher? = null): Device {
+    private fun TestScope.newDevice(
+        deviceId: String,
+        apiKeyCipher: ApiKeyCipher? = null,
+        wallClock: (() -> Long)? = null
+    ): Device {
         val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
         LocalTavernDB.Schema.create(driver)
         val db = LocalTavernDB(driver)
+        val clock = if (wallClock != null) LogicalClock(db, wallClock) else LogicalClock(db)
         val identity = SyncIdentity(
             deviceId = deviceId,
             deviceName = deviceId,
             privateKeyBase64 = kotlin.io.encoding.Base64.encode(ByteArray(32) { 1 }),
             publicKeyBase64 = kotlin.io.encoding.Base64.encode(ByteArray(32) { 2 })
         )
-        return Device(SyncRepository(db, identity, apiKeyCipher = apiKeyCipher), db)
+        return Device(SyncRepository(db, identity, apiKeyCipher = apiKeyCipher, clock = clock), db, clock)
     }
 
     private fun syncPersona(id: String, name: String, updatedAt: Long, isDeleted: Long) = SyncPersona(
@@ -272,5 +285,72 @@ class SyncRepositoryTest {
         val stored = device.connAny("c1")
         assertNotNull(stored)
         assertEquals(0L, stored.isActive, "Incoming isActive=1 must be ignored so sync cannot flip the local profile")
+    }
+
+    // ---------- Clock-skew resilience ----------
+    //
+    // The LWW comparison runs on updatedAt values. If those were raw wall
+    // clocks, a device whose clock is behind a peer's would lose its own
+    // edits to the peer's future-dated versions even though the edits are
+    // newer. The logical clock stamps local writes above every timestamp
+    // ever observed, so causality wins regardless of clock drift.
+
+    @Test
+    fun editBySlowClockDeviceAfterSyncingFastClockVersion_wins() = runTest {
+        // A's wall clock is far ahead of B's (fake clocks freeze the drift).
+        val a = newDevice("device-a", wallClock = { 2_000_000L })
+        val b = newDevice("device-b", wallClock = { 0L })
+
+        // A creates a character; the row is stamped with A's future time.
+        val id = a.charRepo().upsertCharacter(SillyTavernCardV2(name = "Original"))
+
+        // A syncs to B. B absorbs the future-dated stamp into its clock.
+        b.repo.applyChanges(a.repo.collectDelta(0L), peerDeviceId = "device-a")
+        assertEquals("Original", b.charRepo().getCharacterById(id)?.name)
+
+        // B edits the character. Its wall clock is still at 0, but the edit
+        // must out-stamp the version it was caused by.
+        b.charRepo().updateCharacter(id = id, name = "Edited On B", personality = "p", scenario = "s", description = null, firstMes = null)
+
+        // B syncs back to A: the edit must win, not be rejected as stale.
+        a.repo.applyChanges(b.repo.collectDelta(0L), peerDeviceId = "device-b")
+        assertEquals("Edited On B", a.charRepo().getCharacterById(id)?.name)
+    }
+
+    @Test
+    fun editAfterReceivingPeerEdit_winsOnBothDevices() = runTest {
+        val a = newDevice("device-a", wallClock = { 1_000_000L })
+        val b = newDevice("device-b", wallClock = { 100L })
+
+        val id = a.charRepo().upsertCharacter(SillyTavernCardV2(name = "V1"))
+        b.repo.applyChanges(a.repo.collectDelta(0L), peerDeviceId = "device-a")
+
+        // B edits, then A edits after seeing B's version. Each device's new
+        // edit must out-stamp the version it observed.
+        b.charRepo().updateCharacter(id = id, name = "V2 From B", personality = "p", scenario = "s", description = null, firstMes = null)
+        a.repo.applyChanges(b.repo.collectDelta(0L), peerDeviceId = "device-b")
+        a.charRepo().updateCharacter(id = id, name = "V3 From A", personality = "p", scenario = "s", description = null, firstMes = null)
+        b.repo.applyChanges(a.repo.collectDelta(0L), peerDeviceId = "device-a")
+
+        assertEquals("V3 From A", b.charRepo().getCharacterById(id)?.name, "A's causally-later edit wins on B")
+        assertEquals("V3 From A", a.charRepo().getCharacterById(id)?.name, "And on A itself")
+    }
+
+    @Test
+    fun syncedRowsAreStampedByLocalLogicalClockNotWallClock() = runTest {
+        val device = newDevice("device-a", wallClock = { 500L })
+
+        // Two local writes in the same frozen wall-clock instant must still
+        // be distinguishable and strictly ordered for the sync cursors.
+        device.charRepo().upsertCharacter(SillyTavernCardV2(name = "First"))
+        val delta1 = device.repo.collectDelta(0L)
+        device.charRepo().upsertCharacter(SillyTavernCardV2(name = "Second"))
+        val delta2 = device.repo.collectDelta(delta1.maxUpdatedAt)
+
+        assertEquals("Second", delta2.characters.single().name)
+        assertTrue(
+            delta2.characters.single().updatedAt > delta1.maxUpdatedAt,
+            "The second write must carry a strictly larger logical stamp"
+        )
     }
 }

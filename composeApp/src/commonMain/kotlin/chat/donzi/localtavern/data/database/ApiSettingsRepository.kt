@@ -15,8 +15,9 @@ import kotlinx.coroutines.withContext
 class ApiSettingsRepository(
     database: LocalTavernDB,
     private val apiKeyCipher: ApiKeyCipher,
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
-) : BaseRepository(database) {
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    clock: LogicalClock = LogicalClock(database)
+) : BaseRepository(database, clock) {
 
     // Live stream of the active connection so UI checks (e.g. refusing a send
     // without a profile) never rely on a stale snapshot loaded once.
@@ -37,6 +38,7 @@ class ApiSettingsRepository(
     ): String = withContext(ioDispatcher) {
         val newId = generateUuid()
         val now = currentTimeMillis()
+        val ts = nextTimestamp()
         // The active flag and display order are derived from fresh DB state
         // inside the transaction, never from possibly-stale UI state: a new
         // connection must not be wrongly activated when the UI's connection
@@ -50,7 +52,7 @@ class ApiSettingsRepository(
                 // Only one connection may be active at a time; without this the
                 // row above would be a second active one and chat traffic
                 // would silently go to an arbitrary endpoint.
-                queries.setActiveApiConnection(updatedAt = now)
+                queries.setActiveApiConnection(updatedAt = ts)
             }
             queries.insertApiConnection(
                 id = newId, provider = provider, name = name, baseUrl = baseUrl, apiKey = apiKeyCipher.encryptForStorage(apiKey), model = model,
@@ -59,7 +61,7 @@ class ApiSettingsRepository(
                 presencePenalty = presencePenalty, frequencyPenalty = frequencyPenalty, contextLimit = contextLimit,
                 responseLimit = responseLimit, displayOrder = nextOrder, timeoutLimit = timeoutLimit,
                 reasoningOverride = reasoningOverride.toLong(),
-                updatedAt = now, isDeleted = 0L
+                updatedAt = ts, isDeleted = 0L
             )
             newId
         }
@@ -94,6 +96,7 @@ class ApiSettingsRepository(
         reasoningOverride: Int = 0
     ) = withContext(ioDispatcher) {
         val now = currentTimeMillis()
+        val ts = nextTimestamp()
         // A stored key that is unchanged (or unreadable while locked) must be
         // carried forward untouched; only a genuinely new key is re-encrypted.
         val storedRow = queries.selectApiConnectionById(id).executeAsOneOrNull()
@@ -108,7 +111,7 @@ class ApiSettingsRepository(
         // failure between them cannot leave the profile half-written.
         database.transaction {
             if (isActive) {
-                queries.setActiveApiConnection(updatedAt = now)
+                queries.setActiveApiConnection(updatedAt = ts)
             }
             queries.updateApiConnection(
                 provider = provider, name = name, baseUrl = baseUrl, apiKey = finalKey, model = model,
@@ -117,12 +120,12 @@ class ApiSettingsRepository(
                 presencePenalty = presencePenalty, frequencyPenalty = frequencyPenalty, contextLimit = contextLimit,
                 responseLimit = responseLimit, displayOrder = displayOrder, timeoutLimit = timeoutLimit,
                 reasoningOverride = reasoningOverride.toLong(),
-                updatedAt = now, id = id
+                updatedAt = ts, id = id
             )
             // Only touch lastUsed when explicitly provided or when activating the
             // profile; editing an inactive connection must not wipe its marker.
             if (lastUsed != null || isActive) {
-                queries.updateApiConnectionLastUsed(lastUsed = lastUsed ?: now, updatedAt = now, id = id)
+                queries.updateApiConnectionLastUsed(lastUsed = lastUsed ?: now, updatedAt = ts, id = id)
             }
         }
     }
@@ -131,13 +134,13 @@ class ApiSettingsRepository(
     // after the desktop passphrase is set (or changed) so keys that were
     // stored as plaintext are protected by the new key.
     suspend fun reencryptAllApiKeys() = withContext(ioDispatcher) {
-        val now = currentTimeMillis()
+        val ts = nextTimestamp()
         database.transaction {
             queries.selectAllApiConnections().executeAsList().forEach { row ->
                 val decrypted = apiKeyCipher.decryptFromStorage(row.apiKey)
                 val reEncrypted = apiKeyCipher.encryptForStorage(decrypted)
                 if (reEncrypted != row.apiKey) {
-                    queries.updateApiConnectionApiKey(apiKey = reEncrypted, updatedAt = now, id = row.id)
+                    queries.updateApiConnectionApiKey(apiKey = reEncrypted, updatedAt = ts, id = row.id)
                 }
             }
         }
@@ -147,12 +150,12 @@ class ApiSettingsRepository(
     // protection, and only valid while the crypto is unlocked (so decryption
     // actually succeeds); the passphrase is forgotten right after.
     suspend fun decryptAllApiKeysToPlaintext() = withContext(ioDispatcher) {
-        val now = currentTimeMillis()
+        val ts = nextTimestamp()
         database.transaction {
             queries.selectAllApiConnections().executeAsList().forEach { row ->
                 val decrypted = apiKeyCipher.decryptFromStorage(row.apiKey)
                 if (decrypted != row.apiKey) {
-                    queries.updateApiConnectionApiKey(apiKey = decrypted, updatedAt = now, id = row.id)
+                    queries.updateApiConnectionApiKey(apiKey = decrypted, updatedAt = ts, id = row.id)
                 }
             }
         }
@@ -163,20 +166,21 @@ class ApiSettingsRepository(
 
     suspend fun deleteApiConnection(id: String) = withContext(ioDispatcher) {
         queries.deleteApiConnection(
-            updatedAt = currentTimeMillis(),
+            updatedAt = nextTimestamp(),
             id = id
         )
     }
 
     suspend fun setActiveApiConnection(id: String) = withContext(ioDispatcher) {
         val now = currentTimeMillis()
+        val ts = nextTimestamp()
         // Deactivating all rows and activating the target must be atomic: a
         // crash between the two would leave the app with zero active
         // connections (silently losing its API profile), and two concurrent
         // activations could both succeed.
         database.transaction {
-            queries.setActiveApiConnection(updatedAt = now)
-            queries.updateActiveApiConnection(lastUsed = now, updatedAt = now, id = id)
+            queries.setActiveApiConnection(updatedAt = ts)
+            queries.updateActiveApiConnection(lastUsed = now, updatedAt = ts, id = id)
         }
     }
 
@@ -188,10 +192,10 @@ class ApiSettingsRepository(
     }
 
     suspend fun updateApiConnectionDisplayOrders(orderedIds: List<String>): Unit = withContext(ioDispatcher) {
-        val now = currentTimeMillis()
+        val ts = nextTimestamp()
         database.transaction {
             orderedIds.forEachIndexed { index, id ->
-                queries.updateApiConnectionDisplayOrder(displayOrder = index.toLong(), updatedAt = now, id = id)
+                queries.updateApiConnectionDisplayOrder(displayOrder = index.toLong(), updatedAt = ts, id = id)
             }
         }
     }
@@ -226,14 +230,14 @@ class ApiSettingsRepository(
         database.transactionWithResult {
             val storedBlocks = queries.selectAllPromptBlocks().executeAsList()
             if (storedBlocks.isEmpty()) {
-                val now = currentTimeMillis()
+                val ts = nextTimestamp()
                 var initialOrder = 0L
-                queries.insertPromptBlock("system", "System Prompt", "You are roleplaying. Stay in character, describe actions vividly, and adapt seamlessly to the story scenario.", 1L, 0L, initialOrder++, now, 0L)
-                queries.insertPromptBlock("persona", "User Persona", "User Persona:\n{{user_persona}}", 1L, 0L, initialOrder++, now, 0L)
-                queries.insertPromptBlock("description", "Character Description", "Character Info:\n{{character_description}}", 1L, 0L, initialOrder++, now, 0L)
-                queries.insertPromptBlock("personality", "Personality", "Personality:\n{{personality}}", 1L, 0L, initialOrder++, now, 0L)
-                queries.insertPromptBlock("scenario", "Scenario", "Scenario:\n{{scenario}}", 1L, 0L, initialOrder++, now, 0L)
-                queries.insertPromptBlock("chat_history", "Chat History", "{{chat_history}}", 1L, 0L, initialOrder, now, 0L)
+                queries.insertPromptBlock("system", "System Prompt", "You are roleplaying. Stay in character, describe actions vividly, and adapt seamlessly to the story scenario.", 1L, 0L, initialOrder++, ts, 0L)
+                queries.insertPromptBlock("persona", "User Persona", "User Persona:\n{{user_persona}}", 1L, 0L, initialOrder++, ts, 0L)
+                queries.insertPromptBlock("description", "Character Description", "Character Info:\n{{character_description}}", 1L, 0L, initialOrder++, ts, 0L)
+                queries.insertPromptBlock("personality", "Personality", "Personality:\n{{personality}}", 1L, 0L, initialOrder++, ts, 0L)
+                queries.insertPromptBlock("scenario", "Scenario", "Scenario:\n{{scenario}}", 1L, 0L, initialOrder++, ts, 0L)
+                queries.insertPromptBlock("chat_history", "Chat History", "{{chat_history}}", 1L, 0L, initialOrder, ts, 0L)
                 queries.selectAllPromptBlocks().executeAsList().map { it.toDomain() }
             } else {
                 storedBlocks.map { it.toDomain() }
@@ -242,28 +246,28 @@ class ApiSettingsRepository(
     }
 
     suspend fun savePromptBlock(id: String, name: String, template: String, isEnabled: Boolean) = withContext(ioDispatcher) {
-        queries.updatePromptBlock(name = name, template = template, isEnabled = if (isEnabled) 1L else 0L, updatedAt = currentTimeMillis(), id = id)
+        queries.updatePromptBlock(name = name, template = template, isEnabled = if (isEnabled) 1L else 0L, updatedAt = nextTimestamp(), id = id)
     }
 
     @OptIn(kotlin.uuid.ExperimentalUuidApi::class)
     suspend fun insertCustomPromptBlock(name: String, template: String): String = withContext(ioDispatcher) {
-        val now = currentTimeMillis()
+        val ts = nextTimestamp()
         val uniqueId = generateUuid()
         val currentBlocks = queries.selectAllPromptBlocks().executeAsList()
         val nextOrderPosition = (currentBlocks.maxOfOrNull { it.displayOrder } ?: -1L) + 1L
-        queries.insertPromptBlock(uniqueId, name, template, 1L, 1L, nextOrderPosition, now, 0L)
+        queries.insertPromptBlock(uniqueId, name, template, 1L, 1L, nextOrderPosition, ts, 0L)
         uniqueId
     }
 
     suspend fun deletePromptBlock(id: String) = withContext(ioDispatcher) {
-        queries.deletePromptBlock(updatedAt = currentTimeMillis(), id = id)
+        queries.deletePromptBlock(updatedAt = nextTimestamp(), id = id)
     }
 
     suspend fun updatePromptBlockDisplayOrders(orderedIds: List<String>): Unit = withContext(ioDispatcher) {
-        val now = currentTimeMillis()
+        val ts = nextTimestamp()
         database.transaction {
             orderedIds.forEachIndexed { index, id ->
-                queries.updatePromptBlockDisplayOrder(displayOrder = index.toLong(), updatedAt = now, id = id)
+                queries.updatePromptBlockDisplayOrder(displayOrder = index.toLong(), updatedAt = ts, id = id)
             }
         }
     }

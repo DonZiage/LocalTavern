@@ -24,7 +24,10 @@ private fun encodeJsonObject(value: JsonObject?): String? = value?.let { cardJso
 
 private fun encodeTags(tags: List<String>): String? = tags.takeIf { it.isNotEmpty() }?.let { cardJson.encodeToString(it) }
 
-class CharacterRepository(database: LocalTavernDB) : BaseRepository(database) {
+class CharacterRepository(
+    database: LocalTavernDB,
+    clock: LogicalClock = LogicalClock(database)
+) : BaseRepository(database, clock) {
 
     fun observeCharacters(): Flow<List<Character>> =
         queries.selectAllCharacters().asFlow().mapToList(Dispatchers.IO).map { list -> list.map { it.toDomain() } }
@@ -42,7 +45,7 @@ class CharacterRepository(database: LocalTavernDB) : BaseRepository(database) {
 
     suspend fun createAssistant(): String = withContext(Dispatchers.IO) {
         val newId = generateUuid()
-        val now = currentTimeMillis()
+        val now = nextTimestamp()
         queries.insertCharacter(
             id = newId,
             name = "Assistant",
@@ -77,7 +80,7 @@ class CharacterRepository(database: LocalTavernDB) : BaseRepository(database) {
         avatarData: ByteArray? = null
     ): String = withContext(Dispatchers.IO) {
         val newId = generateUuid()
-        val now = currentTimeMillis()
+        val now = nextTimestamp()
         queries.insertCharacter(
             id = newId,
             name = card.name,
@@ -105,7 +108,7 @@ class CharacterRepository(database: LocalTavernDB) : BaseRepository(database) {
 
     suspend fun createCharacter(name: String): String = withContext(Dispatchers.IO) {
         val newId = generateUuid()
-        val now = currentTimeMillis()
+        val now = nextTimestamp()
         queries.insertCharacter(
             id = newId,
             name = name,
@@ -161,7 +164,7 @@ class CharacterRepository(database: LocalTavernDB) : BaseRepository(database) {
             tags = existing?.tags,
             extensions = existing?.extensions,
             characterBook = existing?.characterBook,
-            updatedAt = currentTimeMillis(),
+            updatedAt = nextTimestamp(),
             id = id
         )
     }
@@ -169,7 +172,7 @@ class CharacterRepository(database: LocalTavernDB) : BaseRepository(database) {
     suspend fun deleteCharacters(ids: Collection<String>) = withContext(Dispatchers.IO) {
         if (ids.isEmpty()) return@withContext
         queries.deleteCharactersByIds(
-            updatedAt = currentTimeMillis(),
+            updatedAt = nextTimestamp(),
             id = ids.toList()
         )
     }
@@ -194,7 +197,7 @@ class CharacterRepository(database: LocalTavernDB) : BaseRepository(database) {
             tags = existing.tags,
             extensions = existing.extensions,
             characterBook = encodeJsonObject(characterBook),
-            updatedAt = currentTimeMillis(),
+            updatedAt = nextTimestamp(),
             id = id
         )
     }
@@ -210,7 +213,7 @@ class CharacterRepository(database: LocalTavernDB) : BaseRepository(database) {
             name = name,
             description = description,
             avatarData = avatarData,
-            updatedAt = currentTimeMillis(),
+            updatedAt = nextTimestamp(),
             isDeleted = 0L
         )
         newId
@@ -221,14 +224,14 @@ class CharacterRepository(database: LocalTavernDB) : BaseRepository(database) {
             name = name,
             description = description,
             avatarData = avatarData,
-            updatedAt = currentTimeMillis(),
+            updatedAt = nextTimestamp(),
             id = id
         )
     }
 
     suspend fun deletePersona(id: String) = withContext(Dispatchers.IO) {
         queries.deletePersona(
-            updatedAt = currentTimeMillis(),
+            updatedAt = nextTimestamp(),
             id = id
         )
     }

@@ -299,7 +299,7 @@ class SyncService(
             if (!responseEnvelope.changes.isEmpty) {
                 repository.applyChanges(responseEnvelope.changes, peerDeviceId = peer.deviceId)
             }
-            val newReceivedCursor = maxOf(responseEnvelope.changes.maxUpdatedAt(), peer.receivedCursor)
+            val newReceivedCursor = maxOf(responseEnvelope.changes.maxUpdatedAt, peer.receivedCursor)
             repository.updatePeerCursors(
                 deviceId = peer.deviceId,
                 receivedCursor = newReceivedCursor,
@@ -333,7 +333,7 @@ class SyncService(
             if (applyResult.isFailure) {
                 return ExchangeResponse(ok = false, message = "Failed to apply changes.")
             }
-            val newReceivedCursor = maxOf(envelope.changes.maxUpdatedAt(), peer.receivedCursor)
+            val newReceivedCursor = maxOf(envelope.changes.maxUpdatedAt, peer.receivedCursor)
             repository.updatePeerCursors(
                 deviceId = fromDeviceId,
                 receivedCursor = newReceivedCursor,
@@ -420,14 +420,6 @@ class SyncService(
 
     private fun aad(from: String, to: String): ByteArray =
         "localtavern-sync|from=$from|to=$to".encodeToByteArray()
-
-    private fun SyncChanges.maxUpdatedAt(): Long =
-        (characters.maxOfOrNull { it.updatedAt } ?: 0L)
-            .coerceAtLeast(personas.maxOfOrNull { it.updatedAt } ?: 0L)
-            .coerceAtLeast(sessions.maxOfOrNull { it.updatedAt } ?: 0L)
-            .coerceAtLeast(messages.maxOfOrNull { it.updatedAt } ?: 0L)
-            .coerceAtLeast(apiConnections.maxOfOrNull { it.updatedAt } ?: 0L)
-            .coerceAtLeast(promptBlocks.maxOfOrNull { it.updatedAt } ?: 0L)
 }
 
 @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)

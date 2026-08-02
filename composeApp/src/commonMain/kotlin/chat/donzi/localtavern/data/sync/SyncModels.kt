@@ -117,6 +117,15 @@ data class SyncChanges(
     val isEmpty: Boolean
         get() = characters.isEmpty() && personas.isEmpty() && sessions.isEmpty() &&
             messages.isEmpty() && apiConnections.isEmpty() && promptBlocks.isEmpty()
+
+    /** Highest updatedAt carried by any row in these changes. */
+    val maxUpdatedAt: Long
+        get() = (characters.maxOfOrNull { it.updatedAt } ?: 0L)
+            .coerceAtLeast(personas.maxOfOrNull { it.updatedAt } ?: 0L)
+            .coerceAtLeast(sessions.maxOfOrNull { it.updatedAt } ?: 0L)
+            .coerceAtLeast(messages.maxOfOrNull { it.updatedAt } ?: 0L)
+            .coerceAtLeast(apiConnections.maxOfOrNull { it.updatedAt } ?: 0L)
+            .coerceAtLeast(promptBlocks.maxOfOrNull { it.updatedAt } ?: 0L)
 }
 
 // One side's view of an exchange: everything the sender changed since the

@@ -4,6 +4,7 @@ import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.database.CharacterRepository
 import chat.donzi.localtavern.data.database.DriverFactory
 import chat.donzi.localtavern.data.database.LocalTavernDB
+import chat.donzi.localtavern.data.database.LogicalClock
 import chat.donzi.localtavern.data.database.PricingRepository
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.data.network.ChatClient
@@ -34,9 +35,13 @@ class AppContainer(driverFactory: DriverFactory) {
     val database: LocalTavernDB = LocalTavernDB(driverFactory.createDriver())
     val secretCrypto = createSecretCrypto()
     val apiKeyCipher = ApiKeyCipher(secretCrypto)
-    val characterRepository: CharacterRepository = CharacterRepository(database)
-    val sessionRepository: SessionRepository = SessionRepository(database)
-    val apiSettingsRepository: ApiSettingsRepository = ApiSettingsRepository(database, apiKeyCipher)
+    // One logical clock shared by every repository: the sync layer advances
+    // it with every received timestamp and all local writes stamp from it,
+    // keeping LWW immune to wall-clock skew between devices.
+    val logicalClock = LogicalClock(database)
+    val characterRepository: CharacterRepository = CharacterRepository(database, clock = logicalClock)
+    val sessionRepository: SessionRepository = SessionRepository(database, clock = logicalClock)
+    val apiSettingsRepository: ApiSettingsRepository = ApiSettingsRepository(database, apiKeyCipher, clock = logicalClock)
     val pricingRepository: PricingRepository = PricingRepository(database)
 
     val httpClient: HttpClient = HttpClient {
@@ -64,7 +69,7 @@ class AppContainer(driverFactory: DriverFactory) {
     private val syncIdentity: SyncIdentity = runBlocking {
         loadOrCreateSyncIdentity(syncIdentityStore)
     }
-    val syncRepository = SyncRepository(database, syncIdentity, apiKeyCipher = apiKeyCipher)
+    val syncRepository = SyncRepository(database, syncIdentity, apiKeyCipher = apiKeyCipher, clock = logicalClock)
     val syncService = SyncService(
         identity = syncIdentity,
         crypto = SyncCrypto(),

@@ -1,0 +1,9 @@
+-- v4 -> v5: Hybrid Logical Clock for sync. updatedAt values are no longer
+-- raw wall-clock millis: each device stamps rows with
+-- max(wallClock, lastHlc + 1) and advances lastHlc whenever it observes a
+-- peer's timestamp, so an edit that causally follows a received row always
+-- carries a larger timestamp even when the editing device's wall clock is
+-- far behind the peer's. lastHlc is the durable high-water mark of every
+-- timestamp this device has ever generated or received; persisting it keeps
+-- the invariant across app restarts.
+ALTER TABLE AppSettings ADD COLUMN lastHlc INTEGER NOT NULL DEFAULT 0;

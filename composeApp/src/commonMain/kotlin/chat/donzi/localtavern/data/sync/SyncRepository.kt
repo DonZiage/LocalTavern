@@ -4,6 +4,7 @@ import chat.donzi.localtavern.data.database.ApiConnection
 import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.data.database.ChatSession
 import chat.donzi.localtavern.data.database.LocalTavernDB
+import chat.donzi.localtavern.data.database.LogicalClock
 import chat.donzi.localtavern.data.database.MessageEntity
 import chat.donzi.localtavern.data.database.PersonaEntity
 import chat.donzi.localtavern.data.database.PromptBlockEntity
@@ -27,7 +28,12 @@ class SyncRepository(
     // local backend) and the portable plaintext form used inside the
     // end-to-end-encrypted sync envelope. Null keeps the legacy behavior of
     // shipping the stored value verbatim (tests, or backends without a cipher).
-    private val apiKeyCipher: ApiKeyCipher? = null
+    private val apiKeyCipher: ApiKeyCipher? = null,
+    // Hybrid logical clock stamping updatedAt. MUST be the same instance the
+    // write repositories use: applyChanges advances it past every timestamp
+    // observed from a peer, and local writes stamp from it, which is what
+    // makes LWW converge under wall-clock skew.
+    private val clock: LogicalClock = LogicalClock(database)
 ) {
     private val queries get() = database.localTavernDBQueries
 
@@ -118,6 +124,11 @@ class SyncRepository(
      * Applies incoming changes. For each row, the newer version wins
      * (updatedAt); on exact ties the lexicographically greater deviceId wins,
      * which both sides resolve identically so they converge.
+     *
+     * Afterwards the device's logical clock absorbs the envelope's highest
+     * timestamp — even for rows rejected as stale — so a subsequent local
+     * edit always out-stamps the version it was caused by, regardless of how
+     * far behind this device's wall clock is.
      */
     suspend fun applyChanges(changes: SyncChanges, peerDeviceId: String) = withContext(ioDispatcher) {
         database.transaction {
@@ -127,6 +138,7 @@ class SyncRepository(
             changes.messages.forEach { row -> apply(row, peerDeviceId) }
             changes.apiConnections.forEach { row -> apply(row, peerDeviceId) }
             changes.promptBlocks.forEach { row -> apply(row, peerDeviceId) }
+            clock.absorb(changes.maxUpdatedAt)
         }
     }
 
