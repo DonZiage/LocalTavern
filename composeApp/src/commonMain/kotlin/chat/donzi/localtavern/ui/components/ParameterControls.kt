@@ -9,24 +9,54 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import chat.donzi.localtavern.data.database.ApiConnection
-import chat.donzi.localtavern.data.database.ChatRepository
-import chat.donzi.localtavern.utils.PromptBlock
-import chat.donzi.localtavern.utils.toDomain
+import chat.donzi.localtavern.domain.ApiConfig
+import chat.donzi.localtavern.data.database.ApiSettingsRepository
+import chat.donzi.localtavern.domain.PromptBlock
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 @Composable
 fun ParameterControls(
-    connection: ApiConnection,
-    repository: ChatRepository,
-    onUpdate: (ApiConnection) -> Unit
+    connection: ApiConfig,
+    apiSettingsRepository: ApiSettingsRepository,
+    onUpdate: (ApiConfig) -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
     var promptBlocks by remember { mutableStateOf<List<PromptBlock>>(emptyList()) }
+    // Tracks the in-flight display-order write so reloads never race it and
+    // snap the list back to the pre-drag order.
+    var pendingOrderWrite by remember { mutableStateOf<Job?>(null) }
+
+    // Working copy accumulates slider changes so rapid successive commits are
+    // persisted as one write carrying the *latest* snapshot. Without it, a
+    // second commit based on the pre-first-write connection would silently
+    // revert the first change (out-of-order DB writes).
+    var workingConnection by remember(connection.id) { mutableStateOf(connection) }
+    var paramWriteJob by remember { mutableStateOf<Job?>(null) }
+    var hasPendingParamWrite by remember { mutableStateOf(false) }
+
+    // Re-seed the working copy from the DB once the pending write has landed.
+    LaunchedEffect(connection) {
+        if (!hasPendingParamWrite) {
+            workingConnection = connection
+        }
+    }
+
+    fun persistParams() {
+        hasPendingParamWrite = true
+        paramWriteJob?.cancel()
+        paramWriteJob = coroutineScope.launch {
+            delay(250)
+            apiSettingsRepository.updateApiConnection(workingConnection)
+            hasPendingParamWrite = false
+            onUpdate(workingConnection)
+        }
+    }
 
     LaunchedEffect(Unit) {
-        promptBlocks = repository.getAllPromptBlocks().map { it.toDomain() }
+        promptBlocks = apiSettingsRepository.getAllPromptBlocks()
     }
 
     Column(modifier = Modifier.padding(horizontal = 24.dp)) {
@@ -34,19 +64,23 @@ fun ParameterControls(
         Spacer(modifier = Modifier.height(16.dp))
 
         ContextLimitSlider(
-            currentLimit = connection.contextLimit,
-            onValueChange = { onUpdate(connection.copy(contextLimit = it)) }
+            currentLimit = workingConnection.contextLimit,
+            onValueChange = {
+                workingConnection = workingConnection.copy(contextLimit = it)
+                persistParams()
+            }
         )
 
         ParameterSlider(
             label = "Response Limit",
-            value = if (connection.responseLimit == 0L) 4160f else connection.responseLimit.toFloat().coerceAtLeast(64f),
+            value = if (workingConnection.responseLimit == 0L) 4160f else workingConnection.responseLimit.toFloat().coerceAtLeast(64f),
             range = 64f..4160f,
             steps = 63,
             format = { if (it > 4096f) "Unlimited" else it.toInt().toString() },
             onValueChange = {
                 val newValue = if (it > 4096f) 0L else it.toLong()
-                onUpdate(connection.copy(responseLimit = newValue))
+                workingConnection = workingConnection.copy(responseLimit = newValue)
+                persistParams()
             }
         )
 
@@ -61,31 +95,35 @@ fun ParameterControls(
                     blocks = promptBlocks,
                     onBlocksChange = { updatedList ->
                         promptBlocks = updatedList
-                        coroutineScope.launch {
-                            repository.updatePromptBlockDisplayOrders(updatedList.map { it.id })
+                        pendingOrderWrite?.cancel()
+                        pendingOrderWrite = coroutineScope.launch {
+                            apiSettingsRepository.updatePromptBlockDisplayOrders(updatedList.map { it.id })
                         }
                     },
                     onBlockMutate = { mutatedBlock ->
                         coroutineScope.launch {
-                            repository.savePromptBlock(
+                            pendingOrderWrite?.join()
+                            apiSettingsRepository.savePromptBlock(
                                 id = mutatedBlock.id,
                                 name = mutatedBlock.name,
                                 template = mutatedBlock.template,
                                 isEnabled = mutatedBlock.isEnabled
                             )
-                            promptBlocks = repository.getAllPromptBlocks().map { it.toDomain() }
+                            promptBlocks = apiSettingsRepository.getAllPromptBlocks()
                         }
                     },
                     onBlockAdd = { name, template ->
                         coroutineScope.launch {
-                            repository.insertCustomPromptBlock(name, template)
-                            promptBlocks = repository.getAllPromptBlocks().map { it.toDomain() }
+                            pendingOrderWrite?.join()
+                            apiSettingsRepository.insertCustomPromptBlock(name, template)
+                            promptBlocks = apiSettingsRepository.getAllPromptBlocks()
                         }
                     },
                     onBlockDelete = { id ->
                         coroutineScope.launch {
-                            repository.deletePromptBlock(id)
-                            promptBlocks = repository.getAllPromptBlocks().map { it.toDomain() }
+                            pendingOrderWrite?.join()
+                            apiSettingsRepository.deletePromptBlock(id)
+                            promptBlocks = apiSettingsRepository.getAllPromptBlocks()
                         }
                     }
                 )
@@ -96,53 +134,69 @@ fun ParameterControls(
 
                 ParameterSlider(
                     label = "Temperature",
-                    value = connection.temperature.toFloat(),
+                    value = workingConnection.temperature.toFloat(),
                     range = 0f..2f,
                     steps = 20,
-                    onValueChange = { onUpdate(connection.copy(temperature = it.toDouble())) }
+                    onValueChange = {
+                        workingConnection = workingConnection.copy(temperature = it.toDouble())
+                        persistParams()
+                    }
                 )
 
                 ParameterSlider(
                     label = "Top-P",
-                    value = connection.topP.toFloat(),
+                    value = workingConnection.topP.toFloat(),
                     range = 0f..1f,
                     steps = 10,
-                    onValueChange = { onUpdate(connection.copy(topP = it.toDouble())) }
+                    onValueChange = {
+                        workingConnection = workingConnection.copy(topP = it.toDouble())
+                        persistParams()
+                    }
                 )
 
                 ParameterSlider(
                     label = "Top-K",
-                    value = connection.topK.toFloat(),
+                    value = workingConnection.topK.toFloat(),
                     range = 0f..100f,
                     steps = 100,
                     format = { it.toInt().toString() },
-                    onValueChange = { onUpdate(connection.copy(topK = it.toLong())) }
+                    onValueChange = {
+                        workingConnection = workingConnection.copy(topK = it.toLong())
+                        persistParams()
+                    }
                 )
 
                 ParameterSlider(
                     label = "Presence Penalty",
-                    value = connection.presencePenalty.toFloat(),
+                    value = workingConnection.presencePenalty.toFloat(),
                     range = -2f..2f,
                     steps = 40,
-                    onValueChange = { onUpdate(connection.copy(presencePenalty = it.toDouble())) }
+                    onValueChange = {
+                        workingConnection = workingConnection.copy(presencePenalty = it.toDouble())
+                        persistParams()
+                    }
                 )
 
                 ParameterSlider(
                     label = "Frequency Penalty",
-                    value = connection.frequencyPenalty.toFloat(),
+                    value = workingConnection.frequencyPenalty.toFloat(),
                     range = -2f..2f,
                     steps = 40,
-                    onValueChange = { onUpdate(connection.copy(frequencyPenalty = it.toDouble())) }
+                    onValueChange = {
+                        workingConnection = workingConnection.copy(frequencyPenalty = it.toDouble())
+                        persistParams()
+                    }
                 )
 
                 ParameterSlider(
                     label = "Response Timeout",
-                    value = connection.timeoutLimit.toFloat(),
+                    value = workingConnection.timeoutLimit.toFloat(),
                     range = 0f..120f,
                     steps = 5,
                     format = { if (it == 0f) "No Timer" else "${it.toInt()}s" },
                     onValueChange = { floatValue ->
-                        onUpdate(connection.copy(timeoutLimit = floatValue.roundToInt().toLong()))
+                        workingConnection = workingConnection.copy(timeoutLimit = floatValue.roundToInt().toLong())
+                        persistParams()
                     }
                 )
             }

@@ -16,7 +16,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import chat.donzi.localtavern.data.database.CharacterEntity
+import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.utils.CharacterManager
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
@@ -24,17 +24,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CharacterListSection(
-    characters: List<CharacterEntity>,
+    characters: List<Character>,
     modifier: Modifier = Modifier,
-    onSelect: (CharacterEntity) -> Unit,
+    onSelect: (Character) -> Unit,
     onDeleteSelected: (Set<String>) -> Unit,
     onImportCharacter: (SillyTavernCardV2, ByteArray?) -> Unit,
     onCreateCharacter: (String) -> Unit,
-    onEditCharacter: (CharacterEntity) -> Unit,
-    onExportCharacter: (CharacterEntity) -> Unit,
+    onEditCharacter: (Character) -> Unit,
+    onExportCharacter: (Character) -> Unit,
     actions: @Composable RowScope.() -> Unit = {},
     autoShowNewCharacterMenu: Boolean = false,
     onAutoShowMenuConsumed: () -> Unit = {}
@@ -49,10 +48,13 @@ fun CharacterListSection(
     var newCharacterName by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
-    var characterToDelete by remember { mutableStateOf<CharacterEntity?>(null) }
+    var characterToDelete by remember { mutableStateOf<Character?>(null) }
     var showMultiDeleteConfirm by remember { mutableStateOf(false) }
 
-    val pickImage = rememberImagePickerLauncher { imagesList ->
+    // PNG cards must keep their original bytes so the embedded metadata and
+    // avatar survive unchanged; the picker default (downscaled re-encode) is
+    // only for chat attachments and avatars.
+    val pickImage = rememberImagePickerLauncher({ imagesList ->
         imagesList.firstOrNull()?.let { bytes ->
             scope.launch {
                 val imported = withContext(Dispatchers.Default) {
@@ -63,7 +65,7 @@ fun CharacterListSection(
                 }
             }
         }
-    }
+    }, preserveOriginal = true)
 
     LaunchedEffect(autoShowNewCharacterMenu) {
         if (autoShowNewCharacterMenu) {
@@ -130,7 +132,7 @@ fun CharacterListSection(
                                 interactionSource = interactionSource,
                                 leadingIcon = {
                                     IconButton(
-                                        onClick = { isSearchActive = false },
+                                        onClick = { isSearchActive = false; query = "" },
                                         modifier = Modifier.size(40.dp)
                                     ) {
                                         Icon(
@@ -256,8 +258,9 @@ fun CharacterListSection(
                 key(char.id) {
                     val isSelected = selectedIds.contains(char.id)
                     CharacterItem(
+                        id = char.id,
                         name = char.name,
-                        description = char.personality ?: "No personality set.",
+                        description = char.personality,
                         avatarData = char.avatarData,
                         selected = isSelected,
                         selectionMode = selectionMode,

@@ -2,7 +2,7 @@ package chat.donzi.localtavern.utils
 
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.data.models.SillyTavernWrapper
-import chat.donzi.localtavern.data.database.CharacterEntity
+import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.saveFile
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -90,22 +90,28 @@ object CharacterManager {
         }
     }
 
-    private fun getCardJsonString(character: CharacterEntity): String {
+    private fun getCardJsonString(character: Character): String {
         val card = SillyTavernCardV2(
             name = character.name,
             description = character.description ?: "",
-            personality = character.personality ?: "",
-            scenario = character.scenario ?: "",
+            personality = character.personality,
+            scenario = character.scenario,
             first_mes = character.firstMes ?: "",
-            mes_example = character.mesExample ?: "",
+            mes_example = character.mesExample.joinToString("|||"),
             system_prompt = "",
-            alternate_greetings = character.altGreetings?.split("|||") ?: emptyList()
+            alternate_greetings = character.altGreetings
         )
-        return json.encodeToString(card)
+        return json.encodeToString(
+            SillyTavernWrapper(
+                spec = "chara_card_v2",
+                spec_version = "2.0",
+                data = card
+            )
+        )
     }
 
     @OptIn(ExperimentalEncodingApi::class)
-    fun exportToPng(originalImage: ByteArray, character: CharacterEntity): ByteArray {
+    fun exportToPng(originalImage: ByteArray, character: Character): ByteArray {
         val pngImageBytes = if (isPng(originalImage)) {
             originalImage
         } else {
@@ -119,20 +125,29 @@ object CharacterManager {
         return insertMetadataChunk(pngImageBytes, chunkData)
     }
 
-    fun exportToJson(character: CharacterEntity): ByteArray {
+    fun exportToJson(character: Character): ByteArray {
         return getCardJsonString(character).encodeToByteArray()
     }
 
-    fun getFileName(character: CharacterEntity): String {
+    fun getFileName(character: Character): String {
+        val safeName = sanitizeFileName(character.name)
         val hasAvatar = character.avatarData != null && character.avatarData.isNotEmpty()
-        return if (hasAvatar) "${character.name}.png" else "${character.name}.json"
+        return if (hasAvatar) "$safeName.png" else "$safeName.json"
+    }
+
+    private fun sanitizeFileName(name: String): String {
+        val sanitized = name
+            .replace(Regex("""[\\/:*?"<>|]"""), "_")
+            .trim()
+            .ifBlank { "character" }
+        return sanitized.take(80)
     }
 
     fun extractParentDir(savedPath: String): String {
         return if (savedPath.contains('/')) savedPath.substringBeforeLast('/') else savedPath.substringBeforeLast('\\')
     }
 
-    fun performExport(character: CharacterEntity): String? {
+    fun prepareExportBytes(character: Character): Pair<String, ByteArray> {
         val fileName = getFileName(character)
         val avatar = character.avatarData
 
@@ -142,8 +157,17 @@ object CharacterManager {
             exportToJson(character)
         }
 
-        val savedPath = saveFile(fileName, exportedBytes)
+        return fileName to exportedBytes
+    }
+
+    fun saveExportedFile(fileName: String, bytes: ByteArray): String? {
+        val savedPath = saveFile(fileName, bytes)
         return savedPath?.let { extractParentDir(it) }
+    }
+
+    fun performExport(character: Character): String? {
+        val (fileName, exportedBytes) = prepareExportBytes(character)
+        return saveExportedFile(fileName, exportedBytes)
     }
 
     private fun insertMetadataChunk(pngBytes: ByteArray, data: ByteArray): ByteArray {

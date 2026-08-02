@@ -36,9 +36,12 @@ actual fun saveFile(fileName: String, bytes: ByteArray): String? {
                 put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/LocalTavern/ExportedCharacters")
             }
             val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues) ?: return null
-            resolver.openOutputStream(uri)?.use { outputStream ->
-                outputStream.write(bytes)
+            val outputStream = resolver.openOutputStream(uri)
+            if (outputStream == null) {
+                resolver.delete(uri, null, null)
+                return null
             }
+            outputStream.use { output -> output.write(bytes) }
             uri.toString()
         } else {
             val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
@@ -60,8 +63,12 @@ actual fun saveFile(fileName: String, bytes: ByteArray): String? {
 actual fun openDirectory(path: String) {
     val context = AndroidAppContext.getContext() ?: return
 
-    val isJson = path.endsWith(".json", ignoreCase = true)
-    val mimeType = if (isJson) "application/json" else "image/png"
+    val mimeType = when {
+        path.startsWith("content://") ->
+            context.contentResolver.getType(path.toUri()) ?: "image/png"
+        path.endsWith(".json", ignoreCase = true) -> "application/json"
+        else -> "image/png"
+    }
 
     if (path.startsWith("content://")) {
         try {

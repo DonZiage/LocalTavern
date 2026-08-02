@@ -65,6 +65,11 @@ fun ParameterSlider(
                                 val parsed = textValue.toFloatOrNull()
                                 if (parsed != null) {
                                     val clamped = parsed.coerceIn(range.start, range.endInclusive)
+                                    // Sync the local slider/text state so the display
+                                    // reflects the committed value even when the
+                                    // clamped value equals the current one.
+                                    sliderValue = clamped
+                                    textValue = format(clamped)
                                     onValueChange(clamped)
                                 }
                                 isEditing = false

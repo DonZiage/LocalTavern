@@ -26,6 +26,7 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
+            implementation(libs.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.kotlinx.datetime)
 
@@ -39,6 +40,7 @@ kotlin {
             implementation(libs.compose.materialIconsExtended)
 
             implementation(libs.sqldelight.runtime)
+            implementation(libs.sqldelight.coroutines)
 
             implementation(libs.ktor.client.core)
             implementation(libs.ktor.client.content.negotiation)
@@ -47,16 +49,27 @@ kotlin {
             implementation(libs.coil3.coil.compose)
         }
 
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+            implementation(libs.coroutines.test)
+        }
+
+        getByName("desktopTest") {
+            dependencies {
+                implementation("io.ktor:ktor-client-mock:$ktorVersion")
+            }
+        }
+
         androidMain.dependencies {
             implementation(libs.sqldelight.driver.android)
             implementation(libs.androidx.activity.compose)
             implementation(libs.ktor.client.okhttp)
         }
 
-
         getByName("desktopMain") {
             dependencies {
                 implementation(compose.desktop.currentOs)
+                implementation(libs.coroutines.swing)
                 implementation(libs.sqldelight.driver.desktop)
 
                 implementation("io.ktor:ktor-client-java:$ktorVersion")
@@ -92,10 +105,14 @@ compose.desktop {
     application {
         mainClass = "chat.donzi.localtavern.MainKt"
 
+        jvmArgs("--enable-native-access=ALL-UNNAMED")
+
         nativeDistributions {
             targetFormats(
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Msi,
-                org.jetbrains.compose.desktop.application.dsl.TargetFormat.Exe
+                org.jetbrains.compose.desktop.application.dsl.TargetFormat.Exe,
+                org.jetbrains.compose.desktop.application.dsl.TargetFormat.Deb,
+                org.jetbrains.compose.desktop.application.dsl.TargetFormat.Rpm
             )
             packageName = "LocalTavern"
             packageVersion = "0.5.5"

@@ -23,7 +23,7 @@ import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import chat.donzi.localtavern.data.database.CharacterEntity
+import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
@@ -33,7 +33,7 @@ import kotlin.time.Duration.Companion.milliseconds
 
 @Composable
 fun CharacterDefinitionEditor(
-    character: CharacterEntity,
+    character: Character,
     onClose: () -> Unit,
     onSave: (
         name: String,
@@ -46,18 +46,18 @@ fun CharacterDefinitionEditor(
         avatarData: ByteArray?
     ) -> Unit,
     onDelete: () -> Unit,
-    onExport: (CharacterEntity) -> Unit
+    onExport: (Character) -> Unit
 ) {
     var name by remember(character.id) { mutableStateOf(character.name) }
     var description by remember(character.id) { mutableStateOf(character.description ?: "") }
-    var personality by remember(character.id) { mutableStateOf(character.personality ?: "") }
-    var scenario by remember(character.id) { mutableStateOf(character.scenario ?: "") }
+    var personality by remember(character.id) { mutableStateOf(character.personality) }
+    var scenario by remember(character.id) { mutableStateOf(character.scenario) }
     var firstMes by remember(character.id) { mutableStateOf(character.firstMes ?: "") }
     var mesExample by remember(character.id) {
-        mutableStateOf(character.mesExample?.split("|||")?.filter { it.isNotBlank() } ?: emptyList())
+        mutableStateOf(character.mesExample.filter { it.isNotBlank() })
     }
     var altGreetings by remember(character.id) {
-        mutableStateOf(character.altGreetings?.split("|||")?.filter { it.isNotBlank() } ?: emptyList())
+        mutableStateOf(character.altGreetings.filter { it.isNotBlank() })
     }
     var avatarData by remember(character.id) { mutableStateOf(character.avatarData) }
 
@@ -68,7 +68,12 @@ fun CharacterDefinitionEditor(
 
     val deleteRed = Color(0xFFD32F2F)
 
-    fun persist() = onSave(name, description, personality, scenario, firstMes, mesExample, altGreetings, avatarData)
+    fun persist() = onSave(
+        name, description, personality, scenario, firstMes,
+        mesExample.filter { it.isNotBlank() },
+        altGreetings.filter { it.isNotBlank() },
+        avatarData
+    )
 
     var isFirstLoad by remember(character.id) { mutableStateOf(true) }
     LaunchedEffect(name, description, personality, scenario, firstMes, mesExample, altGreetings, avatarData) {
@@ -110,15 +115,17 @@ fun CharacterDefinitionEditor(
     val exportCharacter = {
         val currentCharacter = character.copy(
             name = name, description = description, personality = personality, scenario = scenario, firstMes = firstMes,
-            mesExample = mesExample.filter { it.isNotBlank() }.joinToString("|||"),
-            altGreetings = altGreetings.filter { it.isNotBlank() }.joinToString("|||"), avatarData = avatarData
+            mesExample = mesExample.filter { it.isNotBlank() },
+            altGreetings = altGreetings.filter { it.isNotBlank() }, avatarData = avatarData
         )
         onExport(currentCharacter)
     }
 
-    val pickImage = rememberImagePickerLauncher { imagesList ->
-        avatarData = imagesList.firstOrNull()
-    }
+    val pickImage = rememberImagePickerLauncher(
+        onImagesPicked = { imagesList ->
+            avatarData = imagesList.firstOrNull()
+        }
+    )
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -276,6 +283,14 @@ fun MessageExamplesStrip(
     val scrollState = rememberScrollState()
     var editingIndex by remember { mutableStateOf<Int?>(null) }
 
+    // Reset a stale edit target after the list shrinks (deleted entries).
+    LaunchedEffect(editingIndex, examples.size) {
+        val idx = editingIndex
+        if (idx != null && idx !in examples.indices) {
+            editingIndex = null
+        }
+    }
+
     Column(modifier = modifier.fillMaxWidth()) {
         Text("Message Examples", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(bottom = 6.dp))
 
@@ -316,7 +331,13 @@ fun MessageExamplesStrip(
         if (idx in examples.indices) {
             var text by remember(examples[idx]) { mutableStateOf(examples[idx]) }
             AlertDialog(
-                onDismissRequest = { editingIndex = null },
+                onDismissRequest = {
+                    // Cancelling a freshly added empty entry must not leave a ghost pill.
+                    if (idx in examples.indices && examples[idx].isBlank()) {
+                        onChange(examples.toMutableList().also { it.removeAt(idx) })
+                    }
+                    editingIndex = null
+                },
                 title = { Text("Message Example #${idx + 1}") },
                 text = {
                     Column {
@@ -334,12 +355,16 @@ fun MessageExamplesStrip(
                             Spacer(Modifier.width(4.dp))
                             Text("Delete")
                         }
-                        TextButton(onClick = { editingIndex = null }) { Text("Cancel") }
+                        TextButton(onClick = {
+                            // Cancelling a freshly added empty entry must not leave a ghost pill.
+                            if (idx in examples.indices && examples[idx].isBlank()) {
+                                onChange(examples.toMutableList().also { it.removeAt(idx) })
+                            }
+                            editingIndex = null
+                        }) { Text("Cancel") }
                     }
                 }
             )
-        } else {
-            editingIndex = null
         }
     }
 }

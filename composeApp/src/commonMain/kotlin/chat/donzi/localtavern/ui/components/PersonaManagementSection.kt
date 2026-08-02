@@ -4,11 +4,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import chat.donzi.localtavern.data.database.PersonaEntity
+import chat.donzi.localtavern.domain.Persona
 
 @Composable
 fun PersonaManagementSection(
-    personas: List<PersonaEntity>,
+    personas: List<Persona>,
     activePersonaId: String?,
     onSelect: (String) -> Unit,
     onAdd: (String, String?, ByteArray?) -> Unit,

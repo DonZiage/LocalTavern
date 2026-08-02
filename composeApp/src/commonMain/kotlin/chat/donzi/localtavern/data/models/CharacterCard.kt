@@ -17,5 +17,7 @@ data class SillyTavernCardV2(
 
 @Serializable
 data class SillyTavernWrapper(
+    val spec: String = "chara_card_v2",
+    val spec_version: String = "2.0",
     val data: SillyTavernCardV2? = null
 )

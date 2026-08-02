@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -28,6 +29,7 @@ import coil3.request.ImageRequest
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CharacterItem(
+    id: String,
     name: String,
     description: String,
     avatarData: ByteArray? = null,
@@ -61,7 +63,7 @@ fun CharacterItem(
                 if (avatarData != null) {
                     val imageRequest = ImageRequest.Builder(LocalPlatformContext.current)
                         .data(avatarData)
-                        .memoryCacheKey("char_item_${name}_${avatarData.contentHashCode()}")
+                        .memoryCacheKey("char_item_${id}_${avatarData.contentHashCode()}")
                         .build()
 
                     AsyncImage(
@@ -117,7 +119,7 @@ fun CharacterItem(
                 Box {
                     IconButton(onClick = { showMenu = true }) {
                         Icon(
-                            Icons.Default.Edit,
+                            Icons.Default.MoreVert,
                             contentDescription = "Character Menu",
                             modifier = Modifier.size(20.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)

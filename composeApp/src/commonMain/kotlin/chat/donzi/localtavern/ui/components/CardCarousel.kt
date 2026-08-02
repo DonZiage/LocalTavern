@@ -38,14 +38,14 @@ fun <T> CardCarousel(
     title: String,
     items: List<T>,
     key: (T) -> Any,
-    onReorder: (List<T>) -> Unit = {},
+    onReorder: ((List<T>) -> Unit)? = null,
     onAddClick: () -> Unit,
     onDelete: ((T) -> Unit)? = null,
     addLabel: String = "Add New",
     cardHeight: Dp = 115.dp,
     carouselHeight: Dp = 140.dp,
     itemWidthFactor: Float = 0.7f,
-    initialIndex: Int = 0,
+    initialIndex: Int? = null,
     itemContent: @Composable (item: T, isDragging: Boolean, modifier: Modifier, requestCenter: () -> Unit, onDeleteRequest: () -> Unit) -> Unit
 ) {
     val scope = rememberCoroutineScope()
@@ -54,6 +54,7 @@ fun <T> CardCarousel(
     val reorderableItems = remember { mutableStateListOf<T>() }
     var hasScrolledToInitial by remember { mutableStateOf(false) }
     var itemToDelete by remember { mutableStateOf<T?>(null) }
+    var originalOrder by remember { mutableStateOf<List<T>>(emptyList()) }
 
     var isCentering by remember { mutableStateOf(false) }
     var draggedItemId by remember { mutableStateOf<Any?>(null) }
@@ -76,7 +77,7 @@ fun <T> CardCarousel(
                     if (kotlin.math.abs(item.offset - targetOffset) > 1) {
                         try {
                             isCentering = true
-                            listState.animateScrollToItem(item.index, -targetOffset)
+                            listState.animateScrollToItem(item.index, targetOffset)
                         } catch (_: Exception) {
                         } finally {
                             isCentering = false
@@ -99,7 +100,14 @@ fun <T> CardCarousel(
     }
 
     LaunchedEffect(items) {
-        val newlyAddedItemIndex = items.indexOfFirst { !reorderableItems.contains(it) }
+        val wasEmpty = reorderableItems.isEmpty()
+        val newlyAddedItemIndex = if (wasEmpty) {
+            -1
+        } else {
+            items.indexOfFirst { candidate ->
+                reorderableItems.none { existing -> key(existing) == key(candidate) }
+            }
+        }
 
         reorderableItems.clear()
         reorderableItems.addAll(items)
@@ -113,7 +121,7 @@ fun <T> CardCarousel(
                 val visibleItems = layoutInfo.visibleItemsInfo
                 val itemSize = visibleItems.find { it.index == newlyAddedItemIndex }?.size
                     ?: (viewportWidth * itemWidthFactor).roundToInt()
-                val centerOffset = -((viewportWidth - itemSize) / 2)
+                val centerOffset = (viewportWidth - itemSize) / 2
                 listState.animateScrollToItem(newlyAddedItemIndex, centerOffset)
             } catch (_: Exception) {
             } finally {
@@ -154,7 +162,8 @@ fun <T> CardCarousel(
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
                         if (event.type == PointerEventType.Scroll) {
-                            val delta = event.changes.first().scrollDelta
+                            val change = event.changes.firstOrNull() ?: continue
+                            val delta = change.scrollDelta
                             val scrollAmount = delta.y * 64f + delta.x * 64f
                             if (scrollAmount != 0f) {
                                 mouseScrollInteractionCount++
@@ -189,11 +198,17 @@ fun <T> CardCarousel(
             val horizontalPaddingDp = (this.maxWidth - itemWidthDp) / 2
             val itemWidthPx = with(density) { itemWidthDp.toPx() }
 
-            LaunchedEffect(initialIndex, this.maxWidth) {
+            LaunchedEffect(initialIndex) {
                 val size = items.size
                 if (size > 0) {
-                    val targetIndex = initialIndex.coerceIn(0, size - 1)
-                    val centerOffset = -((constraints.maxWidth - itemWidthPx) / 2).roundToInt()
+                    val targetIndex = initialIndex?.coerceIn(0, size - 1) ?: -1
+                    val centerOffset = ((constraints.maxWidth - itemWidthPx) / 2).roundToInt()
+                    if (targetIndex == -1) {
+                        // No item is selected; leave the carousel at its natural start
+                        // instead of implying the first item is the active one.
+                        hasScrolledToInitial = true
+                        return@LaunchedEffect
+                    }
                     if (!hasScrolledToInitial) {
                         listState.scrollToItem(targetIndex, centerOffset)
                         hasScrolledToInitial = true
@@ -215,7 +230,7 @@ fun <T> CardCarousel(
                 if (isCentering) return
                 try {
                     isCentering = true
-                    val centerOffset = -((constraints.maxWidth - itemWidthPx) / 2).roundToInt()
+                    val centerOffset = ((constraints.maxWidth - itemWidthPx) / 2).roundToInt()
                     listState.animateScrollToItem(index, centerOffset)
                 } catch (_: Exception) {
                 } finally {
@@ -276,19 +291,25 @@ fun <T> CardCarousel(
                         if (!isCentering) {
                             draggedItemId = itemId
                             dragDisplacement = 0f
+                            originalOrder = reorderableItems.toList()
                         }
                     }
 
                     val handleDragEnd: () -> Unit = {
                         draggedItemId = null
                         dragDisplacement = 0f
-                        onReorder(reorderableItems.toList())
+                        val finalOrder = reorderableItems.toList()
+                        if (finalOrder != originalOrder) {
+                            onReorder?.invoke(finalOrder)
+                        }
+                        originalOrder = emptyList()
                         scope.launch { performSnap() }
                     }
 
                     val handleDragCancel: () -> Unit = {
                         draggedItemId = null
                         dragDisplacement = 0f
+                        originalOrder = emptyList()
                         scope.launch { performSnap() }
                     }
 
@@ -317,27 +338,36 @@ fun <T> CardCarousel(
                         scope.launch { scrollToIndexCentered(index) }
                     }
 
+                    val itemModifier = Modifier
+                        .width(itemWidthDp)
+                        .height(cardHeight)
+                        .zIndex(if (isDragging) 1f else 0f)
+                        .graphicsLayer {
+                            translationX = if (isDragging) dragDisplacement else 0f
+                            scaleX = scale
+                            scaleY = scale
+                            alpha = if (isDragging) 0.8f else 1f
+                        }
+                        .then(
+                            if (onReorder != null) {
+                                // itemWidthPx is a key so drag math tracks resizes.
+                                Modifier.pointerInput(itemId, itemWidthPx) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = handleDragStart,
+                                        onDragEnd = handleDragEnd,
+                                        onDragCancel = handleDragCancel,
+                                        onDrag = handleDrag
+                                    )
+                                }
+                            } else {
+                                Modifier
+                            }
+                        )
+
                     itemContent(
                         item,
                         isDragging,
-                        Modifier
-                            .width(itemWidthDp)
-                            .height(cardHeight)
-                            .zIndex(if (isDragging) 1f else 0f)
-                            .graphicsLayer {
-                                translationX = if (isDragging) dragDisplacement else 0f
-                                scaleX = scale
-                                scaleY = scale
-                                alpha = if (isDragging) 0.8f else 1f
-                            }
-                            .pointerInput(itemId) {
-                                detectDragGesturesAfterLongPress(
-                                    onDragStart = handleDragStart,
-                                    onDragEnd = handleDragEnd,
-                                    onDragCancel = handleDragCancel,
-                                    onDrag = handleDrag
-                                )
-                            },
+                        itemModifier,
                         onRequestCenter
                     ) {
                         itemToDelete = item

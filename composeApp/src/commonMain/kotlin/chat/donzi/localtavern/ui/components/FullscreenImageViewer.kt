@@ -41,7 +41,10 @@ fun FullscreenImageViewer(
     initialIndex: Int,
     onDismiss: () -> Unit
 ) {
-    var currentIndex by remember(initialIndex) { mutableStateOf(initialIndex.coerceIn(0, images.size - 1)) }
+    if (images.isEmpty()) return
+    var currentIndex by remember(initialIndex, images.size) {
+        mutableStateOf(initialIndex.coerceIn(0, (images.size - 1).coerceAtLeast(0)))
+    }
     val thumbnailScrollState = rememberScrollState()
 
     Dialog(

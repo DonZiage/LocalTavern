@@ -5,7 +5,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import chat.donzi.localtavern.utils.PromptBlock
+import chat.donzi.localtavern.domain.PromptBlock
 
 @Composable
 fun PromptBlockEditDialog(
@@ -19,7 +19,7 @@ fun PromptBlockEditDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (block.id.isEmpty()) "Add Custom Block" else "Edit ${block.name}") },
+        title = { Text(if (block.id.isEmpty()) "Add Custom Block" else "Edit $blockName") },
         text = {
             Column {
                 if (block.isCustom || block.id.isEmpty()) {

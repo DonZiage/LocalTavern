@@ -44,6 +44,14 @@ fun AlternateGreetingsStrip(
     var editingIndex by remember { mutableStateOf<Int?>(null) }
     val scrollState = rememberScrollState()
 
+    // Reset a stale edit target after the list shrinks (deleted entries).
+    LaunchedEffect(editingIndex, greetings.size) {
+        val idx = editingIndex
+        if (idx != null && idx !in greetings.indices) {
+            editingIndex = null
+        }
+    }
+
     Column(modifier = modifier.fillMaxWidth()) {
         Text(
             "Alternate Greetings",
@@ -108,7 +116,13 @@ fun AlternateGreetingsStrip(
             GreetingEditDialog(
                 initial = greetings[idx],
                 indexLabel = idx + 1,
-                onDismiss = { editingIndex = null },
+                onDismiss = {
+                    // Cancelling a freshly added empty entry must not leave a ghost pill.
+                    if (idx in greetings.indices && greetings[idx].isBlank()) {
+                        onChange(greetings.toMutableList().also { it.removeAt(idx) })
+                    }
+                    editingIndex = null
+                },
                 onSave = { newValue ->
                     onChange(greetings.toMutableList().also { it[idx] = newValue })
                     editingIndex = null
@@ -118,8 +132,6 @@ fun AlternateGreetingsStrip(
                     editingIndex = null
                 }
             )
-        } else {
-            editingIndex = null
         }
     }
 }

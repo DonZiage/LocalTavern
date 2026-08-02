@@ -11,11 +11,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import chat.donzi.localtavern.utils.PromptBlock
+import chat.donzi.localtavern.domain.PromptBlock
 import kotlin.math.roundToInt
 
 @Composable
@@ -33,7 +34,16 @@ fun SystemPromptSettings(
     var dragDisplacement by remember { mutableFloatStateOf(0f) }
 
     val density = LocalDensity.current
-    val rowHeightPx = with(density) { 52.dp.toPx() }
+    // Measure the real row pitch instead of guessing a fixed height, so the
+    // drop-index math stays correct across densities and font scales.
+    var measuredItemHeight by remember { mutableStateOf<Float?>(null) }
+    val spacingPx = with(density) { 8.dp.toPx() }
+    val rowHeightPx = (measuredItemHeight ?: with(density) { 52.dp.toPx() }) + spacingPx
+
+    // Keep the latest blocks list visible to the pointerInput coroutine, which
+    // only captures its lambdas once (keyed on block.id).
+    val latestBlocks by rememberUpdatedState(blocks)
+    val latestOnBlocksChange by rememberUpdatedState(onBlocksChange)
 
     val currentIdx = blocks.indexOfFirst { it.id == draggedBlockId }
     val targetIdx = if (currentIdx != -1) {
@@ -103,18 +113,32 @@ fun SystemPromptSettings(
                             scaleY = scale
                             alpha = if (isDragging) 0.9f else 1f
                         }
-                        .pointerInput(block.id) {
+                        .then(
+                            if (index == 0) {
+                                Modifier.onGloballyPositioned { measuredItemHeight = it.size.height.toFloat() }
+                            } else {
+                                Modifier
+                            }
+                        )
+                        // rowHeightPx is a key so the drag/drop math tracks the
+                        // measured row height instead of the initial default.
+                        .pointerInput(block.id, rowHeightPx) {
                             detectDragGesturesAfterLongPress(
                                 onDragStart = {
                                     draggedBlockId = block.id
                                     dragDisplacement = 0f
                                 },
                                 onDragEnd = {
-                                    if (currentIdx != -1 && targetIdx != -1 && targetIdx != currentIdx) {
-                                        val newList = blocks.toMutableList()
-                                        val movedItem = newList.removeAt(currentIdx)
-                                        newList.add(targetIdx, movedItem)
-                                        onBlocksChange(newList)
+                                    val currentBlockList = latestBlocks
+                                    val curIdx = currentBlockList.indexOfFirst { it.id == block.id }
+                                    val tgtIdx = if (curIdx != -1) {
+                                        (curIdx + (dragDisplacement / rowHeightPx).roundToInt()).coerceIn(0, currentBlockList.size - 1)
+                                    } else -1
+                                    if (curIdx != -1 && tgtIdx != -1 && tgtIdx != curIdx) {
+                                        val newList = currentBlockList.toMutableList()
+                                        val movedItem = newList.removeAt(curIdx)
+                                        newList.add(tgtIdx, movedItem)
+                                        latestOnBlocksChange(newList)
                                     }
                                     draggedBlockId = null
                                     dragDisplacement = 0f

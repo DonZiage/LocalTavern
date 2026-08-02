@@ -1,7 +1,9 @@
 package chat.donzi.localtavern.utils
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
@@ -17,8 +19,11 @@ import platform.Foundation.getBytes
 import platform.darwin.NSObject
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_main_queue
+import platform.darwin.dispatch_get_global_queue
+import platform.darwin.DISPATCH_QUEUE_PRIORITY_DEFAULT
 import kotlinx.cinterop.BetaInteropApi
 import platform.UniformTypeIdentifiers.UTTypeImage
+import chat.donzi.localtavern.utils.ImageSanitizer
 
 @OptIn(ExperimentalForeignApi::class)
 fun NSData.toByteArray(): ByteArray {
@@ -34,7 +39,22 @@ fun NSData.toByteArray(): ByteArray {
 
 @OptIn(BetaInteropApi::class)
 @Composable
-actual fun rememberImagePickerLauncher(onImagesPicked: (List<ByteArray>) -> Unit): () -> Unit {
+actual fun rememberImagePickerLauncher(
+    onImagesPicked: (List<ByteArray>) -> Unit,
+    preserveOriginal: Boolean
+): () -> Unit {
+    // The delegate is created once but must always invoke the latest callback.
+    val currentOnImagesPicked by rememberUpdatedState(onImagesPicked)
+
+    fun deliverSanitized(imageList: List<ByteArray>) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0)) {
+            val sanitized = ImageSanitizer.sanitize(imageList, preserveOriginal)
+            dispatch_async(dispatch_get_main_queue()) {
+                currentOnImagesPicked(sanitized)
+            }
+        }
+    }
+
     val delegate = remember {
         object : NSObject(), PHPickerViewControllerDelegateProtocol {
             override fun picker(picker: PHPickerViewController, didFinishPicking: List<*>) {
@@ -56,16 +76,16 @@ actual fun rememberImagePickerLauncher(onImagesPicked: (List<ByteArray>) -> Unit
                                     imageList.add(data.toByteArray())
                                 }
                                 remaining--
-                                if (remaining == 0 && imageList.isNotEmpty()) {
-                                    onImagesPicked(imageList)
+                                if (remaining == 0) {
+                                    deliverSanitized(imageList)
                                 }
                             }
                         }
                     } else {
                         dispatch_async(dispatch_get_main_queue()) {
                             remaining--
-                            if (remaining == 0 && imageList.isNotEmpty()) {
-                                onImagesPicked(imageList)
+                            if (remaining == 0) {
+                                deliverSanitized(imageList)
                             }
                         }
                     }

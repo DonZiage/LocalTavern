@@ -4,10 +4,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlin.time.Duration.Companion.milliseconds
 
 @Composable
 fun MessageActionMenu(
@@ -18,8 +14,6 @@ fun MessageActionMenu(
     onAddImage: () -> Unit,
     onBranch: () -> Unit
 ) {
-    val coroutineScope = rememberCoroutineScope()
-
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismissRequest
@@ -28,10 +22,7 @@ fun MessageActionMenu(
             text = { Text("Copy") },
             onClick = {
                 onDismissRequest()
-                coroutineScope.launch {
-                    delay(50.milliseconds)
-                    onCopy()
-                }
+                onCopy()
             },
             leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) }
         )
@@ -39,10 +30,7 @@ fun MessageActionMenu(
             text = { Text("Add Image") },
             onClick = {
                 onDismissRequest()
-                coroutineScope.launch {
-                    delay(50.milliseconds)
-                    onAddImage()
-                }
+                onAddImage()
             },
             leadingIcon = { Icon(Icons.Default.AddPhotoAlternate, contentDescription = null) }
         )
@@ -50,10 +38,7 @@ fun MessageActionMenu(
             text = { Text("Branch") },
             onClick = {
                 onDismissRequest()
-                coroutineScope.launch {
-                    delay(50.milliseconds)
-                    onBranch()
-                }
+                onBranch()
             },
             leadingIcon = { Icon(Icons.Default.AccountTree, contentDescription = null) }
         )
@@ -62,10 +47,7 @@ fun MessageActionMenu(
             text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
             onClick = {
                 onDismissRequest()
-                coroutineScope.launch {
-                    delay(50.milliseconds)
-                    onDelete()
-                }
+                onDelete()
             },
             leadingIcon = {
                 Icon(

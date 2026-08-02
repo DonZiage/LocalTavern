@@ -9,14 +9,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -38,77 +36,12 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
-
-@Composable
-fun parseMarkdownToAnnotatedString(text: String, defaultColor: Color): AnnotatedString {
-    val codeBackgroundColor = MaterialTheme.colorScheme.surfaceVariant
-
-    return remember(text, defaultColor, codeBackgroundColor) {
-        buildAnnotatedString {
-            val pattern = """(`[^`\n]+`|\*\*\*[^*]+\*\*\*|\*\*[^*]+\*\*|\*[^*]+\*|_[^_]+_)""".toRegex()
-            var lastIndex = 0
-
-            pattern.findAll(text).forEach { matchResult ->
-                if (matchResult.range.first > lastIndex) {
-                    append(text.substring(lastIndex, matchResult.range.first))
-                }
-
-                val token = matchResult.value
-                when {
-                    token.startsWith("`") && token.endsWith("`") -> {
-                        withStyle(
-                            SpanStyle(
-                                fontFamily = FontFamily.Monospace,
-                                background = codeBackgroundColor,
-                                fontSize = 14.sp
-                            )
-                        ) {
-                            append(token.removeSurrounding("`"))
-                        }
-                    }
-                    token.startsWith("***") && token.endsWith("***") -> {
-                        withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)) {
-                            append(token.removeSurrounding("***"))
-                        }
-                    }
-                    token.startsWith("**") && token.endsWith("**") -> {
-                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
-                            append(token.removeSurrounding("**"))
-                        }
-                    }
-                    token.startsWith("*") && token.endsWith("*") -> {
-                        withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = defaultColor.copy(alpha = 0.85f))) {
-                            append(token.removeSurrounding("*"))
-                        }
-                    }
-                    token.startsWith("_") && token.endsWith("_") -> {
-                        withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
-                            append(token.removeSurrounding("_"))
-                        }
-                    }
-                    else -> append(token)
-                }
-                lastIndex = matchResult.range.last + 1
-            }
-            if (lastIndex < text.length) {
-                append(text.substring(lastIndex))
-            }
-        }
-    }
-}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -127,7 +60,8 @@ fun MessageBubble(
     onSelectToggle: () -> Unit = {},
     isSwipeable: Boolean = false,
     onSwipeLeft: () -> Unit = {},
-    onSwipeRight: () -> Unit = {}
+    onSwipeRight: () -> Unit = {},
+    isGenerating: Boolean = false
 ) {
     var isEditing by remember { mutableStateOf(false) }
     var editedTextValue by remember(content) {
@@ -142,9 +76,6 @@ fun MessageBubble(
     var showActionsOnMobile by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showFullImage by remember { mutableStateOf(false) }
-
-    var showGallery by remember { mutableStateOf(false) }
-    var galleryInitialIndex by remember { mutableStateOf(0) }
 
     val interactionSource = remember { MutableInteractionSource() }
     val isHovered by interactionSource.collectIsHoveredAsState()
@@ -246,32 +177,11 @@ fun MessageBubble(
                 actionsBlock()
             }
         } else {
-            Box(
-                modifier = Modifier
-                    .padding(end = 6.dp)
-                    .size(36.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .clickable { if (avatarData != null) showFullImage = true }
-                    .align(Alignment.Top),
-                contentAlignment = Alignment.Center
-            ) {
-                if (avatarData != null) {
-                    AsyncImage(
-                        model = avatarData,
-                        contentDescription = "Character Avatar",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.Person,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
+            BubbleAvatar(
+                avatarData = avatarData,
+                onFullscreen = { showFullImage = true },
+                modifier = Modifier.align(Alignment.Top).padding(end = 6.dp)
+            )
         }
 
         Box(
@@ -306,45 +216,19 @@ fun MessageBubble(
                 .padding(12.dp)
         ) {
             Column {
-                if (content == "...") {
+                if (!isUser && isGenerating && content == "...") {
                     AnimatedEllipsis(color = textColor)
                 } else if (isEditing) {
-                    BasicTextField(
+                    MessageEditTextField(
                         value = editedTextValue,
-                        onValueChange = {
-                            editedTextValue = it
-                            coroutineScope.launch {
-                                bringIntoViewRequester.bringIntoView()
-                            }
-                        },
-                        modifier = Modifier
-                            .widthIn(min = 40.dp)
-                            .focusRequester(focusRequester)
-                            .bringIntoViewRequester(bringIntoViewRequester)
-                            .onPreviewKeyEvent { event ->
-                                if (event.type == KeyEventType.KeyDown &&
-                                    (event.key == Key.Enter || event.key == Key.NumPadEnter)) {
-                                    if (event.isShiftPressed) {
-                                        editedTextValue = editedTextValue.insertNewline()
-                                        coroutineScope.launch {
-                                            bringIntoViewRequester.bringIntoView()
-                                        }
-                                        true
-                                    } else {
-                                        onEdit(editedTextValue.text, editedImages)
-                                        isEditing = false
-                                        true
-                                    }
-                                } else {
-                                    false
-                                }
-                            },
-                        textStyle = LocalTextStyle.current.copy(
-                            color = textColor,
-                            fontSize = 16.sp,
-                            lineHeight = 22.sp
-                        ),
-                        cursorBrush = SolidColor(textColor)
+                        textColor = textColor,
+                        focusRequester = focusRequester,
+                        bringIntoViewRequester = bringIntoViewRequester,
+                        onValueChange = { editedTextValue = it },
+                        onSubmit = {
+                            onEdit(editedTextValue.text, editedImages)
+                            isEditing = false
+                        }
                     )
                 } else if (content.isNotBlank()) {
                     Text(
@@ -356,207 +240,26 @@ fun MessageBubble(
                 }
 
                 if (isEditing) {
-                    if (editedImages.isNotEmpty()) {
-                        Row(
-                            modifier = Modifier
-                                .padding(top = 8.dp)
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            editedImages.forEachIndexed { index, bytes ->
-                                Box(modifier = Modifier.size(72.dp)) {
-                                    AsyncImage(
-                                        model = bytes,
-                                        contentDescription = "Editing Image Preview",
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .clip(RoundedCornerShape(8.dp))
-                                    )
-                                    IconButton(
-                                        onClick = {
-                                            editedImages = editedImages.filterIndexed { i, _ -> i != index }
-                                        },
-                                        modifier = Modifier
-                                            .align(Alignment.TopEnd)
-                                            .offset(x = 6.dp, y = (-6).dp)
-                                            .size(20.dp)
-                                            .background(MaterialTheme.colorScheme.error, CircleShape)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Close,
-                                            contentDescription = "Remove Image",
-                                            tint = MaterialTheme.colorScheme.onError,
-                                            modifier = Modifier.size(12.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    MessageImages(
+                        images = editedImages,
+                        isEditing = true,
+                        onRemoveImage = { index -> editedImages = editedImages.filterIndexed { i, _ -> i != index } }
+                    )
                 } else {
-                    if (messageImages.isNotEmpty()) {
-                        Box(
-                            modifier = Modifier
-                                .padding(top = if (content.isNotBlank() && content != "...") 8.dp else 0.dp)
-                                .fillMaxWidth()
-                                .wrapContentHeight()
-                        ) {
-                            when (messageImages.size) {
-                                1 -> {
-                                    AsyncImage(
-                                        model = messageImages[0],
-                                        contentDescription = "Message Attached Image",
-                                        contentScale = ContentScale.Fit,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .heightIn(max = 320.dp)
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .clickable {
-                                                galleryInitialIndex = 0
-                                                showGallery = true
-                                            }
-                                    )
-                                }
-                                2 -> {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth().height(160.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        messageImages.forEachIndexed { index, bytes ->
-                                            AsyncImage(
-                                                model = bytes,
-                                                contentDescription = "Message Attached Image Split",
-                                                contentScale = ContentScale.Crop,
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .fillMaxHeight()
-                                                    .clip(RoundedCornerShape(12.dp))
-                                                    .clickable {
-                                                        galleryInitialIndex = index
-                                                        showGallery = true
-                                                    }
-                                            )
-                                        }
-                                    }
-                                }
-                                else -> {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(210.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        AsyncImage(
-                                            model = messageImages[0],
-                                            contentDescription = "Message Attached Image Collage Left",
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier
-                                                .weight(1.2f)
-                                                .fillMaxHeight()
-                                                .clip(RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp))
-                                                .clickable {
-                                                    galleryInitialIndex = 0
-                                                    showGallery = true
-                                                }
-                                        )
-                                        Column(
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .fillMaxHeight(),
-                                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            AsyncImage(
-                                                model = messageImages[1],
-                                                contentDescription = "Message Attached Image Collage Top Right",
-                                                contentScale = ContentScale.Crop,
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .fillMaxWidth()
-                                                    .clip(RoundedCornerShape(topEnd = 12.dp))
-                                                    .clickable {
-                                                        galleryInitialIndex = 1
-                                                        showGallery = true
-                                                    }
-                                            )
-                                            Box(
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .fillMaxWidth()
-                                            ) {
-                                                AsyncImage(
-                                                    model = messageImages[2],
-                                                    contentDescription = "Message Attached Image Collage Bottom Right",
-                                                    contentScale = ContentScale.Crop,
-                                                    modifier = Modifier
-                                                        .fillMaxSize()
-                                                        .clip(RoundedCornerShape(bottomEnd = 12.dp))
-                                                        .clickable {
-                                                            galleryInitialIndex = 2
-                                                            showGallery = true
-                                                        }
-                                                )
-                                                if (messageImages.size > 3) {
-                                                    val hiddenCount = messageImages.size - 3
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .fillMaxSize()
-                                                            .clip(RoundedCornerShape(bottomEnd = 12.dp))
-                                                            .background(Color.Black.copy(alpha = 0.55f))
-                                                            .clickable {
-                                                                galleryInitialIndex = 2
-                                                                showGallery = true
-                                                            },
-                                                        contentAlignment = Alignment.Center
-                                                    ) {
-                                                        Text(
-                                                            text = "+$hiddenCount",
-                                                            color = Color.White,
-                                                            fontSize = 18.sp,
-                                                            fontWeight = FontWeight.Bold
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    MessageImages(
+                        images = messageImages,
+                        topPadding = if (content.isNotBlank() && content != "...") 8.dp else 0.dp
+                    )
                 }
             }
         }
 
         if (isUser) {
-            Box(
-                modifier = Modifier
-                    .padding(start = 6.dp)
-                    .size(36.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .clickable { if (avatarData != null) showFullImage = true }
-                    .align(Alignment.Top),
-                contentAlignment = Alignment.Center
-            ) {
-                if (avatarData != null) {
-                    AsyncImage(
-                        model = avatarData,
-                        contentDescription = "User Avatar",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.Person,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
+            BubbleAvatar(
+                avatarData = avatarData,
+                onFullscreen = { showFullImage = true },
+                modifier = Modifier.align(Alignment.Top).padding(start = 6.dp)
+            )
         } else {
             Box(modifier = Modifier.align(Alignment.Top)) {
                 actionsBlock()
@@ -567,10 +270,86 @@ fun MessageBubble(
     if (showFullImage && avatarData != null) {
         FullscreenImageViewer(avatarData = avatarData, onDismiss = { showFullImage = false })
     }
+}
 
-    if (showGallery && messageImages.isNotEmpty()) {
-        FullscreenImageViewer(images = messageImages, initialIndex = galleryInitialIndex, onDismiss = { showGallery = false })
+@Composable
+private fun BubbleAvatar(
+    avatarData: ByteArray?,
+    onFullscreen: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .size(36.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable { if (avatarData != null) onFullscreen() },
+        contentAlignment = Alignment.Center
+    ) {
+        if (avatarData != null) {
+            AsyncImage(
+                model = avatarData,
+                contentDescription = "Avatar",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Default.Person,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                modifier = Modifier.size(20.dp)
+            )
+        }
     }
+}
+
+@Composable
+private fun MessageEditTextField(
+    value: TextFieldValue,
+    textColor: Color,
+    focusRequester: FocusRequester,
+    bringIntoViewRequester: BringIntoViewRequester,
+    onValueChange: (TextFieldValue) -> Unit,
+    onSubmit: () -> Unit
+) {
+    val coroutineScope = rememberCoroutineScope()
+    BasicTextField(
+        value = value,
+        onValueChange = {
+            onValueChange(it)
+            coroutineScope.launch {
+                bringIntoViewRequester.bringIntoView()
+            }
+        },
+        modifier = Modifier
+            .widthIn(min = 40.dp)
+            .focusRequester(focusRequester)
+            .bringIntoViewRequester(bringIntoViewRequester)
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown &&
+                    (event.key == Key.Enter || event.key == Key.NumPadEnter)) {
+                    if (event.isShiftPressed) {
+                        onValueChange(value.insertNewline())
+                        coroutineScope.launch {
+                            bringIntoViewRequester.bringIntoView()
+                        }
+                        true
+                    } else {
+                        onSubmit()
+                        true
+                    }
+                } else {
+                    false
+                }
+            },
+        textStyle = LocalTextStyle.current.copy(
+            color = textColor,
+            fontSize = 16.sp,
+            lineHeight = 22.sp
+        ),
+        cursorBrush = SolidColor(textColor)
+    )
 }
 
 @Composable

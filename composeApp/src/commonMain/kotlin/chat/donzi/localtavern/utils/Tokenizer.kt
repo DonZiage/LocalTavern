@@ -17,10 +17,14 @@ object DefaultTokenizer : Tokenizer {
     override fun truncateByTokens(text: String, maxTokens: Int): String {
         if (maxTokens <= 0) return ""
         val maxChars = maxTokens * CHARS_PER_TOKEN
-        return if (text.length > maxChars) {
-            text.substring(0, maxChars)
-        } else {
-            text
+        if (text.length <= maxChars) return text
+        var end = maxChars
+        // Avoid splitting a UTF-16 surrogate pair (e.g. emoji) at the cut point.
+        if (end > 0 && end < text.length &&
+            text[end - 1].isHighSurrogate() && text[end].isLowSurrogate()
+        ) {
+            end -= 1
         }
+        return text.substring(0, end)
     }
 }

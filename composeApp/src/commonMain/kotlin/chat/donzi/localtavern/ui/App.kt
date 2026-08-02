@@ -9,82 +9,29 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import chat.donzi.localtavern.data.database.ChatRepository
-import chat.donzi.localtavern.data.database.CharacterEntity
+import chat.donzi.localtavern.controller.AppContainer
 import chat.donzi.localtavern.data.database.DriverFactory
-import chat.donzi.localtavern.data.database.LocalTavernDB
-import chat.donzi.localtavern.data.database.PersonaEntity
-import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.ui.components.ActiveDrawer
 import chat.donzi.localtavern.ui.theme.LocalTavernTheme
 import chat.donzi.localtavern.ui.theme.ThemeTransition
-import io.ktor.client.*
-import io.ktor.client.plugins.contentnegotiation.*
-import io.ktor.serialization.kotlinx.json.*
-import kotlinx.coroutines.launch
-import kotlinx.serialization.json.Json
 
 @Composable
 fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
-    val database = remember { LocalTavernDB(driverFactory.createDriver()) }
-    val chatRepository = remember { ChatRepository(database) }
-    val coroutineScope = rememberCoroutineScope()
+    val container = remember { AppContainer(driverFactory) }
+    val appState = container.appState
+    val chatController = container.chatController
 
-    val httpClient = remember {
-        HttpClient {
-            install(ContentNegotiation) {
-                json(Json {
-                    ignoreUnknownKeys = true
-                    isLenient = true
-                })
-            }
-        }
-    }
-    val chatClient = remember { ChatClient(httpClient) }
-
-    var characters by remember { mutableStateOf(emptyList<CharacterEntity>()) }
-    var activePersonaId by remember { mutableStateOf<String?>(null) }
-    var personas by remember { mutableStateOf(emptyList<PersonaEntity>()) }
+    val characters by appState.characters.collectAsState()
+    val personas by appState.personas.collectAsState()
+    val activePersonaId by appState.activePersonaId.collectAsState()
+    val darkModeFromDb by appState.isDarkMode.collectAsState()
+    val isInitialized by appState.isInitialized.collectAsState()
 
     val systemDark = isSystemInDarkTheme()
-    var isDarkMode by remember { mutableStateOf(systemDark) }
-    var isInitialized by remember { mutableStateOf(false) }
-
     var activeDrawer by remember { mutableStateOf(ActiveDrawer.None) }
 
-    fun refreshData() {
-        coroutineScope.launch {
-            var currentPersonas = chatRepository.getAllPersonas()
-            if (currentPersonas.isEmpty()) {
-                chatRepository.insertPersona("User", "", null)
-                currentPersonas = chatRepository.getAllPersonas()
-            }
-            personas = currentPersonas
-
-            val settings = chatRepository.getAppSettings()
-            var pId = settings.activePersonaId
-            if (pId == null && personas.isNotEmpty()) {
-                pId = personas.first().id
-                chatRepository.updateActivePersonaId(pId)
-            }
-            activePersonaId = pId
-
-            characters = chatRepository.getAllCharacters()
-
-            isDarkMode = settings.isDarkMode != 0L
-            isInitialized = true
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        refreshData()
-    }
-
     if (!isInitialized) {
-        SideEffect {
-            onThemeChanged(isDarkMode)
-        }
-        LocalTavernTheme(darkTheme = isDarkMode) {
+        LocalTavernTheme(darkTheme = systemDark) {
             Surface(
                 modifier = Modifier.fillMaxSize(),
                 color = MaterialTheme.colorScheme.background
@@ -101,19 +48,20 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
         }
     } else {
         ThemeTransition(
-            initialThemeIsDark = isDarkMode,
+            initialThemeIsDark = darkModeFromDb,
             onThemeSaved = { darkMode ->
-                coroutineScope.launch {
-                    chatRepository.updateDarkMode(darkMode)
-                }
+                appState.setDarkMode(darkMode)
             }
         ) { syncedDarkTheme, triggerTransition ->
-            SideEffect {
+            LaunchedEffect(syncedDarkTheme) {
                 onThemeChanged(syncedDarkTheme)
             }
             MainScreen(
-                chatRepository = chatRepository,
-                chatClient = chatClient,
+                chatController = chatController,
+                characterRepository = container.characterRepository,
+                sessionRepository = container.sessionRepository,
+                apiSettingsRepository = container.apiSettingsRepository,
+                chatClient = container.chatClient,
                 characters = characters,
                 personas = personas,
                 activePersonaId = activePersonaId,
@@ -123,48 +71,26 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
                 },
                 activeDrawer = activeDrawer,
                 onActiveDrawerChange = { activeDrawer = it },
-                refreshData = ::refreshData,
                 onPersonaSelect = { personaId ->
-                    coroutineScope.launch {
-                        chatRepository.updateActivePersonaId(personaId)
-                        refreshData()
-                    }
+                    appState.setActivePersona(personaId)
                 },
                 onPersonaAdd = { name, desc, avatar ->
-                    coroutineScope.launch {
-                        chatRepository.insertPersona(name, desc, avatar)
-                        refreshData()
-                    }
+                    appState.addPersona(name, desc, avatar)
                 },
                 onPersonaUpdate = { id, name, desc, avatar ->
-                    coroutineScope.launch {
-                        chatRepository.updatePersona(id, name, desc, avatar)
-                        refreshData()
-                    }
+                    appState.updatePersona(id, name, desc, avatar)
                 },
                 onPersonaDelete = { personaId ->
-                    coroutineScope.launch {
-                        chatRepository.deletePersona(personaId)
-                        refreshData()
-                    }
+                    appState.deletePersona(personaId)
                 },
                 onCharactersDelete = { ids ->
-                    coroutineScope.launch {
-                        chatRepository.deleteCharacters(ids)
-                        refreshData()
-                    }
+                    appState.deleteCharacters(ids)
                 },
                 onCharacterImport = { card, avatar ->
-                    coroutineScope.launch {
-                        chatRepository.upsertCharacter(card, avatar)
-                        refreshData()
-                    }
+                    appState.importCharacter(card, avatar)
                 },
                 onCharacterCreate = { name ->
-                    coroutineScope.launch {
-                        chatRepository.createCharacter(name)
-                        refreshData()
-                    }
+                    appState.createCharacter(name)
                 }
             )
         }

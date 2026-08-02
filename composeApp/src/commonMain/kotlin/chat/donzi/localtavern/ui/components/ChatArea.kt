@@ -21,14 +21,16 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.*
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import chat.donzi.localtavern.data.database.CharacterEntity
-import chat.donzi.localtavern.data.database.MessageEntity
-import chat.donzi.localtavern.data.database.deserializeImageList
+import chat.donzi.localtavern.controller.ChatUiState
+import chat.donzi.localtavern.domain.Character
+import chat.donzi.localtavern.domain.Message
 import chat.donzi.localtavern.utils.ContextManager
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import kotlinx.coroutines.launch
@@ -39,48 +41,40 @@ private enum class OnboardingStep {
 
 @Composable
 fun ChatArea(
-    activeCharacter: CharacterEntity?,
+    chatState: ChatUiState,
+    activeCharacter: Character?,
     activePersonaName: String,
     activePersonaAvatar: ByteArray?,
-    messages: List<MessageEntity>,
-    siblingsMap: Map<String, List<MessageEntity>>,
     hasApiProfile: Boolean,
     hasPersona: Boolean,
     hasCharacter: Boolean,
-    onNavigateToSettings: () -> Unit,
-    onNavigateToPersonas: () -> Unit,
-    onNavigateToCharacters: () -> Unit,
-    onSendMessage: (String, List<ByteArray>) -> Unit,
-    onEditMessage: (String, String, List<ByteArray>) -> Unit,
-    onDeleteMessage: (String) -> Unit,
-    onDeleteMessages: (List<String>) -> Unit = {},
-    onRegenerate: () -> Unit,
-    onSelectVariation: (String) -> Unit,
-    onGenerateNewVariation: (String) -> Unit,
     isSelectMode: Boolean = false,
     selectedMessageIds: Set<String> = emptySet(),
     onSelectMessageToggle: (String) -> Unit = {},
     onEnterSelectMode: () -> Unit = {},
-    isGenerating: Boolean = false,
-    onStopGeneration: () -> Unit = {},
-    onManageChats: () -> Unit,
-    onBranchMessage: (MessageEntity) -> Unit = {},
-    onGoToParentChat: (() -> Unit)? = null,
-    onAddImageToMessage: (String, List<ByteArray>) -> Unit = { _, _ -> }
+    actions: ChatActions
 ) {
-    var messageToDelete by remember { mutableStateOf<MessageEntity?>(null) }
+    val messages = chatState.messages
+    val siblingsMap = chatState.siblingsMap
+    val isGenerating = chatState.isGenerating
+
+    var messageToDelete by remember { mutableStateOf<Message?>(null) }
     var imageTargetMessageId by remember { mutableStateOf<String?>(null) }
 
     val coroutineScope = rememberCoroutineScope()
 
-    val bubbleImagePicker = rememberImagePickerLauncher { imagesList ->
-        if (imagesList.isNotEmpty()) {
-            imageTargetMessageId?.let { targetId ->
-                onAddImageToMessage(targetId, imagesList)
+    val clipboardManager = LocalClipboardManager.current
+
+    val bubbleImagePicker = rememberImagePickerLauncher(
+        onImagesPicked = { imagesList ->
+            if (imagesList.isNotEmpty()) {
+                imageTargetMessageId?.let { targetId ->
+                    actions.onAddImageToMessage(targetId, imagesList)
+                }
             }
+            imageTargetMessageId = null
         }
-        imageTargetMessageId = null
-    }
+    )
 
     Column(modifier = Modifier.fillMaxSize()) {
         if (activeCharacter == null && messages.isEmpty()) {
@@ -107,10 +101,16 @@ fun ChatArea(
                     )
 
                     val visibleSteps = remember(hasApiProfile, hasPersona, hasCharacter) {
-                        mutableListOf<OnboardingStep>().apply {
-                            if (!hasApiProfile) add(OnboardingStep.API)
-                            if (!hasPersona) add(OnboardingStep.PERSONA)
-                            if (!hasCharacter) add(OnboardingStep.CHARACTER)
+                        listOf(
+                            OnboardingStep.API to 1,
+                            OnboardingStep.PERSONA to 2,
+                            OnboardingStep.CHARACTER to 3
+                        ).filter { (step, _) ->
+                            when (step) {
+                                OnboardingStep.API -> !hasApiProfile
+                                OnboardingStep.PERSONA -> !hasPersona
+                                OnboardingStep.CHARACTER -> !hasCharacter
+                            }
                         }
                     }
 
@@ -121,8 +121,7 @@ fun ChatArea(
                             verticalArrangement = Arrangement.spacedBy(12.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            visibleSteps.forEachIndexed { index, step ->
-                                val stepDisplayNumber = index + 1
+                            visibleSteps.forEach { (step, stepDisplayNumber) ->
 
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -143,9 +142,9 @@ fun ChatArea(
                                             .weight(1f)
                                             .clickable {
                                                 when (step) {
-                                                    OnboardingStep.API -> onNavigateToSettings()
-                                                    OnboardingStep.PERSONA -> onNavigateToPersonas()
-                                                    OnboardingStep.CHARACTER -> onNavigateToCharacters()
+                                                    OnboardingStep.API -> actions.onNavigateToSettings()
+                                                    OnboardingStep.PERSONA -> actions.onNavigateToPersonas()
+                                                    OnboardingStep.CHARACTER -> actions.onNavigateToCharacters()
                                                 }
                                             }
                                     ) {
@@ -207,7 +206,7 @@ fun ChatArea(
             val currentIndex = lastMessage?.let { siblings.indexOfFirst { child -> child.id == it.id } }?.coerceAtLeast(0) ?: 0
             val totalCount = siblings.size
 
-            LaunchedEffect(activeCharacter, messages.size) {
+            LaunchedEffect(activeCharacter) {
                 focusRequester.requestFocus()
             }
 
@@ -222,29 +221,29 @@ fun ChatArea(
                         if (event.type == KeyEventType.KeyDown) {
                             if (isGenerating) {
                                 if ((event.key == Key.Enter || event.key == Key.NumPadEnter) && !event.isShiftPressed) {
-                                    onStopGeneration()
+                                    actions.onStopGeneration()
                                     true
                                 } else false
                             } else if (lastMessage != null && lastMessage.role != "user") {
                                 when (event.key) {
                                     Key.DirectionLeft -> {
                                         if (currentIndex > 0) {
-                                            onSelectVariation(siblings[currentIndex - 1].id)
+                                            actions.onSelectVariation(siblings[currentIndex - 1].id)
                                             coroutineScope.launch { listState.animateScrollToItem(0) }
                                             true
                                         } else if (totalCount > 1) {
-                                            onSelectVariation(siblings[totalCount - 1].id)
+                                            actions.onSelectVariation(siblings[totalCount - 1].id)
                                             coroutineScope.launch { listState.animateScrollToItem(0) }
                                             true
                                         } else false
                                     }
                                     Key.DirectionRight -> {
                                         if (currentIndex < totalCount - 1) {
-                                            onSelectVariation(siblings[currentIndex + 1].id)
+                                            actions.onSelectVariation(siblings[currentIndex + 1].id)
                                             coroutineScope.launch { listState.animateScrollToItem(0) }
                                             true
                                         } else {
-                                            onGenerateNewVariation(lastMessage.id)
+                                            actions.onGenerateNewVariation(lastMessage.id)
                                             coroutineScope.launch { listState.animateScrollToItem(0) }
                                             true
                                         }
@@ -283,8 +282,8 @@ fun ChatArea(
                         )
                     }
 
-                    val messageImages = remember(message.id, message.imageData?.contentHashCode()) {
-                        deserializeImageList(message.imageData)
+                    val messageImages = remember(message.id, message.images) {
+                        message.images
                     }
 
                     Column(
@@ -294,34 +293,36 @@ fun ChatArea(
                         MessageBubble(
                             content = displayContent,
                             isUser = isUserMessage,
-                            onEdit = { newContent, updatedImages -> onEditMessage(message.id, newContent, updatedImages) },
+                            onEdit = { newContent, updatedImages -> actions.onEditMessage(message.id, newContent, updatedImages) },
+                            onCopy = { clipboardManager.setText(AnnotatedString(message.content)) },
                             onDelete = { messageToDelete = message },
                             onAddImage = {
                                 imageTargetMessageId = message.id
                                 bubbleImagePicker()
                             },
-                            onBranch = { onBranchMessage(message) },
+                            onBranch = { actions.onBranchMessage(message) },
                             avatarData = currentAvatar,
                             messageImages = messageImages,
                             isSelectMode = isSelectMode,
                             isSelected = selectedMessageIds.contains(message.id),
                             onSelectToggle = { onSelectMessageToggle(message.id) },
                             isSwipeable = isSwipeable,
+                            isGenerating = isGenerating,
                             onSwipeRight = {
                                 if (!isGenerating) {
                                     if (msgCurrentIndex > 0) {
-                                        onSelectVariation(msgSiblings[msgCurrentIndex - 1].id)
+                                        actions.onSelectVariation(msgSiblings[msgCurrentIndex - 1].id)
                                     } else if (msgTotalCount > 1) {
-                                        onSelectVariation(msgSiblings[msgTotalCount - 1].id)
+                                        actions.onSelectVariation(msgSiblings[msgTotalCount - 1].id)
                                     }
                                 }
                             },
                             onSwipeLeft = {
                                 if (!isGenerating) {
                                     if (msgCurrentIndex < msgTotalCount - 1) {
-                                        onSelectVariation(msgSiblings[msgCurrentIndex + 1].id)
+                                        actions.onSelectVariation(msgSiblings[msgCurrentIndex + 1].id)
                                     } else {
-                                        onGenerateNewVariation(message.id)
+                                        actions.onGenerateNewVariation(message.id)
                                     }
                                 }
                             }
@@ -338,9 +339,9 @@ fun ChatArea(
                                 IconButton(
                                     onClick = {
                                         if (msgCurrentIndex > 0) {
-                                            onSelectVariation(msgSiblings[msgCurrentIndex - 1].id)
+                                            actions.onSelectVariation(msgSiblings[msgCurrentIndex - 1].id)
                                         } else if (msgTotalCount > 1) {
-                                            onSelectVariation(msgSiblings[msgTotalCount - 1].id)
+                                            actions.onSelectVariation(msgSiblings[msgTotalCount - 1].id)
                                         }
                                     },
                                     enabled = !isGenerating,
@@ -362,9 +363,9 @@ fun ChatArea(
                                 IconButton(
                                     onClick = {
                                         if (msgCurrentIndex < msgTotalCount - 1) {
-                                            onSelectVariation(msgSiblings[msgCurrentIndex + 1].id)
+                                            actions.onSelectVariation(msgSiblings[msgCurrentIndex + 1].id)
                                         } else {
-                                            onGenerateNewVariation(message.id)
+                                            actions.onGenerateNewVariation(message.id)
                                         }
                                     },
                                     enabled = !isGenerating,
@@ -385,16 +386,16 @@ fun ChatArea(
 
         if (!isSelectMode) {
             ChatInputBar(
-                onSendMessage = onSendMessage,
-                onRegenerate = onRegenerate,
+                onSendMessage = actions.onSendMessage,
+                onRegenerate = actions.onRegenerate,
                 canRegenerate = messages.any { it.role == "user" },
                 onEnterSelectMode = onEnterSelectMode,
                 canDelete = messages.isNotEmpty(),
                 isGenerating = isGenerating,
-                onStopGeneration = onStopGeneration,
-                onManageChats = onManageChats,
+                onStopGeneration = actions.onStopGeneration,
+                onManageChats = actions.onManageChats,
                 canManageChats = activeCharacter != null,
-                onGoToParent = onGoToParentChat
+                onGoToParent = actions.onGoToParentChat
             )
         }
     }
@@ -445,7 +446,7 @@ fun ChatArea(
                             Spacer(modifier = Modifier.width(8.dp))
                             TextButton(
                                 onClick = {
-                                    onDeleteMessage(currentMsg.id)
+                                    actions.onDeleteMessage(currentMsg.id)
                                     messageToDelete = null
                                 },
                                 colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
@@ -459,7 +460,7 @@ fun ChatArea(
                             Spacer(modifier = Modifier.width(6.dp))
                             TextButton(
                                 onClick = {
-                                    onDeleteMessage(currentMsg.id)
+                                    actions.onDeleteMessage(currentMsg.id)
                                     messageToDelete = null
                                 },
                                 colors = ButtonDefaults.textButtonColors(
@@ -471,7 +472,7 @@ fun ChatArea(
                             Spacer(modifier = Modifier.width(6.dp))
                             TextButton(
                                 onClick = {
-                                    onDeleteMessages(siblings.map { it.id })
+                                    actions.onDeleteMessages(siblings.map { it.id })
                                     messageToDelete = null
                                 },
                                 colors = ButtonDefaults.textButtonColors(

@@ -4,34 +4,34 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import chat.donzi.localtavern.data.database.ApiConnection
-import chat.donzi.localtavern.data.database.ChatRepository
+import chat.donzi.localtavern.domain.ApiConfig
+import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.network.ChatClient
 import kotlinx.coroutines.launch
 
 @Composable
 fun ApiConnectionSettings(
-    chatRepository: ChatRepository,
+    apiSettingsRepository: ApiSettingsRepository,
     chatClient: ChatClient,
     onApiChanged: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
-    var connections by remember { mutableStateOf<List<ApiConnection>>(emptyList()) }
+    var connections by remember { mutableStateOf<List<ApiConfig>>(emptyList()) }
     var showAddDialog by remember { mutableStateOf(false) }
-    var editingConnection by remember { mutableStateOf<ApiConnection?>(null) }
+    var editingConnection by remember { mutableStateOf<ApiConfig?>(null) }
     var refreshTrigger by remember { mutableStateOf(0) }
 
     LaunchedEffect(refreshTrigger) {
-        connections = chatRepository.getAllApiConnections()
+        connections = apiSettingsRepository.getAllApiConnections()
     }
 
-    var activeConnection by remember { mutableStateOf<ApiConnection?>(null) }
+    var activeConnection by remember { mutableStateOf<ApiConfig?>(null) }
     LaunchedEffect(refreshTrigger, connections) {
-        activeConnection = chatRepository.getActiveApiConnection()
+        activeConnection = apiSettingsRepository.getActiveApiConnection()
     }
 
     val activeIndex = remember(connections, activeConnection) {
-        connections.indexOfFirst { it.id == activeConnection?.id }.coerceAtLeast(0)
+        connections.indexOfFirst { it.id == activeConnection?.id }.takeIf { it >= 0 }
     }
 
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -42,7 +42,7 @@ fun ApiConnectionSettings(
             initialIndex = activeIndex,
             onReorder = { newList ->
                 scope.launch {
-                    chatRepository.updateApiConnectionDisplayOrders(newList.map { it.id })
+                    apiSettingsRepository.updateApiConnectionDisplayOrders(newList.map { it.id })
                     refreshTrigger++
                     onApiChanged()
                 }
@@ -50,7 +50,7 @@ fun ApiConnectionSettings(
             onAddClick = { showAddDialog = true },
             onDelete = { connection ->
                 scope.launch {
-                    chatRepository.deleteApiConnection(connection.id)
+                    apiSettingsRepository.deleteApiConnection(connection.id)
                     refreshTrigger++
                     onApiChanged()
                 }
@@ -61,17 +61,17 @@ fun ApiConnectionSettings(
                     chatClient = chatClient,
                     onToggleActive = {
                         scope.launch {
-                            chatRepository.setActiveApiConnection(connection.id)
+                            apiSettingsRepository.setActiveApiConnection(connection.id)
                             refreshTrigger++
                             onApiChanged()
                         }
                     },
                     onToggleMode = { isChat ->
                         scope.launch {
-                            chatRepository.updateApiConnection(
+                            apiSettingsRepository.updateApiConnection(
                                 id = connection.id, provider = connection.provider, name = connection.name,
                                 baseUrl = connection.baseUrl, apiKey = connection.apiKey, model = connection.model,
-                                isActive = connection.isActive == 1L, isChatCompletion = isChat,
+                                isActive = connection.isActive, isChatCompletion = isChat,
                                 temperature = connection.temperature, topP = connection.topP, topK = connection.topK,
                                 presencePenalty = connection.presencePenalty, frequencyPenalty = connection.frequencyPenalty,
                                 contextLimit = connection.contextLimit, responseLimit = connection.responseLimit,
@@ -96,31 +96,12 @@ fun ApiConnectionSettings(
 
             ParameterControls(
                 connection = currentActive,
-                repository = chatRepository,
-                onUpdate = { updated ->
-                    scope.launch {
-                        chatRepository.updateApiConnection(
-                            id = updated.id,
-                            provider = updated.provider,
-                            name = updated.name,
-                            baseUrl = updated.baseUrl,
-                            apiKey = updated.apiKey,
-                            model = updated.model,
-                            isActive = updated.isActive == 1L,
-                            isChatCompletion = updated.isChatCompletion == 1L,
-                            temperature = updated.temperature,
-                            topP = updated.topP,
-                            topK = updated.topK,
-                            presencePenalty = updated.presencePenalty,
-                            frequencyPenalty = updated.frequencyPenalty,
-                            contextLimit = updated.contextLimit,
-                            responseLimit = updated.responseLimit,
-                            displayOrder = updated.displayOrder,
-                            timeoutLimit = updated.timeoutLimit
-                        )
-                        refreshTrigger++
-                        onApiChanged()
-                    }
+                apiSettingsRepository = apiSettingsRepository,
+                onUpdate = { _ ->
+                    // ParameterControls persists the debounced write itself;
+                    // this callback only refreshes the UI state afterwards.
+                    refreshTrigger++
+                    onApiChanged()
                 }
             )
         }
@@ -132,15 +113,16 @@ fun ApiConnectionSettings(
             onDismiss = { showAddDialog = false },
             onSave = { provider, name, baseUrl, apiKey, model, isChatCompletion ->
                 scope.launch {
-                    chatRepository.insertApiConnection(
+                    // The repository derives the active flag and display order
+                    // from fresh DB state, so a stale UI list cannot wrongly
+                    // activate the new connection or collide on ordering.
+                    apiSettingsRepository.insertApiConnection(
                         provider = provider,
                         name = name,
                         baseUrl = baseUrl,
                         apiKey = apiKey,
                         model = model,
-                        isActive = connections.isEmpty(),
                         isChatCompletion = isChatCompletion,
-                        displayOrder = connections.size.toLong(),
                         timeoutLimit = 60L
                     )
                     showAddDialog = false
@@ -159,14 +141,14 @@ fun ApiConnectionSettings(
             onDismiss = { editingConnection = null },
             onSave = { provider, name, baseUrl, apiKey, model, isChatCompletion ->
                 scope.launch {
-                    chatRepository.updateApiConnection(
+                    apiSettingsRepository.updateApiConnection(
                         id = connectionToEdit.id,
                         provider = provider,
                         name = name,
                         baseUrl = baseUrl,
                         apiKey = apiKey.ifBlank { connectionToEdit.apiKey ?: "" },
                         model = model,
-                        isActive = connectionToEdit.isActive == 1L,
+                        isActive = connectionToEdit.isActive,
                         isChatCompletion = isChatCompletion,
                         temperature = connectionToEdit.temperature,
                         topP = connectionToEdit.topP,

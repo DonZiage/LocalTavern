@@ -8,10 +8,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlin.time.Duration.Companion.milliseconds
 
 @Composable
 fun ChatOptionsMenu(
@@ -26,8 +22,6 @@ fun ChatOptionsMenu(
     onGoToParent: (() -> Unit)? = null,
     onAttachImage: (() -> Unit)? = null
 ) {
-    val coroutineScope = rememberCoroutineScope()
-
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismissRequest
@@ -37,10 +31,7 @@ fun ChatOptionsMenu(
                 text = { Text("Go to Parent Chat") },
                 onClick = {
                     onDismissRequest()
-                    coroutineScope.launch {
-                        delay(50.milliseconds)
-                        onGoToParent()
-                    }
+                    onGoToParent()
                 },
                 leadingIcon = { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null) }
             )
@@ -52,10 +43,7 @@ fun ChatOptionsMenu(
                 text = { Text("Attach Image") },
                 onClick = {
                     onDismissRequest()
-                    coroutineScope.launch {
-                        delay(50.milliseconds)
-                        onAttachImage()
-                    }
+                    onAttachImage()
                 },
                 leadingIcon = { Icon(Icons.Default.AddPhotoAlternate, contentDescription = null) }
             )
@@ -65,10 +53,7 @@ fun ChatOptionsMenu(
             text = { Text("Chats") },
             onClick = {
                 onDismissRequest()
-                coroutineScope.launch {
-                    delay(50.milliseconds)
-                    onManageChats()
-                }
+                onManageChats()
             },
             enabled = canManageChats,
             leadingIcon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) }
@@ -77,10 +62,7 @@ fun ChatOptionsMenu(
             text = { Text("Regenerate") },
             onClick = {
                 onDismissRequest()
-                coroutineScope.launch {
-                    delay(50.milliseconds)
-                    onRegenerate()
-                }
+                onRegenerate()
             },
             enabled = canRegenerate,
             leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) }
@@ -89,10 +71,7 @@ fun ChatOptionsMenu(
             text = { Text("Delete Messages") },
             onClick = {
                 onDismissRequest()
-                coroutineScope.launch {
-                    delay(50.milliseconds)
-                    onEnterSelectMode()
-                }
+                onEnterSelectMode()
             },
             enabled = canDelete,
             leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) }

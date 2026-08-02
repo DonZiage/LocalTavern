@@ -54,9 +54,11 @@ fun ChatInputBar(
     var showMenu by remember { mutableStateOf(false) }
     var attachedImages by remember { mutableStateOf<List<ByteArray>>(emptyList()) }
 
-    val imagePickerLauncher = rememberImagePickerLauncher { imagesList ->
-        attachedImages = attachedImages + imagesList
-    }
+    val imagePickerLauncher = rememberImagePickerLauncher(
+        onImagesPicked = { imagesList ->
+            attachedImages = attachedImages + imagesList
+        }
+    )
 
     fun handleSend() {
         if ((textValue.text.isNotBlank() || attachedImages.isNotEmpty()) && !isGenerating) {

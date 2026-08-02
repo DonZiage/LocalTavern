@@ -19,14 +19,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import chat.donzi.localtavern.data.database.PersonaEntity
+import chat.donzi.localtavern.domain.Persona
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import chat.donzi.localtavern.utils.DefaultTokenizer
 import coil3.compose.AsyncImage
 
 @Composable
 fun PersonaManagement(
-    personas: List<PersonaEntity>,
+    personas: List<Persona>,
     activePersonaId: String?,
     onPersonaSelect: (String) -> Unit,
     onPersonaAdd: (String, String?, ByteArray?) -> Unit,
@@ -36,15 +36,19 @@ fun PersonaManagement(
     onAutoEditConsumed: () -> Unit = {}
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
-    var editingPersona by remember { mutableStateOf<PersonaEntity?>(null) }
+    var editingPersona by remember { mutableStateOf<Persona?>(null) }
 
     val activeIndex = remember(personas, activePersonaId) {
-        personas.indexOfFirst { it.id == activePersonaId }.coerceAtLeast(0)
+        personas.indexOfFirst { it.id == activePersonaId }.takeIf { it >= 0 }
     }
 
     LaunchedEffect(autoEditDefaultPersona, personas) {
-        if (autoEditDefaultPersona && personas.isNotEmpty()) {
-            editingPersona = personas.firstOrNull()
+        if (autoEditDefaultPersona) {
+            if (personas.isNotEmpty()) {
+                editingPersona = personas.firstOrNull()
+            }
+            // Always consume the trigger, even when there is no persona yet, so
+            // it cannot pop the dialog later when the first persona appears.
             onAutoEditConsumed()
         }
     }
@@ -118,9 +122,11 @@ private fun PersonaEditDialog(
     var showImageMenu by remember { mutableStateOf(false) }
     var showFullImage by remember { mutableStateOf(false) }
 
-    val pickImage = rememberImagePickerLauncher { imagesList ->
-        avatarData = imagesList.firstOrNull()
-    }
+    val pickImage = rememberImagePickerLauncher(
+        onImagesPicked = { imagesList ->
+            avatarData = imagesList.firstOrNull()
+        }
+    )
 
     val totalPersonaTokens = remember(name, description) {
         DefaultTokenizer.countTokens(name) + DefaultTokenizer.countTokens(description)
@@ -252,7 +258,7 @@ private fun PersonaEditDialog(
 
 @Composable
 fun PersonaCard(
-    persona: PersonaEntity,
+    persona: Persona,
     isActive: Boolean,
     onSelect: () -> Unit,
     onEdit: () -> Unit,

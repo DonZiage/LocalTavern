@@ -1,6 +1,8 @@
 package chat.donzi.localtavern.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -24,7 +26,6 @@ import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.openDirectory
 import kotlin.math.abs
 import kotlin.math.roundToInt
-
 @Composable
 fun ExportNotificationBubble(
     visible: Boolean,
@@ -33,6 +34,12 @@ fun ExportNotificationBubble(
     modifier: Modifier = Modifier
 ) {
     var swipeOffsetX by remember(visible) { mutableStateOf(0f) }
+    val currentOnDismiss by rememberUpdatedState(onDismiss)
+    val animatedSwipeOffsetX by animateFloatAsState(
+        targetValue = swipeOffsetX,
+        animationSpec = tween(durationMillis = 180),
+        label = "exportSwipe"
+    )
 
     AnimatedVisibility(
         visible = visible,
@@ -44,12 +51,12 @@ fun ExportNotificationBubble(
     ) {
         Card(
             modifier = Modifier
-                .offset { IntOffset(swipeOffsetX.roundToInt(), 0) }
+                .offset { IntOffset(animatedSwipeOffsetX.roundToInt(), 0) }
                 .pointerInput(Unit) {
                     detectHorizontalDragGestures(
                         onDragEnd = {
                             if (abs(swipeOffsetX) > 150f) {
-                                onDismiss()
+                                currentOnDismiss()
                             } else {
                                 swipeOffsetX = 0f
                             }
@@ -62,7 +69,7 @@ fun ExportNotificationBubble(
                 }
                 .clickable {
                     openDirectory(exportedDir)
-                    onDismiss()
+                    currentOnDismiss()
                 },
             shape = RoundedCornerShape(12.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.inverseSurface),
@@ -96,7 +103,7 @@ fun ExportNotificationBubble(
                 }
                 Spacer(Modifier.width(8.dp))
                 IconButton(
-                    onClick = onDismiss,
+                    onClick = currentOnDismiss,
                     modifier = Modifier.size(28.dp)
                 ) {
                     Icon(

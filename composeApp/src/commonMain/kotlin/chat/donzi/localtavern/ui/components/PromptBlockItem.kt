@@ -13,7 +13,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import chat.donzi.localtavern.utils.PromptBlock
+import chat.donzi.localtavern.domain.PromptBlock
 
 @Composable
 fun PromptBlockItem(

@@ -20,9 +20,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import chat.donzi.localtavern.data.database.ChatRepository
-import chat.donzi.localtavern.data.database.CharacterEntity
-import chat.donzi.localtavern.data.database.PersonaEntity
+import chat.donzi.localtavern.data.database.ApiSettingsRepository
+import chat.donzi.localtavern.domain.Character
+import chat.donzi.localtavern.domain.Persona
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.data.network.ChatClient
 import androidx.compose.ui.geometry.Offset
@@ -38,29 +38,33 @@ fun SidePanels(
     activeDrawer: ActiveDrawer,
     drawerWidth: Dp,
     onClose: () -> Unit,
-    chatRepository: ChatRepository,
+    apiSettingsRepository: ApiSettingsRepository,
     chatClient: ChatClient,
     isDarkMode: Boolean,
     onToggleDarkMode: (Boolean, Offset) -> Unit,
-    personas: List<PersonaEntity>,
+    personas: List<Persona>,
     activePersonaId: String?,
     onPersonaSelect: (String) -> Unit,
     onPersonaAdd: (String, String?, ByteArray?) -> Unit,
     onPersonaUpdate: (String, String, String?, ByteArray?) -> Unit,
     onPersonaDelete: (String) -> Unit,
-    characters: List<CharacterEntity>,
-    onCharacterSelect: (CharacterEntity) -> Unit,
+    characters: List<Character>,
+    onCharacterSelect: (Character) -> Unit,
     onCharactersDelete: (Set<String>) -> Unit,
     onCharacterImport: (SillyTavernCardV2, ByteArray?) -> Unit,
-    onCharacterExport: (CharacterEntity) -> Unit,
+    onCharacterExport: (Character) -> Unit,
     onCharacterCreate: (String) -> Unit,
-    onCharacterEdit: (CharacterEntity) -> Unit,
+    onCharacterEdit: (Character) -> Unit,
     autoEditDefaultPersona: Boolean = false,
     onAutoEditConsumed: () -> Unit = {},
     autoShowNewCharacterMenu: Boolean = false,
     onAutoShowMenuConsumed: () -> Unit = {},
     onApiChanged: () -> Unit = {}
 ) {
+    var settingsApiExpanded by remember { mutableStateOf(false) }
+    var personasExpanded by remember { mutableStateOf(true) }
+    var charactersExpanded by remember { mutableStateOf(true) }
+
     Box(modifier = Modifier.fillMaxSize().zIndex(100f)) {
         AnimatedVisibility(
             visible = activeDrawer != ActiveDrawer.None,
@@ -85,17 +89,21 @@ fun SidePanels(
             enter = slideInHorizontally { -it },
             exit = slideOutHorizontally { -it },
             modifier = Modifier
-                .zIndex(101f)
+                // Entering drawer stays above the exiting one during direct
+                // Settings <-> Characters switches.
+                .zIndex(if (activeDrawer == ActiveDrawer.Settings) 102f else 101f)
                 .fillMaxHeight()
                 .width(drawerWidth)
                 .align(Alignment.CenterStart)
         ) {
             SettingsPanelContent(
-                chatRepository = chatRepository,
+                apiSettingsRepository = apiSettingsRepository,
                 chatClient = chatClient,
                 isDarkMode = isDarkMode,
                 onToggleDarkMode = onToggleDarkMode,
-                onApiChanged = onApiChanged
+                onApiChanged = onApiChanged,
+                apiSectionExpanded = settingsApiExpanded,
+                onApiSectionExpandedChange = { settingsApiExpanded = it }
             )
         }
 
@@ -104,7 +112,9 @@ fun SidePanels(
             enter = slideInHorizontally { it },
             exit = slideOutHorizontally { it },
             modifier = Modifier
-                .zIndex(101f)
+                // Entering drawer stays above the exiting one during direct
+                // Settings <-> Characters switches.
+                .zIndex(if (activeDrawer == ActiveDrawer.Characters) 102f else 101f)
                 .fillMaxHeight()
                 .width(drawerWidth)
                 .align(Alignment.CenterEnd)
@@ -126,7 +136,11 @@ fun SidePanels(
                 autoEditDefaultPersona = autoEditDefaultPersona,
                 onAutoEditConsumed = onAutoEditConsumed,
                 autoShowNewCharacterMenu = autoShowNewCharacterMenu,
-                onAutoShowMenuConsumed = onAutoShowMenuConsumed
+                onAutoShowMenuConsumed = onAutoShowMenuConsumed,
+                personasExpanded = personasExpanded,
+                onPersonasExpandedChange = { personasExpanded = it },
+                charactersExpanded = charactersExpanded,
+                onCharactersExpandedChange = { charactersExpanded = it }
             )
         }
     }
@@ -134,11 +148,13 @@ fun SidePanels(
 
 @Composable
 fun SettingsPanelContent(
-    chatRepository: ChatRepository,
+    apiSettingsRepository: ApiSettingsRepository,
     chatClient: ChatClient,
     isDarkMode: Boolean,
     onToggleDarkMode: (Boolean, Offset) -> Unit,
-    onApiChanged: () -> Unit
+    onApiChanged: () -> Unit,
+    apiSectionExpanded: Boolean,
+    onApiSectionExpandedChange: (Boolean) -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -166,11 +182,10 @@ fun SettingsPanelContent(
             }
 
             Column(modifier = Modifier.fillMaxSize()) {
-                var apiExpanded by remember { mutableStateOf(false) }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { apiExpanded = !apiExpanded }
+                        .clickable { onApiSectionExpandedChange(!apiSectionExpanded) }
                         .padding(vertical = 12.dp, horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -181,12 +196,12 @@ fun SettingsPanelContent(
                         fontWeight = FontWeight.SemiBold
                     )
                     Icon(
-                        if (apiExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        if (apiSectionExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
                         contentDescription = null
                     )
                 }
                 AnimatedVisibility(
-                    visible = apiExpanded,
+                    visible = apiSectionExpanded,
                     modifier = Modifier.weight(1f),
                     enter = expandVertically() + fadeIn(),
                     exit = shrinkVertically() + fadeOut()
@@ -197,7 +212,7 @@ fun SettingsPanelContent(
                             .verticalScroll(rememberScrollState())
                     ) {
                         ApiConnectionSettings(
-                            chatRepository = chatRepository,
+                            apiSettingsRepository = apiSettingsRepository,
                             chatClient = chatClient,
                             onApiChanged = onApiChanged
                         )
@@ -210,23 +225,27 @@ fun SettingsPanelContent(
 
 @Composable
 fun CharactersPanelContent(
-    personas: List<PersonaEntity>,
+    personas: List<Persona>,
     activePersonaId: String?,
     onPersonaSelect: (String) -> Unit,
     onPersonaAdd: (String, String?, ByteArray?) -> Unit,
     onPersonaUpdate: (String, String, String?, ByteArray?) -> Unit,
     onPersonaDelete: (String) -> Unit,
-    characters: List<CharacterEntity>,
-    onCharacterSelect: (CharacterEntity) -> Unit,
+    characters: List<Character>,
+    onCharacterSelect: (Character) -> Unit,
     onCharactersDelete: (Set<String>) -> Unit,
     onCharacterImport: (SillyTavernCardV2, ByteArray?) -> Unit,
-    onCharacterExport: (CharacterEntity) -> Unit,
+    onCharacterExport: (Character) -> Unit,
     onCharacterCreate: (String) -> Unit,
-    onCharacterEdit: (CharacterEntity) -> Unit,
+    onCharacterEdit: (Character) -> Unit,
     autoEditDefaultPersona: Boolean,
     onAutoEditConsumed: () -> Unit,
     autoShowNewCharacterMenu: Boolean,
-    onAutoShowMenuConsumed: () -> Unit
+    onAutoShowMenuConsumed: () -> Unit,
+    personasExpanded: Boolean,
+    onPersonasExpandedChange: (Boolean) -> Unit,
+    charactersExpanded: Boolean,
+    onCharactersExpandedChange: (Boolean) -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -253,7 +272,11 @@ fun CharactersPanelContent(
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
             ) {
-                CollapsibleSettingsSection(title = "Personas") {
+                CollapsibleSettingsSection(
+                    title = "Personas",
+                    expanded = personasExpanded,
+                    onExpandedChange = onPersonasExpandedChange
+                ) {
                     PersonaManagementSection(
                         personas = personas,
                         activePersonaId = activePersonaId,
@@ -268,7 +291,11 @@ fun CharactersPanelContent(
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp).alpha(0.3f))
 
-                CollapsibleSettingsSection(title = "Characters") {
+                CollapsibleSettingsSection(
+                    title = "Characters",
+                    expanded = charactersExpanded,
+                    onExpandedChange = onCharactersExpandedChange
+                ) {
                     CharacterListSection(
                         characters = characters,
                         modifier = Modifier.heightIn(max = 1000.dp),
@@ -291,15 +318,21 @@ fun CharactersPanelContent(
 fun CollapsibleSettingsSection(
     title: String,
     initialExpanded: Boolean = true,
+    expanded: Boolean? = null,
+    onExpandedChange: (Boolean) -> Unit = {},
     content: @Composable () -> Unit
 ) {
-    var expanded by remember { mutableStateOf(initialExpanded) }
+    var internalExpanded by remember { mutableStateOf(initialExpanded) }
+    val isExpanded = expanded ?: internalExpanded
+    val setExpanded: (Boolean) -> Unit = { value ->
+        if (expanded != null) onExpandedChange(value) else internalExpanded = value
+    }
 
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { expanded = !expanded }
+                .clickable { setExpanded(!isExpanded) }
                 .padding(vertical = 12.dp, horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
@@ -310,13 +343,13 @@ fun CollapsibleSettingsSection(
                 fontWeight = FontWeight.SemiBold
             )
             Icon(
-                if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
                 contentDescription = null
             )
         }
 
         AnimatedVisibility(
-            visible = expanded,
+            visible = isExpanded,
             enter = expandVertically() + fadeIn(),
             exit = shrinkVertically() + fadeOut()
         ) {

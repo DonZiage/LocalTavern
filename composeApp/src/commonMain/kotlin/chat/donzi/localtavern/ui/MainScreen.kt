@@ -13,163 +13,77 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import chat.donzi.localtavern.data.database.ChatRepository
-import chat.donzi.localtavern.data.database.CharacterEntity
-import chat.donzi.localtavern.data.database.PersonaEntity
-import chat.donzi.localtavern.data.database.MessageEntity
-import chat.donzi.localtavern.data.database.ChatSession
-import chat.donzi.localtavern.data.database.deserializeImageList
+import chat.donzi.localtavern.controller.ChatController
+import chat.donzi.localtavern.data.database.ApiSettingsRepository
+import chat.donzi.localtavern.data.database.CharacterRepository
+import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.data.network.ChatClient
+import chat.donzi.localtavern.domain.Character
+import chat.donzi.localtavern.domain.Persona
+import chat.donzi.localtavern.domain.Session
 import chat.donzi.localtavern.ui.components.ActiveDrawer
 import chat.donzi.localtavern.ui.components.SidePanels
 import chat.donzi.localtavern.ui.components.SettingsPanelContent
 import chat.donzi.localtavern.ui.components.CharactersPanelContent
+import chat.donzi.localtavern.ui.components.ChatActions
 import chat.donzi.localtavern.ui.components.ChatArea
+import chat.donzi.localtavern.ui.components.ChatTopBar
 import chat.donzi.localtavern.ui.components.CharacterDefinitionEditor
+import chat.donzi.localtavern.ui.components.MessageSelectTopBar
 import chat.donzi.localtavern.ui.components.ExportNotificationBubble
 import chat.donzi.localtavern.ui.components.ErrorNotificationBubble
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import androidx.compose.ui.geometry.Offset
 import chat.donzi.localtavern.isDesktop
-import chat.donzi.localtavern.utils.ContextManager
-import chat.donzi.localtavern.utils.ChatMessage
-import chat.donzi.localtavern.utils.ImageAttachment
-import chat.donzi.localtavern.utils.toDomain
 import chat.donzi.localtavern.utils.CharacterManager
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlin.time.Instant
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.format.DateTimeFormat
+import kotlinx.datetime.format.Padding
+import kotlinx.datetime.format.char
+import kotlinx.datetime.toLocalDateTime
 
-private val greetingsMutex = Mutex()
-
-private suspend fun insertInitialGreetings(
-    chatRepository: ChatRepository,
-    sessionId: String,
-    character: CharacterEntity
-) {
-    greetingsMutex.withLock {
-        if (chatRepository.getMessagesForSession(sessionId).isNotEmpty()) return
-
-        val primaryGreeting = character.firstMes ?: ""
-        val altGreetingsList = character.altGreetings?.split("|||")?.filter { it.isNotBlank() } ?: emptyList()
-        val allGreetings = mutableListOf<String>()
-
-        if (primaryGreeting.isNotBlank()) allGreetings.add(primaryGreeting)
-        allGreetings.addAll(altGreetingsList)
-
-        var primaryMessageId: String? = null
-        allGreetings.forEachIndexed { index, greeting ->
-            val isActive = index == 0
-            val msgId = chatRepository.insertMessageRaw(sessionId, "assistant", greeting, null, isActive)
-            if (isActive) primaryMessageId = msgId
-        }
-        primaryMessageId?.let {
-            chatRepository.updateSessionCurrentMessage(sessionId, it)
-        }
-    }
+private val sessionDateTimeFormat: DateTimeFormat<LocalDateTime> = LocalDateTime.Format {
+    monthNumber(Padding.NONE)
+    char('/')
+    day(Padding.NONE)
+    char('/')
+    yearTwoDigits(baseYear = 2000)
+    char(' ')
+    amPmHour(Padding.NONE)
+    char(':')
+    minute()
+    amPmMarker("AM", "PM")
 }
 
 private fun formatTimestampToDateTime(timestamp: Long): String {
-    val totalSeconds = timestamp / 1000
-    val totalMinutes = totalSeconds / 60
-    val totalHours = totalMinutes / 60
-    val totalDays = totalHours / 24
-
-    var year = 1970
-    var daysRemaining = totalDays
-
-    while (true) {
-        val isLeap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
-        val daysInYear = if (isLeap) 366 else 365
-        if (daysRemaining >= daysInYear) {
-            daysRemaining -= daysInYear
-            year++
-        } else {
-            break
-        }
-    }
-
-    val isLeap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
-    val daysInMonths = intArrayOf(31, if (isLeap) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-    var month = 0
-    while (month < 12) {
-        val dim = daysInMonths[month]
-        if (daysRemaining >= dim) {
-            daysRemaining -= dim
-            month++
-        } else {
-            break
-        }
-    }
-
-    val monthNum = month + 1
-    val dayNum = daysRemaining + 1
-    val shortYear = year % 100
-
-    val hour24 = (totalHours % 24).toInt()
-    val minute = (totalMinutes % 60).toInt()
-
-    val amPm = if (hour24 >= 12) "PM" else "AM"
-    var hour12 = hour24 % 12
-    if (hour12 == 0) hour12 = 12
-
-    val minuteStr = if (minute < 10) "0$minute" else "$minute"
-
-    return "$monthNum/$dayNum/$shortYear $hour12:${minuteStr}$amPm"
+    val dateTime = Instant.fromEpochMilliseconds(timestamp).toLocalDateTime(TimeZone.currentSystemDefault())
+    return sessionDateTimeFormat.format(dateTime)
 }
 
-private fun detectMimeType(bytes: ByteArray): String {
-    if (bytes.size >= 4 &&
-        bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() &&
-        bytes[2] == 0x4E.toByte() && bytes[3] == 0x47.toByte()) {
-        return "image/png"
-    }
-    if (bytes.size >= 3 &&
-        bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() &&
-        bytes[2] == 0xFF.toByte()) {
-        return "image/jpeg"
-    }
-    if (bytes.size >= 12 &&
-        bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() &&
-        bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte() &&
-        bytes[8] == 'W'.code.toByte() && bytes[9] == 'E'.code.toByte() &&
-        bytes[10] == 'B'.code.toByte() && bytes[11] == 'P'.code.toByte()
-    ) {
-        return "image/webp"
-    }
-    if (bytes.size >= 3 &&
-        bytes[0] == 'G'.code.toByte() && bytes[1] == 'I'.code.toByte() &&
-        bytes[2] == 'F'.code.toByte()
-    ) {
-        return "image/gif"
-    }
-    return "image/jpeg"
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
-    chatRepository: ChatRepository,
+    chatController: ChatController,
+    characterRepository: CharacterRepository,
+    sessionRepository: SessionRepository,
+    apiSettingsRepository: ApiSettingsRepository,
     chatClient: ChatClient,
-    characters: List<CharacterEntity>,
-    personas: List<PersonaEntity>,
+    characters: List<Character>,
+    personas: List<Persona>,
     activePersonaId: String?,
     isDarkMode: Boolean,
     onToggleDarkMode: (Boolean, Offset) -> Unit,
     activeDrawer: ActiveDrawer,
     onActiveDrawerChange: (ActiveDrawer) -> Unit,
-    refreshData: () -> Unit,
     onPersonaSelect: (String) -> Unit,
     onPersonaAdd: (String, String?, ByteArray?) -> Unit,
     onPersonaUpdate: (String, String, String?, ByteArray?) -> Unit,
@@ -179,21 +93,24 @@ fun MainScreen(
     onCharacterCreate: (String) -> Unit
 ) {
     val drawerWidth = 300.dp
-    var activeCharacter by remember { mutableStateOf<CharacterEntity?>(null) }
+    var activeCharacter by remember { mutableStateOf<Character?>(null) }
     var activeSessionId by remember { mutableStateOf<String?>(null) }
-    var messages by remember { mutableStateOf(emptyList<MessageEntity>()) }
-    var siblingsMap by remember { mutableStateOf(emptyMap<String, List<MessageEntity>>()) }
-    var currentSessionDetails by remember { mutableStateOf<ChatSession?>(null) }
     val coroutineScope = rememberCoroutineScope()
+
+    val chatState by chatController.state.collectAsState()
+    val messages = chatState.messages
+    val siblingsMap = chatState.siblingsMap
+    val currentSessionDetails = chatState.currentSession
+    val isGenerating = chatState.isGenerating
+    val structuredErrorMessage = chatState.errorMessage.orEmpty()
+    val structuredErrorIsWarning = chatState.errorIsWarning
+    val showStructuredErrorNotification = chatState.errorMessage != null
 
     var isSelectMode by remember { mutableStateOf(false) }
     var selectedMessageIds by remember { mutableStateOf(setOf<String>()) }
-    var editingCharacter by remember { mutableStateOf<CharacterEntity?>(null) }
+    var editingCharacter by remember { mutableStateOf<Character?>(null) }
 
     var hasApiProfile by remember { mutableStateOf(false) }
-
-    var isGenerating by remember { mutableStateOf(false) }
-    var currentResponseJob by remember { mutableStateOf<Job?>(null) }
 
     var autoEditPersonaTrigger by remember { mutableStateOf(false) }
     var autoShowCharacterMenuTrigger by remember { mutableStateOf(false) }
@@ -203,10 +120,6 @@ fun MainScreen(
     var exportedDir by remember { mutableStateOf("") }
     val snackbarHostState = remember { SnackbarHostState() }
 
-    var showStructuredErrorNotification by remember { mutableStateOf(false) }
-    var structuredErrorMessage by remember { mutableStateOf("") }
-    var structuredErrorIsWarning by remember { mutableStateOf(false) }
-
     val hasPersona = remember(personas) {
         personas.any { it.name != "User" || !it.description.isNullOrBlank() || it.avatarData != null }
     }
@@ -215,10 +128,10 @@ fun MainScreen(
     }
 
     LaunchedEffect(activeSessionId, characters, personas, activeDrawer) {
-        hasApiProfile = chatRepository.getAllApiConnections().isNotEmpty()
+        hasApiProfile = apiSettingsRepository.getAllApiConnections().isNotEmpty()
     }
 
-    var lastEditingCharacter by remember { mutableStateOf<CharacterEntity?>(null) }
+    var lastEditingCharacter by remember { mutableStateOf<Character?>(null) }
     LaunchedEffect(editingCharacter) {
         if (editingCharacter != null) {
             lastEditingCharacter = editingCharacter
@@ -243,10 +156,10 @@ fun MainScreen(
         }
     }
 
-    LaunchedEffect(showStructuredErrorNotification) {
-        if (showStructuredErrorNotification) {
+    LaunchedEffect(chatState.errorMessage) {
+        if (chatState.errorMessage != null) {
             delay(5000.milliseconds)
-            showStructuredErrorNotification = false
+            chatController.clearError()
         }
     }
 
@@ -254,197 +167,53 @@ fun MainScreen(
         personas.find { it.id == activePersonaId }
     }
 
-    val exportCharacterFromList = { targetChar: CharacterEntity ->
+    val exportCharacterFromList = { targetChar: Character ->
         if (!isDesktop) onActiveDrawerChange(ActiveDrawer.None)
-        try {
-            val parentDir = CharacterManager.performExport(targetChar)
-            if (parentDir != null) {
-                exportedDir = parentDir
-                showExportNotification = true
-            } else {
-                coroutineScope.launch { snackbarHostState.showSnackbar("Failed to export: Could not save file") }
+        coroutineScope.launch {
+            try {
+                // PNG re-encoding can be heavy; do it off the main thread. The
+                // actual save (file dialog) must stay on the main thread.
+                val (fileName, bytes) = withContext(Dispatchers.Default) {
+                    CharacterManager.prepareExportBytes(targetChar)
+                }
+                val parentDir = CharacterManager.saveExportedFile(fileName, bytes)
+                if (parentDir != null) {
+                    exportedDir = parentDir
+                    showExportNotification = true
+                } else {
+                    snackbarHostState.showSnackbar("Failed to export: Could not save file")
+                }
+            } catch (e: Exception) {
+                snackbarHostState.showSnackbar("Failed to export: ${e.message}")
             }
-        } catch (e: Exception) {
-            coroutineScope.launch { snackbarHostState.showSnackbar("Failed to export: ${e.message}") }
         }
     }
 
     fun refreshMessages() {
         coroutineScope.launch {
-            hasApiProfile = chatRepository.getAllApiConnections().isNotEmpty()
-
-            activeSessionId?.let { sessionId ->
-                val sessionDetails = chatRepository.getSessionById(sessionId)
-                currentSessionDetails = sessionDetails
-
-                val activeTimeline = chatRepository.getMessagesForSession(sessionId)
-                messages = activeTimeline
-
-                val updatedSiblings = mutableMapOf<String, List<MessageEntity>>()
-                val rootGreetings = chatRepository.getMessageSiblings(sessionId, null)
-                if (rootGreetings.isNotEmpty()) {
-                    rootGreetings.forEach { updatedSiblings[it.id] = rootGreetings }
-                }
-
-                activeTimeline.forEach { msg ->
-                    if (msg.parentId != null && !updatedSiblings.containsKey(msg.id)) {
-                        val siblingsList = chatRepository.getMessageSiblings(sessionId, msg.parentId)
-                        if (siblingsList.isNotEmpty()) {
-                            siblingsList.forEach { updatedSiblings[it.id] = siblingsList }
-                        }
-                    }
-                }
-                siblingsMap = updatedSiblings
-            } ?: run {
-                messages = emptyList()
-                siblingsMap = emptyMap()
-                currentSessionDetails = null
-            }
+            hasApiProfile = apiSettingsRepository.getAllApiConnections().isNotEmpty()
         }
+        chatController.refresh(activeSessionId)
     }
 
     LaunchedEffect(activeCharacter, activePersonaId, activeSessionId, characters, personas) {
         isSelectMode = false
         selectedMessageIds = emptySet()
-        hasApiProfile = chatRepository.getAllApiConnections().isNotEmpty()
+        hasApiProfile = apiSettingsRepository.getAllApiConnections().isNotEmpty()
         if (activePersonaId != null && activeCharacter != null) {
             var sessionId = activeSessionId
-            val currentSession = sessionId?.let { chatRepository.getSessionById(it) }
+            val currentSession = sessionId?.let { sessionRepository.getSessionById(it) }
 
             if (currentSession == null || currentSession.characterId != activeCharacter!!.id || currentSession.personaId != activePersonaId) {
-                sessionId = chatRepository.getOrCreateSession(activeCharacter!!.id, activePersonaId)
+                sessionId = sessionRepository.getOrCreateSession(activeCharacter!!.id, activePersonaId)
                 activeSessionId = sessionId
             }
 
-            val currentMessages = chatRepository.getMessagesForSession(sessionId)
-            if (currentMessages.isEmpty()) {
-                insertInitialGreetings(chatRepository, sessionId, activeCharacter!!)
-            }
-            refreshMessages()
+            sessionRepository.ensureInitialGreetings(sessionId, activeCharacter!!)
+            chatController.refresh(sessionId)
         } else {
             activeSessionId = null
-            messages = emptyList()
-            siblingsMap = emptyMap()
-        }
-    }
-
-    fun requestAiResponse(sessionId: String, targetParentId: String? = null) {
-        if (isGenerating) return
-        isGenerating = true
-        currentResponseJob?.cancel()
-        currentResponseJob = coroutineScope.launch {
-            try {
-                val activeConnection = chatRepository.getActiveApiConnection()
-                if (activeConnection != null) {
-                    val aiMessageId = chatRepository.insertMessage(sessionId, "assistant", "...", targetParentId)
-                    refreshMessages()
-
-                    var fullResponse = ""
-                    var receivedFirstToken = false
-                    val dbMessages = chatRepository.getMessagesForSession(sessionId)
-
-                    @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
-                    val chatHistory = dbMessages
-                        .filter { it.id != aiMessageId }
-                        .map { msg ->
-                            val parsedImages = deserializeImageList(msg.imageData)
-                            val attachmentsList = parsedImages.map { imgBytes ->
-                                ImageAttachment(
-                                    base64 = kotlin.io.encoding.Base64.encode(imgBytes),
-                                    mimeType = detectMimeType(imgBytes)
-                                )
-                            }
-                            ChatMessage(
-                                role = msg.role,
-                                content = msg.content,
-                                images = attachmentsList
-                            )
-                        }
-
-                    val blocks = chatRepository.getAllPromptBlocks().map { it.toDomain() }
-                    val messagesPayload = ContextManager.buildPayload(
-                        blocks = blocks, character = activeCharacter, persona = activePersona, chatHistory = chatHistory,
-                        contextLimit = activeConnection.contextLimit, responseLimit = activeConnection.responseLimit
-                    )
-
-                    val timeoutLimitSeconds = activeConnection.timeoutLimit
-                    val tokenChannel = Channel<String>(Channel.UNLIMITED)
-
-                    val streamJob = launch {
-                        try {
-                            chatClient.streamChatRequest(
-                                baseUrl = activeConnection.baseUrl ?: "", apiKey = activeConnection.apiKey ?: "",
-                                model = activeConnection.model ?: "", messages = messagesPayload,
-                                isChatCompletion = activeConnection.isChatCompletion == 1L
-                            ).collect { token -> tokenChannel.send(token) }
-                        } catch (e: Exception) {
-                            tokenChannel.close(e)
-                            return@launch
-                        }
-                        tokenChannel.close()
-                    }
-
-                    try {
-                        while (true) {
-                            val channelResult = if (timeoutLimitSeconds == 0L) {
-                                tokenChannel.receiveCatching()
-                            } else {
-                                withTimeout(timeoutLimitSeconds.seconds) { tokenChannel.receiveCatching() }
-                            }
-
-                            if (channelResult.isClosed) {
-                                val cause = channelResult.exceptionOrNull()
-                                if (cause != null) {
-                                    throw cause
-                                }
-                                break
-                            }
-
-                            val token = channelResult.getOrNull() ?: break
-
-                            if (!receivedFirstToken) {
-                                receivedFirstToken = true
-                                fullResponse = token
-                            } else {
-                                fullResponse += token
-                            }
-
-                            messages = messages.map { msg -> if (msg.id == aiMessageId) msg.copy(content = fullResponse) else msg }
-                            chatRepository.updateMessageContent(aiMessageId, fullResponse)
-                        }
-                        refreshMessages()
-                    } catch (_: TimeoutCancellationException) {
-                        streamJob.cancel()
-                        if (fullResponse.isBlank()) {
-                            chatRepository.deleteMessage(aiMessageId)
-                        }
-                        structuredErrorMessage = "Response timeout exceeded."
-                        structuredErrorIsWarning = true
-                        showStructuredErrorNotification = true
-                        refreshMessages()
-                    } catch (_: kotlinx.coroutines.CancellationException) {
-                        streamJob.cancel()
-                        refreshMessages()
-                    } catch (e: Exception) {
-                        streamJob.cancel()
-                        if (fullResponse.isBlank()) {
-                            chatRepository.deleteMessage(aiMessageId)
-                        }
-                        structuredErrorMessage = e.message ?: "Unknown error occurred"
-                        structuredErrorIsWarning = false
-                        showStructuredErrorNotification = true
-                        refreshMessages()
-                    }
-                } else {
-                    structuredErrorMessage = "No active API connection configured."
-                    structuredErrorIsWarning = false
-                    showStructuredErrorNotification = true
-                    refreshMessages()
-                }
-            } finally {
-                isGenerating = false
-                currentResponseJob = null
-            }
+            chatController.refresh(null)
         }
     }
 
@@ -453,11 +222,10 @@ fun MainScreen(
             coroutineScope.launch {
                 var currentActiveCharacter = activeCharacter
                 if (currentActiveCharacter == null) {
-                    var assistant = chatRepository.getAssistant()
+                    var assistant = characterRepository.getAssistant()
                     if (assistant == null) {
-                        chatRepository.createAssistant()
-                        assistant = chatRepository.getAssistant()
-                        refreshData()
+                        characterRepository.createAssistant()
+                        assistant = characterRepository.getAssistant()
                     }
                     if (assistant != null) {
                         activeCharacter = assistant
@@ -466,17 +234,28 @@ fun MainScreen(
                 }
 
                 if (currentActiveCharacter != null && activePersonaId != null) {
-                    val sessionId = chatRepository.getOrCreateSession(currentActiveCharacter.id, activePersonaId)
+                    val sessionId = sessionRepository.getOrCreateSession(currentActiveCharacter.id, activePersonaId)
                     activeSessionId = sessionId
 
-                    insertInitialGreetings(chatRepository, sessionId, currentActiveCharacter)
+                    sessionRepository.ensureInitialGreetings(sessionId, currentActiveCharacter)
 
-                    val updatedSession = chatRepository.getSessionById(sessionId)
-                    chatRepository.insertMessage(sessionId, "user", userMessage, updatedSession?.currentMessageId, imageList)
+                    val updatedSession = sessionRepository.getSessionById(sessionId)
+                    sessionRepository.insertMessage(sessionId, "user", userMessage, updatedSession?.currentMessageId, imageList)
                     refreshMessages()
 
-                    val updatedSession2 = chatRepository.getSessionById(sessionId)
-                    requestAiResponse(sessionId, updatedSession2?.currentMessageId)
+                    val updatedSession2 = sessionRepository.getSessionById(sessionId)
+                    if (updatedSession2?.title.isNullOrBlank()) {
+                        val autoTitle = userMessage
+                            .lineSequence()
+                            .first()
+                            .trim()
+                            .take(50)
+                            .ifBlank { null }
+                        if (autoTitle != null) {
+                            sessionRepository.updateSessionTitle(sessionId, autoTitle)
+                        }
+                    }
+                    chatController.requestAiResponse(sessionId, currentActiveCharacter, activePersona, updatedSession2?.currentMessageId)
                 }
             }
         }
@@ -485,17 +264,20 @@ fun MainScreen(
     Box(modifier = Modifier.fillMaxSize()) {
         Row(modifier = Modifier.fillMaxSize()) {
             if (isDesktop) {
+                var settingsApiExpanded by remember { mutableStateOf(false) }
                 Box(modifier = Modifier.width(drawerWidth).fillMaxHeight()) {
                     SettingsPanelContent(
-                        chatRepository = chatRepository,
+                        apiSettingsRepository = apiSettingsRepository,
                         chatClient = chatClient,
                         isDarkMode = isDarkMode,
                         onToggleDarkMode = onToggleDarkMode,
                         onApiChanged = {
                             coroutineScope.launch {
-                                hasApiProfile = chatRepository.getAllApiConnections().isNotEmpty()
+                                hasApiProfile = apiSettingsRepository.getAllApiConnections().isNotEmpty()
                             }
-                        }
+                        },
+                        apiSectionExpanded = settingsApiExpanded,
+                        onApiSectionExpandedChange = { settingsApiExpanded = it }
                     )
                 }
             }
@@ -504,167 +286,102 @@ fun MainScreen(
                 Scaffold(
                     topBar = {
                         if (isSelectMode) {
-                            TopAppBar(
-                                title = { Text(if (selectedMessageIds.isEmpty()) "Select Messages" else "${selectedMessageIds.size} Selected") },
-                                actions = {
-                                    OutlinedButton(onClick = { isSelectMode = false; selectedMessageIds = emptySet() }) {
-                                        Icon(Icons.Default.Clear, contentDescription = null)
-                                        Text("Cancel")
-                                    }
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Button(
-                                        onClick = {
-                                            coroutineScope.launch {
-                                                for (id in selectedMessageIds) chatRepository.deleteMessage(id)
-                                                isSelectMode = false; selectedMessageIds = emptySet()
-                                                refreshMessages()
-                                            }
-                                        },
-                                        enabled = selectedMessageIds.isNotEmpty(),
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White)
-                                    ) {
-                                        Icon(Icons.Default.Delete, contentDescription = null, tint = Color.White)
-                                        Text("Delete", color = Color.White)
-                                    }
-                                    IconButton(onClick = { isSelectMode = false; selectedMessageIds = emptySet() }) { Icon(Icons.Default.Close, contentDescription = "Close") }
+                            MessageSelectTopBar(
+                                selectedMessageIds = selectedMessageIds,
+                                onCancel = { isSelectMode = false; selectedMessageIds = emptySet() },
+                                onDeleteSelected = {
+                                    activeSessionId?.let { chatController.deleteMessagesRaw(it, selectedMessageIds.toList()) }
+                                    isSelectMode = false; selectedMessageIds = emptySet()
                                 }
                             )
                         } else {
-                            TopAppBar(
-                                title = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(activeCharacter?.name ?: "LocalTavern")
-                                        if (activeCharacter != null) {
-                                            IconButton(onClick = { editingCharacter = activeCharacter }) { Icon(Icons.Default.Edit, contentDescription = "Edit") }
-                                        }
-                                    }
-                                },
-                                navigationIcon = {
-                                    if (!isDesktop) {
-                                        IconButton(onClick = { onActiveDrawerChange(ActiveDrawer.Settings) }) { Icon(Icons.Filled.Menu, contentDescription = "Settings") }
-                                    }
-                                },
-                                actions = {
-                                    if (activeCharacter != null) { IconButton(onClick = { activeCharacter = null }) { Icon(Icons.Filled.Close, contentDescription = "Close Chat") } }
-                                    if (!isDesktop) {
-                                        IconButton(onClick = { onActiveDrawerChange(ActiveDrawer.Characters) }) { Icon(Icons.Filled.Person, contentDescription = "Characters") }
-                                    }
-                                }
+                            ChatTopBar(
+                                activeCharacter = activeCharacter,
+                                isDesktop = isDesktop,
+                                onEditCharacter = { editingCharacter = activeCharacter },
+                                onCloseChat = { activeCharacter = null },
+                                onOpenSettings = { onActiveDrawerChange(ActiveDrawer.Settings) },
+                                onOpenCharacters = { onActiveDrawerChange(ActiveDrawer.Characters) }
                             )
                         }
                     }
                 ) { paddingValues ->
                     Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
                         ChatArea(
-                            activeCharacter = activeCharacter, activePersonaName = activePersona?.name.orEmpty(), activePersonaAvatar = activePersona?.avatarData,
-                            messages = messages, siblingsMap = siblingsMap, hasApiProfile = hasApiProfile, hasPersona = hasPersona, hasCharacter = hasCharacter,
-                            onNavigateToSettings = { if (!isDesktop) onActiveDrawerChange(ActiveDrawer.Settings) }, onNavigateToPersonas = { autoEditPersonaTrigger = true; if (!isDesktop) onActiveDrawerChange(ActiveDrawer.Characters) },
-                            onNavigateToCharacters = { autoShowCharacterMenuTrigger = true; if (!isDesktop) onActiveDrawerChange(ActiveDrawer.Characters) }, onSendMessage = onSendMessage,
-                            onEditMessage = { id, content, updatedImages ->
-                                coroutineScope.launch {
-                                    chatRepository.updateMessageContent(id, content)
-                                    chatRepository.updateMessageImage(id, updatedImages)
-                                    refreshMessages()
+                            chatState = chatState,
+                            activeCharacter = activeCharacter,
+                            activePersonaName = activePersona?.name.orEmpty(),
+                            activePersonaAvatar = activePersona?.avatarData,
+                            hasApiProfile = hasApiProfile,
+                            hasPersona = hasPersona,
+                            hasCharacter = hasCharacter,
+                            isSelectMode = isSelectMode,
+                            selectedMessageIds = selectedMessageIds,
+                            onSelectMessageToggle = { id ->
+                                val index = messages.indexOfFirst { it.id == id }
+                                if (index != -1) {
+                                    selectedMessageIds = messages.subList(index, messages.size).map { it.id }.toSet()
                                 }
                             },
-                            onDeleteMessage = { id ->
-                                coroutineScope.launch {
+                            onEnterSelectMode = { isSelectMode = true; selectedMessageIds = emptySet() },
+                            actions = ChatActions(
+                                onSendMessage = onSendMessage,
+                                onEditMessage = { id, content, updatedImages ->
+                                    activeSessionId?.let { chatController.editMessage(it, id, content, updatedImages) }
+                                },
+                                onDeleteMessage = { id ->
+                                    activeSessionId?.let { chatController.deleteMessage(it, id) }
+                                },
+                                onDeleteMessages = { ids ->
+                                    activeSessionId?.let { chatController.deleteMessages(it, ids) }
+                                },
+                                onRegenerate = {
+                                    activeSessionId?.let { chatController.regenerate(it, activeCharacter, activePersona) }
+                                },
+                                onSelectVariation = { variationId ->
                                     activeSessionId?.let { sessionId ->
-                                        val activeTimeline = chatRepository.getMessagesForSession(sessionId)
-                                        if (activeTimeline.any { it.id == id }) {
-                                            val currentTimeline = chatRepository.getMessagesForSession(sessionId)
-                                            val msg = currentTimeline.find { it.id == id }
-                                            val parentId = msg?.parentId
-                                            val siblings = chatRepository.getMessageSiblings(sessionId, parentId)
-                                            val otherSibling = siblings.firstOrNull { it.id != id }
-                                            if (otherSibling != null) {
-                                                chatRepository.selectVariation(sessionId, otherSibling.id, parentId)
-                                            } else if (parentId != null) {
-                                                chatRepository.updateSessionCurrentMessage(sessionId, parentId)
-                                            }
-                                        }
+                                        val msg = messages.find { it.id == variationId } ?: siblingsMap[variationId]?.find { it.id == variationId }
+                                        chatController.selectVariation(sessionId, variationId, msg?.parentId)
                                     }
-                                    chatRepository.deleteMessage(id); refreshMessages()
-                                }
-                            },
-                            onDeleteMessages = { ids ->
-                                coroutineScope.launch {
-                                    activeSessionId?.let { sessionId ->
-                                        val activeTimeline = chatRepository.getMessagesForSession(sessionId)
-                                        val activeDeleted = activeTimeline.find { it.id in ids }
-                                        if (activeDeleted != null) {
-                                            val parentId = activeDeleted.parentId
-                                            if (parentId != null) {
-                                                val parentMsg = chatRepository.getMessagesForSession(sessionId).find { it.id == parentId }
-                                                chatRepository.selectVariation(sessionId, parentId, parentMsg?.parentId)
-                                            }
-                                        }
-                                    }
-                                    ids.forEach { chatRepository.deleteMessage(it) }; refreshMessages()
-                                }
-                            },
-                            onBranchMessage = { message ->
-                                coroutineScope.launch {
-                                    activeSessionId?.let { sessionId ->
-                                        val currentSession = chatRepository.getSessionById(sessionId)
-                                        val baseTitle = currentSession?.title ?: "${activeCharacter?.name ?: "Chat"} #$sessionId"
-                                        val newSessionId = chatRepository.branchSession(sessionId, message.id, messages, "Branch of $baseTitle")
-                                        activeSessionId = newSessionId; refreshMessages()
-                                    }
-                                }
-                            },
-                            onGoToParentChat = currentSessionDetails?.parentSessionId?.let { parentId -> { activeSessionId = parentId; refreshMessages() } },
-                            onRegenerate = {
-                                coroutineScope.launch {
-                                    if (messages.isEmpty() || activeSessionId == null) return@launch
-                                    val lastMsg = messages.last()
-                                    val userMsg = if (lastMsg.role == "assistant") {
-                                        chatRepository.deleteMessage(lastMsg.id)
-                                        messages.dropLast(1).lastOrNull { it.role == "user" }
-                                    } else {
-                                        messages.lastOrNull { it.role == "user" }
-                                    }
-                                    if (userMsg != null) {
-                                        val session = chatRepository.getSessionById(activeSessionId!!)
-                                        requestAiResponse(activeSessionId!!, session?.currentMessageId)
-                                    } else {
-                                        refreshMessages()
-                                    }
-                                }
-                            },
-                            onSelectVariation = { variationId -> coroutineScope.launch { activeSessionId?.let { sessionId -> val msg = messages.find { it.id == variationId } ?: siblingsMap[variationId]?.find { it.id == variationId }; chatRepository.selectVariation(sessionId, variationId, msg?.parentId); refreshMessages() } } },
-                            onGenerateNewVariation = { lastMessageId ->
-                                if (!isGenerating) {
-                                    coroutineScope.launch {
+                                },
+                                onGenerateNewVariation = { lastMessageId ->
+                                    if (!isGenerating) {
                                         activeSessionId?.let { sessionId ->
                                             val existingMsg = messages.find { it.id == lastMessageId }
                                                 ?: siblingsMap[lastMessageId]?.find { it.id == lastMessageId }
                                             if (existingMsg != null) {
-                                                requestAiResponse(sessionId, existingMsg.parentId)
+                                                chatController.requestAiResponse(sessionId, activeCharacter, activePersona, existingMsg.parentId)
                                             }
                                         }
                                     }
-                                }
-                            },
-                            isSelectMode = isSelectMode, selectedMessageIds = selectedMessageIds,
-                            onSelectMessageToggle = { id -> val index = messages.indexOfFirst { it.id == id }; if (index != -1) { selectedMessageIds = messages.subList(index, messages.size).map { it.id }.toSet() } },
-                            onEnterSelectMode = { isSelectMode = true; selectedMessageIds = emptySet() }, isGenerating = isGenerating, onStopGeneration = { currentResponseJob?.cancel() }, onManageChats = { showChatManagerDialog = true },
-
-                            onAddImageToMessage = { targetMessageId, pickedBytesList ->
-                                coroutineScope.launch {
-                                    val targetMsg = messages.find { it.id == targetMessageId }
-                                    val existingImages = deserializeImageList(targetMsg?.imageData)
-                                    val combinedImages = existingImages + pickedBytesList
-                                    chatRepository.updateMessageImage(targetMessageId, combinedImages)
-                                    refreshMessages()
-                                }
-                            }
+                                },
+                                onStopGeneration = { chatController.stopGeneration() },
+                                onManageChats = { showChatManagerDialog = true },
+                                onBranchMessage = { message ->
+                                    coroutineScope.launch {
+                                        activeSessionId?.let { sessionId ->
+                                            val newSessionId = chatController.branchSession(sessionId, message, activeCharacter?.name)
+                                            activeSessionId = newSessionId
+                                            chatController.refresh(newSessionId)
+                                        }
+                                    }
+                                },
+                                onGoToParentChat = currentSessionDetails?.parentSessionId?.let { parentId -> { activeSessionId = parentId; chatController.refresh(parentId) } },
+                                onAddImageToMessage = { targetMessageId, pickedBytesList ->
+                                    activeSessionId?.let { chatController.addImageToMessage(it, targetMessageId, pickedBytesList) }
+                                },
+                                onNavigateToSettings = { if (!isDesktop) onActiveDrawerChange(ActiveDrawer.Settings) },
+                                onNavigateToPersonas = { autoEditPersonaTrigger = true; if (!isDesktop) onActiveDrawerChange(ActiveDrawer.Characters) },
+                                onNavigateToCharacters = { autoShowCharacterMenuTrigger = true; if (!isDesktop) onActiveDrawerChange(ActiveDrawer.Characters) }
+                            )
                         )
                     }
                 }
             }
 
             if (isDesktop) {
+                var personasExpanded by remember { mutableStateOf(true) }
+                var charactersExpanded by remember { mutableStateOf(true) }
                 Box(modifier = Modifier.width(drawerWidth).fillMaxHeight()) {
                     CharactersPanelContent(
                         personas = personas,
@@ -683,7 +400,11 @@ fun MainScreen(
                         autoEditDefaultPersona = autoEditPersonaTrigger,
                         onAutoEditConsumed = { autoEditPersonaTrigger = false },
                         autoShowNewCharacterMenu = autoShowCharacterMenuTrigger,
-                        onAutoShowMenuConsumed = { autoShowCharacterMenuTrigger = false }
+                        onAutoShowMenuConsumed = { autoShowCharacterMenuTrigger = false },
+                        personasExpanded = personasExpanded,
+                        onPersonasExpandedChange = { personasExpanded = it },
+                        charactersExpanded = charactersExpanded,
+                        onCharactersExpandedChange = { charactersExpanded = it }
                     )
                 }
             }
@@ -692,7 +413,7 @@ fun MainScreen(
         if (!isDesktop) {
             SidePanels(
                 activeDrawer = activeDrawer, drawerWidth = drawerWidth, onClose = { onActiveDrawerChange(ActiveDrawer.None) },
-                chatRepository = chatRepository, chatClient = chatClient, isDarkMode = isDarkMode, onToggleDarkMode = onToggleDarkMode,
+                apiSettingsRepository = apiSettingsRepository, chatClient = chatClient, isDarkMode = isDarkMode, onToggleDarkMode = onToggleDarkMode,
                 personas = personas, activePersonaId = activePersonaId, onPersonaSelect = onPersonaSelect, onPersonaAdd = onPersonaAdd, onPersonaUpdate = onPersonaUpdate, onPersonaDelete = onPersonaDelete,
                 characters = characters, onCharacterSelect = { character -> activeCharacter = character; onActiveDrawerChange(ActiveDrawer.None) },
                 onCharactersDelete = { ids -> if (activeCharacter?.id in ids) activeCharacter = null; onCharactersDelete(ids) }, onCharacterImport = onCharacterImport,
@@ -701,7 +422,7 @@ fun MainScreen(
                 autoShowNewCharacterMenu = autoShowCharacterMenuTrigger, onAutoShowMenuConsumed = { autoShowCharacterMenuTrigger = false },
                 onApiChanged = {
                     coroutineScope.launch {
-                        hasApiProfile = chatRepository.getAllApiConnections().isNotEmpty()
+                        hasApiProfile = apiSettingsRepository.getAllApiConnections().isNotEmpty()
                     }
                 }
             )
@@ -715,48 +436,52 @@ fun MainScreen(
                             character = targetCharacter, onClose = { editingCharacter = null },
                             onSave = { name, desc, personality, scenario, firstMes, mesExample, altGreetings, avatarData ->
                                 coroutineScope.launch {
-                                    chatRepository.updateCharacter(targetCharacter.id, name, personality, scenario, desc, firstMes, mesExample, altGreetings, avatarData)
-                                    refreshData()
-
-                                    val freshCharacter = chatRepository.getCharacterById(targetCharacter.id)
+                                    characterRepository.updateCharacter(targetCharacter.id, name, personality, scenario, desc, firstMes, mesExample, altGreetings, avatarData)
+                                    val freshCharacter = characterRepository.getCharacterById(targetCharacter.id)
                                     if (freshCharacter != null && editingCharacter?.id == targetCharacter.id) {
                                         editingCharacter = freshCharacter
                                     }
 
                                     if (activeCharacter?.id == targetCharacter.id) activeCharacter = freshCharacter
 
-                                    val targetSessionId = if (activeSessionId != null && activeCharacter?.id == targetCharacter.id) {
-                                        activeSessionId
-                                    } else {
-                                        chatRepository.getSessionsForCharacter(targetCharacter.id).firstOrNull()?.id
-                                    }
-
-                                    targetSessionId?.let { sessionId ->
-                                        val currentRoots = chatRepository.getMessageSiblings(sessionId, null)
+                                    val greetingsChanged = targetCharacter.firstMes != firstMes || targetCharacter.altGreetings != altGreetings
+                                    if (greetingsChanged) {
                                         val textList = mutableListOf<String>()
                                         if (firstMes.isNotBlank()) textList.add(firstMes)
                                         altGreetings.filter { it.isNotBlank() }.forEach { textList.add(it) }
-                                        currentRoots.forEachIndexed { index, existingMessage ->
-                                            if (index < textList.size) {
-                                                chatRepository.updateMessageContent(existingMessage.id, textList[index])
-                                            } else {
-                                                chatRepository.deleteMessage(existingMessage.id)
+
+                                        // Sync the greeting roots across ALL of the
+                                        // character's sessions, not just the first one.
+                                        val targetSessions = sessionRepository.getSessionsForCharacter(targetCharacter.id)
+                                        targetSessions.forEach { session ->
+                                            val currentRoots = sessionRepository.getMessageSiblings(session.id, null)
+                                            currentRoots.forEachIndexed { index, existingMessage ->
+                                                if (index < textList.size) {
+                                                    sessionRepository.updateMessageContent(existingMessage.id, textList[index])
+                                                } else {
+                                                    sessionRepository.deleteMessage(existingMessage.id)
+                                                }
+                                            }
+                                            if (textList.size > currentRoots.size) {
+                                                for (i in currentRoots.size until textList.size) {
+                                                    sessionRepository.insertMessageRaw(session.id, "assistant", textList[i], null, false)
+                                                }
                                             }
                                         }
-                                        if (textList.size > currentRoots.size) {
-                                            for (i in currentRoots.size until textList.size) {
-                                                chatRepository.insertMessageRaw(sessionId, "assistant", textList[i], null, false)
+
+                                        // Only the active session's view may be re-seeded.
+                                        val currentActiveSessionId = activeSessionId
+                                        if (currentActiveSessionId != null && activeCharacter?.id == targetCharacter.id) {
+                                            val finalRoots = sessionRepository.getMessageSiblings(currentActiveSessionId, null)
+                                            if (finalRoots.isNotEmpty() && finalRoots.none { it.id == messages.firstOrNull()?.id }) {
+                                                finalRoots.firstOrNull()?.let { sessionRepository.selectVariation(currentActiveSessionId, it.id, null) }
                                             }
-                                        }
-                                        val finalRoots = chatRepository.getMessageSiblings(sessionId, null)
-                                        if (finalRoots.isNotEmpty() && finalRoots.none { it.id == messages.firstOrNull()?.id }) {
-                                            finalRoots.firstOrNull()?.let { chatRepository.selectVariation(sessionId, it.id, null) }
                                         }
                                     }
                                     refreshMessages()
                                 }
                             },
-                            onDelete = { coroutineScope.launch { chatRepository.deleteCharacters(setOf(targetCharacter.id)); if (activeCharacter?.id == targetCharacter.id) activeCharacter = null; editingCharacter = null; refreshData() } },
+                            onDelete = { coroutineScope.launch { characterRepository.deleteCharacters(setOf(targetCharacter.id)); if (activeCharacter?.id == targetCharacter.id) activeCharacter = null; editingCharacter = null } },
                             onExport = { updatedCharacter -> exportCharacterFromList(updatedCharacter) }
                         )
                     }
@@ -769,7 +494,7 @@ fun MainScreen(
                 characterId = activeCharacter!!.id,
                 personaId = activePersonaId,
                 activeSessionId = activeSessionId,
-                chatRepository = chatRepository,
+                sessionRepository = sessionRepository,
                 onDismissRequest = { showChatManagerDialog = false },
                 onSessionSelected = { id -> activeSessionId = id.ifBlank { null }; showChatManagerDialog = false }
             )
@@ -786,7 +511,7 @@ fun MainScreen(
             visible = showStructuredErrorNotification,
             message = structuredErrorMessage,
             isWarning = structuredErrorIsWarning,
-            onDismiss = { showStructuredErrorNotification = false },
+            onDismiss = { chatController.clearError() },
             modifier = Modifier.align(Alignment.TopCenter)
         )
     }
@@ -797,18 +522,18 @@ fun ChatManagerDialog(
     characterId: String,
     personaId: String,
     activeSessionId: String?,
-    chatRepository: ChatRepository,
+    sessionRepository: SessionRepository,
     onDismissRequest: () -> Unit,
     onSessionSelected: (String) -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
-    var sessions by remember { mutableStateOf(emptyList<ChatSession>()) }
+    var sessions by remember { mutableStateOf(emptyList<Session>()) }
     var expandedMenuSessionId by remember { mutableStateOf<String?>(null) }
-    var sessionToRename by remember { mutableStateOf<ChatSession?>(null) }
+    var sessionToRename by remember { mutableStateOf<Session?>(null) }
     var editTitleText by remember { mutableStateOf("") }
-    var sessionToDelete by remember { mutableStateOf<ChatSession?>(null) }
+    var sessionToDelete by remember { mutableStateOf<Session?>(null) }
 
-    fun loadSessions() { coroutineScope.launch { sessions = chatRepository.getSessionsForCharacter(characterId) } }
+    fun loadSessions() { coroutineScope.launch { sessions = sessionRepository.getSessionsForCharacter(characterId) } }
     LaunchedEffect(characterId) { loadSessions() }
 
     AlertDialog(
@@ -816,7 +541,7 @@ fun ChatManagerDialog(
         title = {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("Saved Chats", style = MaterialTheme.typography.titleLarge)
-                IconButton(onClick = { coroutineScope.launch { val newSessionId = chatRepository.createNewSession(characterId, personaId); onSessionSelected(newSessionId) } }) { Icon(Icons.Default.Add, contentDescription = "New Chat") }
+                IconButton(onClick = { coroutineScope.launch { val newSessionId = sessionRepository.createNewSession(characterId, personaId); onSessionSelected(newSessionId) } }) { Icon(Icons.Default.Add, contentDescription = "New Chat") }
             }
         },
         text = {
@@ -856,7 +581,7 @@ fun ChatManagerDialog(
             onDismissRequest = { sessionToRename = null },
             title = { Text("Rename Chat") },
             text = { Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { OutlinedTextField(value = editTitleText, onValueChange = { editTitleText = it }, label = { Text("Chat Title") }, placeholder = { Text("#${targetSession.id.take(6)}") }, singleLine = true, modifier = Modifier.fillMaxWidth()) } },
-            confirmButton = { TextButton(onClick = { coroutineScope.launch { chatRepository.updateSessionTitle(targetSession.id, editTitleText.ifBlank { null }); sessionToRename = null; loadSessions() } }) { Text("Save") } },
+            confirmButton = { TextButton(onClick = { coroutineScope.launch { sessionRepository.updateSessionTitle(targetSession.id, editTitleText.ifBlank { null }); sessionToRename = null; loadSessions() } }) { Text("Save") } },
             dismissButton = { TextButton(onClick = { sessionToRename = null }) { Text("Cancel") } }
         )
     }
@@ -867,7 +592,7 @@ fun ChatManagerDialog(
             onDismissRequest = { sessionToDelete = null },
             title = { Text("Delete Conversation?") },
             text = { Text("Are you sure you want to delete this chat session? All associated logs and swipe messages will be permanently deleted.") },
-            confirmButton = { TextButton(onClick = { coroutineScope.launch { chatRepository.deleteSession(targetSession.id); if (targetSession.id == activeSessionId) { val remaining = sessions.filter { it.id != targetSession.id }; if (remaining.isNotEmpty()) onSessionSelected(remaining.first().id) else onSessionSelected("") } else { loadSessions() }; sessionToDelete = null } }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Delete") } },
+            confirmButton = { TextButton(onClick = { coroutineScope.launch { sessionRepository.deleteSession(targetSession.id); if (targetSession.id == activeSessionId) { val remaining = sessions.filter { it.id != targetSession.id }; if (remaining.isNotEmpty()) onSessionSelected(remaining.first().id) else onSessionSelected("") } else { loadSessions() }; sessionToDelete = null } }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Delete") } },
             dismissButton = { TextButton(onClick = { sessionToDelete = null }) { Text("Cancel") } }
         )
     }

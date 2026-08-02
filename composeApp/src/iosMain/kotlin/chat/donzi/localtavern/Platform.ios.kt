@@ -38,6 +38,11 @@ actual fun saveFile(fileName: String, bytes: ByteArray): String? {
 }
 
 actual fun openDirectory(path: String) {
+    val fileURL = NSURL.fileURLWithPath(path)
+    if (UIApplication.sharedApplication.canOpenURL(fileURL)) {
+        UIApplication.sharedApplication.openURL(fileURL)
+        return
+    }
     val url = NSURL.URLWithString("shareddocuments://")!!
     if (UIApplication.sharedApplication.canOpenURL(url)) {
         UIApplication.sharedApplication.openURL(url)

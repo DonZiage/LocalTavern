@@ -2,6 +2,7 @@ package chat.donzi.localtavern.ui.components
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
@@ -17,13 +18,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import chat.donzi.localtavern.data.database.ApiConnection
+import chat.donzi.localtavern.domain.ApiConfig
 import chat.donzi.localtavern.data.network.ChatClient
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ApiConnectionItem(
-    connection: ApiConnection,
+    connection: ApiConfig,
     chatClient: ChatClient,
     onToggleActive: () -> Unit,
     onToggleMode: (Boolean) -> Unit,
@@ -33,11 +35,17 @@ fun ApiConnectionItem(
     modifier: Modifier = Modifier
 ) {
     var status by remember { mutableStateOf<Boolean?>(null) }
+    var retryTrigger by remember { mutableStateOf(0) }
     val cardShape = RoundedCornerShape(12.dp)
     
-    LaunchedEffect(connection.baseUrl, connection.apiKey) {
-        if (!connection.baseUrl.isNullOrBlank() && !connection.apiKey.isNullOrBlank()) {
-            status = chatClient.checkStatus(connection.baseUrl, connection.apiKey)
+    LaunchedEffect(connection.id, connection.baseUrl, connection.apiKey, connection.provider, retryTrigger) {
+        status = null
+        // Local providers (Ollama, LM Studio, KoboldCPP, ...) need no API key,
+        // so a base URL alone is enough to probe the health status.
+        if (!connection.baseUrl.isNullOrBlank()) {
+            val stagger = ((connection.id.hashCode() % 6) + 6) % 6 * 300L
+            delay(stagger)
+            status = chatClient.checkStatus(connection.baseUrl, connection.apiKey.orEmpty(), connection.provider)
         }
     }
 
@@ -45,7 +53,7 @@ fun ApiConnectionItem(
         modifier = modifier.clip(cardShape),
         shape = cardShape,
         colors = CardDefaults.cardColors(
-            containerColor = if (connection.isActive == 1L) 
+            containerColor = if (connection.isActive) 
                 MaterialTheme.colorScheme.primaryContainer 
             else 
                 MaterialTheme.colorScheme.surfaceVariant
@@ -65,7 +73,14 @@ fun ApiConnectionItem(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                StatusIndicator(status, modifier = Modifier.size(16.dp))
+                StatusIndicator(
+                    status,
+                    modifier = Modifier
+                        .size(16.dp)
+                        .clickable { retryTrigger++ }
+                        .clip(CircleShape),
+                    size = 16.dp
+                )
                 
                 Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
                     Text(
@@ -124,13 +139,13 @@ fun ApiConnectionItem(
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
-                        .clickable { onToggleMode(connection.isChatCompletion != 1L) }
+                        .clickable { onToggleMode(!connection.isChatCompletion) }
                         .padding(end = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("Text", style = MaterialTheme.typography.labelMedium)
                     Switch(
-                        checked = connection.isChatCompletion == 1L,
+                        checked = connection.isChatCompletion,
                         onCheckedChange = { onToggleMode(it) },
                         modifier = Modifier.padding(horizontal = 8.dp).scale(0.65f),
                         thumbContent = { Box(Modifier) },

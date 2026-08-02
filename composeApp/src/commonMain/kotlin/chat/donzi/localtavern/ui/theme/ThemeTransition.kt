@@ -20,9 +20,8 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.LayoutDirection
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.hypot
@@ -60,30 +59,42 @@ fun ThemeTransition(
 
     val revealProgress = remember { Animatable(1f) }
     var animationCenter by remember { mutableStateOf(Offset.Zero) }
+    var transitionJob by remember { mutableStateOf<Job?>(null) }
 
     LaunchedEffect(initialThemeIsDark) {
         isDark = initialThemeIsDark
     }
 
     val triggerTransition: (Offset) -> Unit = { center ->
-        if (revealProgress.value == 1f) {
-            animationCenter = center
-            coroutineScope.launch {
-                snapshot = try {
-                    graphicsLayer.toImageBitmap()
-                } catch (_: Exception) {
-                    null
-                }
-                revealProgress.snapTo(0f)
-                isDark = !isDark
-                delay(50.milliseconds)
-                revealProgress.animateTo(
-                    targetValue = 1f,
-                    animationSpec = tween(500, easing = FastOutSlowInEasing)
-                )
-                snapshot = null
-                onThemeSaved(isDark)
+        // A toggle during an in-flight reveal restarts the transition instead
+        // of being silently dropped.
+        transitionJob?.cancel()
+        animationCenter = center
+        val targetDark = !isDark
+        // Persist the new theme immediately so a transition cancelled mid-flight
+        // (second toggle, window close) is not silently lost.
+        onThemeSaved(targetDark)
+        transitionJob = coroutineScope.launch {
+            // If a reveal is still in flight, finish it first so the snapshot
+            // below is not a partially-clipped frame.
+            if (revealProgress.value < 1f) {
+                revealProgress.animateTo(1f, animationSpec = tween(180))
             }
+            val captured = try {
+                graphicsLayer.toImageBitmap()
+            } catch (_: Exception) {
+                null
+            }
+            isDark = targetDark
+            if (captured == null) return@launch
+            snapshot = captured
+            revealProgress.snapTo(0f)
+            delay(50.milliseconds)
+            revealProgress.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(500, easing = FastOutSlowInEasing)
+            )
+            snapshot = null
         }
     }
 
@@ -105,16 +116,6 @@ fun ThemeTransition(
                             shape = CircularRevealShape(progress, animationCenter)
                         } else {
                             clip = false
-                        }
-                    }
-                    .pointerInput(Unit) {
-                        awaitPointerEventScope {
-                            while (true) {
-                                val event = awaitPointerEvent(PointerEventPass.Initial)
-                                if (revealProgress.value < 1f) {
-                                    event.changes.forEach { it.consume() }
-                                }
-                            }
                         }
                     }
                     .drawWithContent {

@@ -2,17 +2,26 @@ package chat.donzi.localtavern
 
 import java.io.File
 import java.awt.Desktop
+import javax.swing.JFileChooser
+import javax.swing.UIManager
 import org.jetbrains.skia.Image
 import org.jetbrains.skia.EncodedImageFormat
 
 actual fun saveFile(fileName: String, bytes: ByteArray): String? {
     return try {
-        val userHome = System.getProperty("user.home")
-        val downloads = File(userHome, "Downloads")
-        val exportDir = File(downloads, "LocalTavern/ExportedCharacters")
-        if (!exportDir.exists()) exportDir.mkdirs()
+        UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName())
 
-        val file = File(exportDir, fileName)
+        val downloads = File(System.getProperty("user.home"), "Downloads")
+        val chooser = JFileChooser().apply {
+            selectedFile = File(downloads, fileName)
+            dialogTitle = "Export Character"
+        }
+
+        if (chooser.showSaveDialog(null) != JFileChooser.APPROVE_OPTION) {
+            return null
+        }
+
+        val file = chooser.selectedFile
         file.writeBytes(bytes)
         file.absolutePath
     } catch (e: Exception) {

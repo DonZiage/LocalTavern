@@ -52,7 +52,7 @@ The project exists to solve the "service complexity" problem. Most LLM interface
 
 **Image Loading:** Coil3
 
-**Encryption:** SQLCipher / Platform-native KeyStore
+**Encryption:** Not yet implemented — the database is plain SQLite and API keys are stored in plaintext. SQLCipher / Platform-native KeyStore is a planned improvement; do not store sensitive keys on shared machines until it lands.
 
 
 ## Disclaimer

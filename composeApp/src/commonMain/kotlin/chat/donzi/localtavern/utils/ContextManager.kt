@@ -1,7 +1,8 @@
 package chat.donzi.localtavern.utils
 
-import chat.donzi.localtavern.data.database.CharacterEntity
-import chat.donzi.localtavern.data.database.PersonaEntity
+import chat.donzi.localtavern.domain.Character
+import chat.donzi.localtavern.domain.Persona
+import chat.donzi.localtavern.domain.PromptBlock
 
 @kotlinx.serialization.Serializable
 data class ImageAttachment(
@@ -18,6 +19,11 @@ data class ChatMessage(
 
 object ContextManager {
 
+    // Vision encoders charge a fixed base cost per image (plus per-tile cost),
+    // e.g. ~1600 for Anthropic, ~85-170 for GPT-4o, ~258 for Gemini. A
+    // conservative flat average keeps the context budget from overshooting.
+    const val TOKENS_PER_IMAGE = 1500
+
     fun replaceSimpleMacros(text: String, charName: String, userName: String): String {
         return text
             .replace("{{char}}", charName)
@@ -26,8 +32,8 @@ object ContextManager {
 
     fun buildPayload(
         blocks: List<PromptBlock>,
-        character: CharacterEntity?,
-        persona: PersonaEntity?,
+        character: Character?,
+        persona: Persona?,
         chatHistory: List<ChatMessage>,
         contextLimit: Long,
         responseLimit: Long,
@@ -36,7 +42,7 @@ object ContextManager {
         val activeBlocks = blocks.filter { it.isEnabled }
         val promptBuilder = StringBuilder()
 
-        val parsedExamples = character?.mesExample?.split("|||")?.joinToString("\n") ?: ""
+        val parsedExamples = character?.mesExample?.joinToString("\n") ?: ""
 
         val charName = character?.name.orEmpty()
         val userName = persona?.name.orEmpty()
@@ -57,7 +63,6 @@ object ContextManager {
                 .replace("{{mes_example}}", parsedExamples)
                 .replace("{{persona}}", personaDesc)
                 .replace("{{description}}", charDesc)
-                .replace("{{scenario}}", scenario)
                 .replace("{{lastMessage}}", lastMsg)
                 .replace("{{lastUserMessage}}", lastUserMsg)
                 .replace("{{lastCharMessage}}", lastCharMsg)
@@ -83,22 +88,26 @@ object ContextManager {
         val systemPromptTokens = tokenizer.countTokens(systemPromptStr)
 
         val safeBuffer = 50
-        var availableTokens = (contextLimit - responseLimit - systemPromptTokens - safeBuffer).toInt()
+        // A contextLimit of 0 (or less) means "Unlimited". Cap at Int.MAX_VALUE
+        // so the token budget arithmetic below cannot overflow or go negative.
+        val effectiveContextLimit = if (contextLimit <= 0L) Int.MAX_VALUE.toLong() else contextLimit.coerceAtMost(Int.MAX_VALUE.toLong())
+        val responseReservation = responseLimit.coerceAtLeast(0L).coerceAtMost(effectiveContextLimit)
+        var availableTokens = (effectiveContextLimit - responseReservation - systemPromptTokens - safeBuffer).toInt()
 
         val finalMessages = mutableListOf<ChatMessage>()
 
-        if (systemPromptTokens > 0) {
-            val safeSystemPrompt = if (availableTokens < 0) {
-                tokenizer.truncateByTokens(systemPromptStr, (contextLimit - responseLimit - safeBuffer).toInt())
-            } else {
-                systemPromptStr
-            }
+        val safeSystemPrompt = if (systemPromptTokens > 0 && availableTokens < 0) {
+            tokenizer.truncateByTokens(systemPromptStr, (effectiveContextLimit - responseReservation - safeBuffer).coerceAtLeast(0).toInt())
+        } else {
+            systemPromptStr
+        }
+        if (safeSystemPrompt.isNotBlank()) {
             finalMessages.add(ChatMessage(role = "system", content = safeSystemPrompt))
         }
 
         val selectedHistory = mutableListOf<ChatMessage>()
         for (msg in processedHistory.reversed()) {
-            val msgTokens = tokenizer.countTokens(msg.content) + 4
+            val msgTokens = tokenizer.countTokens(msg.content) + 4 + msg.images.size * TOKENS_PER_IMAGE
 
             if (availableTokens - msgTokens >= 0) {
                 selectedHistory.add(msg)
@@ -109,6 +118,18 @@ object ContextManager {
         }
 
         finalMessages.addAll(selectedHistory.reversed())
+
+        // Blocks containing {{chat_history}} are structural placeholders and are
+        // skipped above; when no other block contributes content and the chat is
+        // empty, an empty messages array would be sent. Never send an empty payload.
+        if (finalMessages.isEmpty()) {
+            finalMessages.add(
+                ChatMessage(
+                    role = "system",
+                    content = systemPromptStr.ifBlank { "You are a helpful assistant. Continue the conversation." }
+                )
+            )
+        }
         return finalMessages
     }
 }

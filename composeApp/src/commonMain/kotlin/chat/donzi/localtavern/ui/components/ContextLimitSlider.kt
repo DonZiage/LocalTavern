@@ -49,8 +49,13 @@ fun ContextLimitSlider(
         )
     }
 
-    var sliderValue by remember(currentLimit) { 
-        val idx = presets.indexOf(currentLimit).coerceAtLeast(0)
+    var sliderValue by remember(currentLimit) {
+        val presetIdx = presets.indexOf(currentLimit)
+        val idx = if (presetIdx != -1) {
+            presetIdx
+        } else {
+            (presets.indices).minByOrNull { kotlin.math.abs(presets[it] - currentLimit) } ?: 0
+        }
         mutableFloatStateOf(idx.toFloat())
     }
     
@@ -79,7 +84,7 @@ fun ContextLimitSlider(
                             if (event.type == KeyEventType.KeyUp && event.key == Key.Enter) {
                                 val parsed = textValue.toLongOrNull()
                                 if (parsed != null) {
-                                    onValueChange(parsed)
+                                    onValueChange(parsed.coerceIn(0, 1_000_000))
                                 }
                                 isEditing = false
                                 true
@@ -96,9 +101,11 @@ fun ContextLimitSlider(
                     singleLine = true
                 )
             } else {
+                val presetAtThumb = presets[sliderValue.toInt().coerceIn(0, presets.size - 1)]
+                val showCustom = currentLimit !in presets && presetAtThumb != currentLimit
                 Text(
-                    labels[presets[sliderValue.toInt().coerceIn(0, presets.size - 1)]] ?: "Custom (${currentLimit})", 
-                    style = MaterialTheme.typography.labelMedium, 
+                    if (showCustom) "Custom (${currentLimit})" else labels[presetAtThumb] ?: "Custom (${currentLimit})",
+                    style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.clickable { isEditing = true }
                 )
