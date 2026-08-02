@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
@@ -21,6 +23,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
@@ -39,6 +42,10 @@ private fun TextFieldValue.localTavernInsertNewline(): TextFieldValue {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatInputBar(
+    textValue: TextFieldValue,
+    onTextValueChange: (TextFieldValue) -> Unit,
+    attachedImages: List<ByteArray>,
+    onAttachedImagesChange: (List<ByteArray>) -> Unit,
     onSendMessage: (String, List<ByteArray>) -> Unit,
     onRegenerate: () -> Unit,
     canRegenerate: Boolean,
@@ -50,21 +57,19 @@ fun ChatInputBar(
     canManageChats: Boolean,
     onGoToParent: (() -> Unit)? = null
 ) {
-    var textValue by remember { mutableStateOf(TextFieldValue("")) }
     var showMenu by remember { mutableStateOf(false) }
-    var attachedImages by remember { mutableStateOf<List<ByteArray>>(emptyList()) }
 
     val imagePickerLauncher = rememberImagePickerLauncher(
         onImagesPicked = { imagesList ->
-            attachedImages = attachedImages + imagesList
+            onAttachedImagesChange(attachedImages + imagesList)
         }
     )
 
     fun handleSend() {
         if ((textValue.text.isNotBlank() || attachedImages.isNotEmpty()) && !isGenerating) {
             onSendMessage(textValue.text, attachedImages)
-            textValue = TextFieldValue("")
-            attachedImages = emptyList()
+            onTextValueChange(TextFieldValue(""))
+            onAttachedImagesChange(emptyList())
         }
     }
 
@@ -97,7 +102,7 @@ fun ChatInputBar(
                                 .size(18.dp)
                                 .background(MaterialTheme.colorScheme.error, CircleShape)
                                 .clip(CircleShape)
-                                .clickable { attachedImages = attachedImages.filterIndexed { i, _ -> i != index } },
+                                .clickable { onAttachedImagesChange(attachedImages.filterIndexed { i, _ -> i != index }) },
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
@@ -115,15 +120,7 @@ fun ChatInputBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp)
-                .onKeyEvent { event ->
-                    if (isGenerating && event.type == KeyEventType.KeyDown &&
-                        (event.key == Key.Enter || event.key == Key.NumPadEnter) &&
-                        !event.isShiftPressed) {
-                        onStopGeneration()
-                        true
-                    } else false
-                },
+                .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box {
@@ -146,16 +143,20 @@ fun ChatInputBar(
 
             TextField(
                 value = textValue,
-                onValueChange = { textValue = it },
+                onValueChange = { onTextValueChange(it) },
                 placeholder = { Text("Message...") },
-                enabled = !isGenerating,
+                // Keep the field editable during generation so users can draft
+                // the next message (and so mobile keyboards/focus are not
+                // dropped mid-conversation); handleSend still guards sending.
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { handleSend() }),
                 modifier = Modifier
                     .weight(1f)
                     .onPreviewKeyEvent { event ->
                         if (!isGenerating && event.type == KeyEventType.KeyDown &&
                             (event.key == Key.Enter || event.key == Key.NumPadEnter)) {
                             if (event.isShiftPressed) {
-                                textValue = textValue.localTavernInsertNewline()
+                                onTextValueChange(textValue.localTavernInsertNewline())
                                 true
                             } else {
                                 handleSend()
@@ -191,7 +192,9 @@ fun ChatInputBar(
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.Send,
                         contentDescription = "Send",
-                        tint = if (canSend) MaterialTheme.colorScheme.primary else Color.Gray
+                        // Theme-aware disabled tint (plain gray is nearly
+                        // invisible in dark mode).
+                        tint = if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
                     )
                 }
             }

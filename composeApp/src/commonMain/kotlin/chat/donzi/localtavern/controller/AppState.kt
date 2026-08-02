@@ -2,9 +2,11 @@ package chat.donzi.localtavern.controller
 
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.database.CharacterRepository
+import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Persona
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -16,6 +18,7 @@ import kotlinx.coroutines.launch
 class AppState(
     private val characterRepository: CharacterRepository,
     private val apiSettingsRepository: ApiSettingsRepository,
+    private val sessionRepository: SessionRepository,
     private val scope: CoroutineScope
 ) {
     val characters: StateFlow<List<Character>> = characterRepository.observeCharacters()
@@ -33,23 +36,41 @@ class AppState(
     private val _isInitialized = MutableStateFlow(false)
     val isInitialized: StateFlow<Boolean> = _isInitialized.asStateFlow()
 
-    init {
-        scope.launch {
-            var currentPersonas = characterRepository.getAllPersonas()
-            if (currentPersonas.isEmpty()) {
-                characterRepository.insertPersona("User", "", null)
-                currentPersonas = characterRepository.getAllPersonas()
-            }
+    private val _initError = MutableStateFlow<String?>(null)
+    val initError: StateFlow<String?> = _initError.asStateFlow()
 
-            val settings = apiSettingsRepository.getAppSettings()
-            var pId = settings.activePersonaId
-            if (pId == null && currentPersonas.isNotEmpty()) {
-                pId = currentPersonas.first().id
-                apiSettingsRepository.updateActivePersonaId(pId)
+    init {
+        retry()
+    }
+
+    // Any failure in initialization must surface instead of leaving the app
+    // on a permanent loading spinner; retry() re-runs the whole sequence.
+    fun retry() {
+        _isInitialized.value = false
+        _initError.value = null
+        scope.launch {
+            try {
+                var currentPersonas = characterRepository.getAllPersonas()
+                if (currentPersonas.isEmpty()) {
+                    characterRepository.insertPersona("User", "", null)
+                    currentPersonas = characterRepository.getAllPersonas()
+                }
+
+                val settings = apiSettingsRepository.getAppSettings()
+                var pId = settings.activePersonaId
+                if (pId == null && currentPersonas.isNotEmpty()) {
+                    pId = currentPersonas.first().id
+                    apiSettingsRepository.updateActivePersonaId(pId)
+                }
+                _activePersonaId.value = pId
+                _isDarkMode.value = settings.isDarkMode != 0L
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _initError.value = e.message ?: "Failed to initialize the app."
+            } finally {
+                _isInitialized.value = true
             }
-            _activePersonaId.value = pId
-            _isDarkMode.value = settings.isDarkMode != 0L
-            _isInitialized.value = true
         }
     }
 
@@ -68,6 +89,9 @@ class AppState(
 
     fun deletePersona(personaId: String) {
         scope.launch {
+            // Chats bound to the deleted persona are unusable (the persona
+            // can never be re-selected); remove them with it.
+            sessionRepository.deleteSessionsForPersona(personaId)
             characterRepository.deletePersona(personaId)
             if (_activePersonaId.value == personaId) {
                 val remainingPersonas = characterRepository.getAllPersonas()
@@ -79,7 +103,12 @@ class AppState(
     }
 
     fun deleteCharacters(ids: Set<String>) {
-        scope.launch { characterRepository.deleteCharacters(ids) }
+        scope.launch {
+            // Remove the character's sessions too, so ghost chats are never
+            // resumable against a character the UI can no longer load.
+            sessionRepository.deleteSessionsForCharacters(ids)
+            characterRepository.deleteCharacters(ids)
+        }
     }
 
     fun importCharacter(card: SillyTavernCardV2, avatarData: ByteArray?) {

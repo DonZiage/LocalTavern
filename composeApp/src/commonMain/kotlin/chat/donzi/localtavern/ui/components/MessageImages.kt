@@ -81,10 +81,14 @@ fun MessageImages(
         return
     }
 
-    // Key the gallery state on the image set so an edit/refresh that changes
-    // the message's images cannot leave a stale index or an open viewer.
-    var galleryInitialIndex by remember(images) { mutableStateOf(0) }
-    var showGallery by remember(images) { mutableStateOf(false) }
+    // Key the gallery state on the image CONTENT, not the list reference:
+    // a message edit that reuses the same byte-array instances must still
+    // reset a stale index or close an open viewer when the pixels change.
+    val imagesContentKey = remember(images) {
+        images.joinToString(":") { it.contentHashCode().toString() }
+    }
+    var galleryInitialIndex by remember(imagesContentKey) { mutableStateOf(0) }
+    var showGallery by remember(imagesContentKey) { mutableStateOf(false) }
 
     Box(
         modifier = modifier

@@ -17,7 +17,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -61,13 +60,16 @@ fun CharacterItem(
         ) {
             Box(modifier = Modifier.size(50.dp)) {
                 if (avatarData != null) {
-                    // Hash once per avatar instance; contentHashCode() is an
-                    // O(n) scan that should not run on every recomposition.
-                    val avatarCacheKey = remember(id, avatarData) { avatarData.contentHashCode() }
-                    val imageRequest = ImageRequest.Builder(LocalPlatformContext.current)
-                        .data(avatarData)
-                        .memoryCacheKey("char_item_${id}_$avatarCacheKey")
-                        .build()
+                    // Hash + request once per avatar instance; contentHashCode()
+                    // is an O(n) scan and ImageRequest.Builder must not run in
+                    // composition on every recomposition.
+                    val platformContext = LocalPlatformContext.current
+                    val imageRequest = remember(id, avatarData) {
+                        ImageRequest.Builder(platformContext)
+                            .data(avatarData)
+                            .memoryCacheKey("char_item_${id}_${avatarData.contentHashCode()}")
+                            .build()
+                    }
 
                     AsyncImage(
                         model = imageRequest,
@@ -81,7 +83,7 @@ fun CharacterItem(
                     Box(
                         modifier = Modifier
                             .matchParentSize()
-                            .background(Color.Gray, CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
                     )
                 }
                 if (selectionMode && selected) {

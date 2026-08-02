@@ -82,6 +82,15 @@ fun CharacterDefinitionEditor(
         persist()
     }
 
+    // The 600 ms debounced autosave above is cancelled when the editor leaves
+    // composition; flush the latest edits on dispose so closing the editor
+    // through any path (scrim, window, navigation) never loses the last chunk.
+    DisposableEffect(Unit) {
+        onDispose {
+            persist()
+        }
+    }
+
     val baseTokens = remember(name, description, personality, scenario, firstMes, mesExample) {
         DefaultTokenizer.countTokens(name) +
                 DefaultTokenizer.countTokens(description) +
@@ -179,10 +188,20 @@ fun CharacterDefinitionEditor(
                             .clickable { showImageMenu = true }
                     ) {
                         if (avatarData != null) {
-                            val imageRequest = ImageRequest.Builder(LocalPlatformContext.current)
-                                .data(avatarData)
-                                .memoryCacheKey("char_edit_${character.id}_${avatarData.contentHashCode()}")
-                                .build()
+                            // contentHashCode() is an O(n) scan over a
+                            // potentially multi-MB avatar; it must not run on
+                            // every recomposition (every keystroke recomposes
+                            // the whole editor).
+                            val platformContext = LocalPlatformContext.current
+                            val avatarCacheKey = remember(avatarData) {
+                                "char_edit_${character.id}_${avatarData.contentHashCode()}"
+                            }
+                            val imageRequest = remember(avatarCacheKey) {
+                                ImageRequest.Builder(platformContext)
+                                    .data(avatarData)
+                                    .memoryCacheKey(avatarCacheKey)
+                                    .build()
+                            }
 
                             AsyncImage(model = imageRequest, contentDescription = "Character Avatar", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
                         } else {

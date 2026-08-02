@@ -54,6 +54,12 @@ open class ApiRequestException(message: String) : Exception(message)
 // the same empty result would come back again and mask the error.
 private class EmptyResponseException : ApiRequestException("Empty response from API.")
 
+// The API delivered tokens but the stream closed without a terminator
+// ([DONE] / message_stop): the response was very likely truncated and must
+// not be persisted as a complete reply. The caller (ChatController) recovers
+// the full response with a non-streaming request and replaces the partial.
+class StreamTruncatedException : ApiRequestException("Response stream ended before completion.")
+
 enum class ApiStyle { OpenAI, Anthropic }
 
 fun apiStyleForProvider(provider: String?): ApiStyle =
@@ -123,9 +129,11 @@ class ChatClient(private val httpClient: HttpClient) {
 
             // Anthropic requires the first message to have the "user" role, but
             // chats start with the character greeting (assistant). Prepend an
-            // empty user turn so the request is accepted.
+            // empty user turn so the request is accepted; the content must be
+            // non-empty (a blank string is rejected by the API as empty
+            // content), so a single space is used.
             if (turns.isNotEmpty() && turns.first().role == "assistant") {
-                turns.add(0, AnthropicTurn("user", "", emptyList()))
+                turns.add(0, AnthropicTurn("user", " ", emptyList()))
             }
 
             turns.forEach { turn ->
@@ -357,7 +365,7 @@ class ChatClient(private val httpClient: HttpClient) {
         val endpoint = endpointFor(baseUrl, apiStyle, isChatCompletion)
         val hasImages = messages.any { it.images.isNotEmpty() }
 
-        var streamingSuccess = false
+        var streamResult = StreamResult.Empty
         var lastUsedIgnoreImages = false
         var fallbackToNonStreaming = false
 
@@ -395,10 +403,10 @@ class ChatClient(private val httpClient: HttpClient) {
                     return@execute
                 }
 
-                streamingSuccess = processResponseStream(response, apiStyle, isChatCompletion)
+                streamResult = processResponseStream(response, apiStyle, isChatCompletion)
             }
 
-            if (failedWithImages && !streamingSuccess) {
+            if (failedWithImages && streamResult != StreamResult.Completed) {
                 lastUsedIgnoreImages = true
                 httpClient.preparePost(endpoint) {
                     putAuthHeaders(apiStyle, apiKey)
@@ -417,11 +425,11 @@ class ChatClient(private val httpClient: HttpClient) {
                         return@execute
                     }
 
-                    streamingSuccess = processResponseStream(response, apiStyle, isChatCompletion)
+                    streamResult = processResponseStream(response, apiStyle, isChatCompletion)
                 }
             }
 
-            if (fallbackToNonStreaming && !streamingSuccess) {
+            if (fallbackToNonStreaming && streamResult != StreamResult.Completed) {
                 val nonStreamedResponse = sendChatRequest(
                     baseUrl = baseUrl, apiKey = apiKey, model = model,
                     messages = messages, isChatCompletion = isChatCompletion,
@@ -429,15 +437,22 @@ class ChatClient(private val httpClient: HttpClient) {
                     timeoutSeconds = timeoutSeconds
                 )
                 emit(nonStreamedResponse)
-                streamingSuccess = true
+                streamResult = StreamResult.Completed
             }
 
             // A 200 whose body carried no tokens and no [DONE]/message_stop
-            // (empty body, plain-text proxy response, truncated stream) would
-            // otherwise complete silently and the controller would delete the
-            // response placeholder with no error surfaced to the user.
-            if (!streamingSuccess) {
+            // (empty body, plain-text proxy response) would otherwise complete
+            // silently and the controller would delete the response
+            // placeholder with no error surfaced to the user.
+            if (streamResult == StreamResult.Empty) {
                 throw EmptyResponseException()
+            }
+            // A stream that delivered tokens but closed without a terminator
+            // (server crash, proxy FIN, load shedding) was truncated. The
+            // partial tokens were already emitted; the controller recovers the
+            // full response non-streaming and replaces the partial content.
+            if (streamResult == StreamResult.Truncated) {
+                throw StreamTruncatedException()
             }
 
         } catch (e: CancellationException) {
@@ -445,8 +460,16 @@ class ChatClient(private val httpClient: HttpClient) {
         } catch (e: EmptyResponseException) {
             // No retry: the request was answered, it just carried no content.
             throw e
+        } catch (e: StreamTruncatedException) {
+            // No retry: a truncated stream was already recovered once; the
+            // partial response is surfaced with the truncation error.
+            throw e
+        } catch (e: ApiRequestException) {
+            // An API-level rejection (in-stream error event, non-200 from the
+            // fallback) must not be retried: the same rejection would repeat.
+            throw e
         } catch (e: Exception) {
-            if (!streamingSuccess) {
+            if (streamResult != StreamResult.Completed) {
                 try {
                     val nonStreamedResponse = sendChatRequest(
                         baseUrl = baseUrl, apiKey = apiKey, model = model,
@@ -470,65 +493,103 @@ class ChatClient(private val httpClient: HttpClient) {
         response: HttpResponse,
         apiStyle: ApiStyle,
         isChatCompletion: Boolean
-    ): Boolean {
-        var success = false
-        var done = false
+    ): StreamResult {
+        var sawTerminator = false
+        var emittedAnyToken = false
         val channel: ByteReadChannel = response.bodyAsChannel()
-        while (!channel.isClosedForRead && !done) {
+        // SSE events may span multiple "data:" lines (and continuations
+        // starting with a space); accumulate until a blank line or EOF.
+        val pendingEvent = StringBuilder()
+
+        suspend fun flushPendingEvent() {
+            if (pendingEvent.isEmpty()) return
+            val data = pendingEvent.toString().trim()
+            pendingEvent.clear()
+
+            if (data == "[DONE]") {
+                sawTerminator = true
+                return
+            }
+            if (data.isBlank()) return
+
+            try {
+                val json = Json { ignoreUnknownKeys = true }
+                val element = json.parseToJsonElement(data)
+
+                if (apiStyle == ApiStyle.Anthropic) {
+                    val eventType = element.jsonObject["type"]?.jsonPrimitive?.content
+                    when (eventType) {
+                        "content_block_delta" -> {
+                            val text = element.jsonObject["delta"]?.jsonObject?.get("text")?.jsonPrimitive?.content
+                            if (text != null) {
+                                emittedAnyToken = true
+                                emit(text)
+                            }
+                        }
+                        "message_stop" -> {
+                            sawTerminator = true
+                        }
+                        "error" -> {
+                            val errorMessage = element.jsonObject["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content
+                            throw ApiRequestException("API error: ${errorMessage ?: "Unknown error"}")
+                        }
+                    }
+                } else {
+                    val errorMessage = element.jsonObject["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content
+                    if (!errorMessage.isNullOrBlank()) {
+                        throw ApiRequestException("API error: $errorMessage")
+                    }
+                    val content = if (isChatCompletion) {
+                        element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("delta")?.jsonObject?.get("content")?.jsonPrimitive?.content
+                    } else {
+                        element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("text")?.jsonPrimitive?.content
+                    }
+                    if (content != null) {
+                        emittedAnyToken = true
+                        emit(content)
+                    }
+                }
+            } catch (e: ApiRequestException) {
+                throw e
+            } catch (_: Exception) {
+                // Malformed or fragmented event: drop it and keep scanning.
+                // A single bad event must not abort the whole stream.
+            }
+        }
+
+        while (!channel.isClosedForRead && !sawTerminator) {
             currentCoroutineContext().ensureActive()
             @Suppress("DEPRECATION")
             val line = channel.readUTF8Line() ?: break
-            if (line.startsWith("data: ")) {
-                val data = line.substring(6)
-                if (data == "[DONE]") {
-                    success = true
-                    break
-                }
-
-                var errorMessage: String? = null
-                try {
-                    val json = Json { ignoreUnknownKeys = true }
-                    val element = json.parseToJsonElement(data)
-
-                    if (apiStyle == ApiStyle.Anthropic) {
-                        val eventType = element.jsonObject["type"]?.jsonPrimitive?.content
-                        when (eventType) {
-                            "content_block_delta" -> {
-                                val text = element.jsonObject["delta"]?.jsonObject?.get("text")?.jsonPrimitive?.content
-                                if (text != null) {
-                                    success = true
-                                    emit(text)
-                                }
-                            }
-                            "message_stop" -> {
-                                success = true
-                                done = true
-                            }
-                            "error" -> {
-                                errorMessage = element.jsonObject["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content
-                                throw ApiRequestException("API error: ${errorMessage ?: "Unknown error"}")
-                            }
-                        }
-                    } else {
-                        errorMessage = element.jsonObject["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content
-                        if (!errorMessage.isNullOrBlank()) {
-                            throw ApiRequestException("API error: $errorMessage")
-                        }
-                        val content = if (isChatCompletion) {
-                            element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("delta")?.jsonObject?.get("content")?.jsonPrimitive?.content
-                        } else {
-                            element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("text")?.jsonPrimitive?.content
-                        }
-                        if (content != null) {
-                            success = true
-                            emit(content)
-                        }
-                    }
-                } catch (e: ApiRequestException) {
-                    throw e
-                } catch (_: Exception) {}
+            if (line.startsWith("data:")) {
+                // Accept both "data: {...}" and the non-conformant "data:{...}".
+                if (pendingEvent.isNotEmpty()) pendingEvent.append('\n')
+                pendingEvent.append(line.removePrefix("data:").removePrefix(" "))
+            } else if (line.startsWith(" ") && pendingEvent.isNotEmpty()) {
+                // SSE continuation of the previous data field.
+                pendingEvent.append('\n').append(line.trimStart(' '))
+            } else {
+                // A blank line (or any other line) ends the current event.
+                flushPendingEvent()
             }
         }
-        return success
+        flushPendingEvent()
+
+        return when {
+            sawTerminator -> StreamResult.Completed
+            emittedAnyToken -> StreamResult.Truncated
+            else -> StreamResult.Empty
+        }
     }
+}
+
+private enum class StreamResult {
+    /** The stream ended with a proper terminator ([DONE] / message_stop). */
+    Completed,
+
+    /** Tokens were delivered but the stream closed without a terminator. */
+    Truncated,
+
+    /** The body carried no SSE data at all. */
+    Empty
 }

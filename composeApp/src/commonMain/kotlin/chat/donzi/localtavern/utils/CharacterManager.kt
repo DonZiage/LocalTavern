@@ -6,7 +6,9 @@ import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.saveFile
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -82,12 +84,46 @@ object CharacterManager {
             if (element !is JsonObject) return null
             if (element.containsKey("data")) {
                 json.decodeFromJsonElement<SillyTavernWrapper>(element).data
+            } else if (element.containsKey("char_name") && !element.containsKey("name")) {
+                // Legacy TavernAI v1 cards use a flat layout (char_name,
+                // char_persona, char_greeting, world_scenario, example_dialogue)
+                // instead of the v2 data wrapper; they are still widely
+                // circulated and must not import as blank characters.
+                parseTavernAIV1Card(element)
             } else {
                 json.decodeFromJsonElement<SillyTavernCardV2>(element)
             }
         } catch (_: Exception) {
             null
         }
+    }
+
+    private fun parseTavernAIV1Card(element: JsonObject): SillyTavernCardV2 {
+        fun string(key: String): String = element[key]?.jsonPrimitive?.contentOrNull ?: ""
+
+        // v1 separates entries with "|||" (and "<START>" is also accepted).
+        fun list(key: String): List<String> = element[key]?.jsonPrimitive?.contentOrNull
+            ?.split(Regex("""\s*<START>\s*|\s*\|\|\|\s*"""))
+            ?.filter { it.isNotBlank() }
+            ?: emptyList()
+
+        return SillyTavernCardV2(
+            name = string("char_name"),
+            description = string("char_persona"),
+            personality = string("char_personality"),
+            scenario = string("world_scenario"),
+            first_mes = string("char_greeting"),
+            mes_example = list("example_dialogue").joinToString("<START>"),
+            creator_notes = string("creator_notes"),
+            system_prompt = string("system_prompt"),
+            post_history_instructions = string("post_history_instructions"),
+            alternate_greetings = list("alternate_greetings"),
+            creator = string("creator"),
+            character_version = string("character_version"),
+            tags = emptyList(),
+            extensions = null,
+            character_book = null
+        )
     }
 
     private fun getCardJsonString(character: Character): String {
@@ -124,7 +160,14 @@ object CharacterManager {
         val pngImageBytes = if (isPng(originalImage)) {
             originalImage
         } else {
-            chat.donzi.localtavern.convertToPng(originalImage)
+            val converted = chat.donzi.localtavern.convertToPng(originalImage)
+            // The platform converters return the original bytes on failure;
+            // embedding a metadata chunk into non-PNG data would produce a
+            // .png file no image viewer can open.
+            if (!isPng(converted)) {
+                throw IllegalArgumentException("Avatar could not be converted to PNG")
+            }
+            converted
         }
 
         val jsonString = getCardJsonString(character)
@@ -152,8 +195,14 @@ object CharacterManager {
         return sanitized.take(80)
     }
 
+    // A content:// URI (Android MediaStore export) has no real parent
+    // directory: returning a truncated URI would break openDirectory() and
+    // show a garbage location, so the full URI is returned unchanged (the
+    // platform handler then opens the exported file itself).
     fun extractParentDir(savedPath: String): String {
-        return if (savedPath.contains('/')) savedPath.substringBeforeLast('/') else savedPath.substringBeforeLast('\\')
+        if (savedPath.startsWith("content://")) return savedPath
+        val separatorIndex = maxOf(savedPath.lastIndexOf('/'), savedPath.lastIndexOf('\\'))
+        return if (separatorIndex > 0) savedPath.substring(0, separatorIndex) else savedPath
     }
 
     fun prepareExportBytes(character: Character): Pair<String, ByteArray> {
@@ -161,7 +210,12 @@ object CharacterManager {
         val avatar = character.avatarData
 
         val exportedBytes = if (avatar != null && avatar.isNotEmpty()) {
-            exportToPng(avatar, character)
+            try {
+                exportToPng(avatar, character)
+            } catch (e: IllegalArgumentException) {
+                // Fall back to a JSON card instead of writing a corrupt .png.
+                return "${sanitizeFileName(character.name)}.json" to exportToJson(character)
+            }
         } else {
             exportToJson(character)
         }
@@ -186,7 +240,11 @@ object CharacterManager {
                 ((pngBytes[9].toInt() and 0xFF) shl 16) or
                 ((pngBytes[10].toInt() and 0xFF) shl 8) or
                 (pngBytes[11].toInt() and 0xFF)
+        // A real IHDR data block is exactly 13 bytes; a bogus length (from a
+        // truncated or corrupt PNG) must not splice outside the buffer.
+        if (ihdrDataLength < 13) return pngBytes
         val endOfIhdrOffset = 8 + 12 + ihdrDataLength
+        if (endOfIhdrOffset > pngBytes.size) return pngBytes
 
         val type = "tEXt".encodeToByteArray()
         val chunkTotalSize = 4 + 4 + data.size + 4

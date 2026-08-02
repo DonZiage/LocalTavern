@@ -2,6 +2,7 @@ package chat.donzi.localtavern.utils
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import java.io.ByteArrayOutputStream
 
 actual fun downscaleImageForChat(bytes: ByteArray): ByteArray? {
@@ -32,6 +33,39 @@ actual fun downscaleImageForChat(bytes: ByteArray): ByteArray? {
             }
         }
 
+        // BitmapFactory ignores the EXIF orientation tag; rotate the decoded
+        // pixels so portrait photos are not stored sideways. The re-encode
+        // below then bakes the rotation in (and drops the EXIF metadata that
+        // would otherwise rotate the pixels a second time).
+        val orientation = readJpegExifOrientation(bytes)
+        if (orientation != 1) {
+            val matrix = Matrix().apply {
+                when (orientation) {
+                    2 -> postScale(-1f, 1f)
+                    3 -> postRotate(180f)
+                    4 -> {
+                        postRotate(180f)
+                        postScale(-1f, 1f)
+                    }
+                    5 -> {
+                        postRotate(-90f)
+                        postScale(-1f, 1f)
+                    }
+                    6 -> postRotate(90f)
+                    7 -> {
+                        postRotate(90f)
+                        postScale(-1f, 1f)
+                    }
+                    8 -> postRotate(-90f)
+                }
+            }
+            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            if (rotated != bitmap) {
+                bitmap.recycle()
+                bitmap = rotated
+            }
+        }
+
         val encoded = encodeJpegWithinLimit(bitmap)
         bitmap.recycle()
         encoded
@@ -42,12 +76,18 @@ actual fun downscaleImageForChat(bytes: ByteArray): ByteArray? {
 
 private fun encodeJpegWithinLimit(bitmap: Bitmap): ByteArray? {
     var quality = 85
+    var smallest: ByteArray? = null
     while (quality >= 50) {
         val outputStream = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.JPEG, quality, outputStream)
         val result = outputStream.toByteArray()
+        if (smallest == null || result.size < smallest.size) {
+            smallest = result
+        }
         if (result.size <= ImageSanitizer.MAX_BYTES) return result
         quality -= 15
     }
-    return null
+    // Nothing fit the budget; return the smallest encode rather than making
+    // the photo disappear with no feedback (matching desktop/iOS).
+    return smallest
 }

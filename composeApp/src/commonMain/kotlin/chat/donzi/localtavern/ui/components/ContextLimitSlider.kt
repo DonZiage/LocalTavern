@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -61,6 +62,26 @@ fun ContextLimitSlider(
     
     var isEditing by remember { mutableStateOf(false) }
     var textValue by remember(currentLimit) { mutableStateOf(currentLimit.toString()) }
+
+    // Commits the typed value, syncing the local thumb/label so the display
+    // matches even when the parent keeps the same currentLimit (or normalizes
+    // it); reverts on invalid input.
+    fun commitOrRevert() {
+        val parsed = textValue.toLongOrNull()
+        if (parsed != null) {
+            val clamped = parsed.coerceIn(0, 1_000_000)
+            val presetIdx = presets.indexOf(clamped)
+            sliderValue = if (presetIdx != -1) {
+                presetIdx.toFloat()
+            } else {
+                (presets.indices).minByOrNull { kotlin.math.abs(presets[it] - clamped) }?.toFloat() ?: 0f
+            }
+            textValue = clamped.toString()
+            onValueChange(clamped)
+        } else {
+            textValue = currentLimit.toString()
+        }
+    }
     
     val interactionSource = remember { MutableInteractionSource() }
 
@@ -80,12 +101,19 @@ fun ContextLimitSlider(
                         .width(80.dp)
                         .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
                         .padding(horizontal = 4.dp, vertical = 2.dp)
+                        .onFocusChanged { focusState ->
+                            if (!focusState.isFocused && isEditing) {
+                                commitOrRevert()
+                                isEditing = false
+                            }
+                        }
                         .onPreviewKeyEvent { event ->
                             if (event.type == KeyEventType.KeyUp && event.key == Key.Enter) {
-                                val parsed = textValue.toLongOrNull()
-                                if (parsed != null) {
-                                    onValueChange(parsed.coerceIn(0, 1_000_000))
-                                }
+                                commitOrRevert()
+                                isEditing = false
+                                true
+                            } else if (event.type == KeyEventType.KeyUp && event.key == Key.Escape) {
+                                textValue = currentLimit.toString()
                                 isEditing = false
                                 true
                             } else false

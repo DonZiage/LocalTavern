@@ -37,7 +37,10 @@ actual fun rememberImagePickerLauncher(
 
             val result = chooser.showOpenDialog(null)
             if (result == JFileChooser.APPROVE_OPTION) {
-                val files = chooser.selectedFiles
+                // Cap the selection up front: the sanitizer only keeps
+                // MAX_PICKED_IMAGES, so reading hundreds of selected files at
+                // full resolution into memory before truncation is wasteful.
+                val files = chooser.selectedFiles.take(ImageSanitizer.MAX_PICKED_IMAGES)
                 scope.launch {
                     val byteArrays = withContext(Dispatchers.IO) {
                         val rawImages = files.mapNotNull { file ->

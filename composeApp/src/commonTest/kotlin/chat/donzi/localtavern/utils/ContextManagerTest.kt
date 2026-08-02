@@ -207,4 +207,62 @@ class ContextManagerTest {
         assertEquals("system", result.first().role)
         assertEquals("Message 50", result.last().content)
     }
+
+    @Test
+    fun buildPayload_responseLimitAtContextLimitDoesNotCollapseConversation() {
+        val history = listOf(
+            ChatMessage(role = "user", content = "Hello there"),
+            ChatMessage(role = "assistant", content = "Hi!")
+        )
+        // responseLimit >= contextLimit used to reserve the entire context,
+        // truncating the system prompt to "" and dropping all history, so the
+        // payload collapsed to a generic assistant fallback.
+        val result = ContextManager.buildPayload(
+            blocks = listOf(block("System: {{user_persona}} talks to {{char}}")),
+            character = character,
+            persona = persona,
+            chatHistory = history,
+            contextLimit = 400,
+            responseLimit = 400
+        )
+
+        assertEquals(3, result.size, "System prompt and history must survive a response limit at the context limit")
+        assertTrue(result[0].content.contains("A cautious scholar"), "System prompt must not be dropped")
+        assertEquals("Hello there", result[1].content, "History must not be dropped")
+        assertEquals("Hi!", result[2].content)
+    }
+
+    @Test
+    fun buildPayload_oversizedSystemPromptKeepsNewestHistory() {
+        val hugePrompt = "Word ".repeat(2000)
+        val history = listOf(ChatMessage(role = "user", content = "Latest question"))
+        val result = ContextManager.buildPayload(
+            blocks = listOf(block(hugePrompt)),
+            character = character,
+            persona = persona,
+            chatHistory = history,
+            contextLimit = 1000,
+            responseLimit = 100
+        )
+
+        assertEquals(2, result.size, "A prompt that overflows the budget must still leave room for the newest message")
+        assertTrue(result.last().content.contains("Latest question"), "The newest user message must never be dropped")
+    }
+
+    @Test
+    fun buildPayload_mixedChatHistoryBlockKeepsItsText() {
+        val result = ContextManager.buildPayload(
+            blocks = listOf(block("Important context: {{chat_history}}")),
+            character = character,
+            persona = persona,
+            chatHistory = listOf(ChatMessage(role = "user", content = "Hello")),
+            contextLimit = 4096,
+            responseLimit = 256
+        )
+
+        assertEquals(2, result.size, "Mixed block text + history must produce system prompt and history messages")
+        assertTrue(result[0].content.contains("Important context:"),
+            "The text around {{chat_history}} must not be silently dropped")
+        assertEquals("Hello", result[1].content)
+    }
 }

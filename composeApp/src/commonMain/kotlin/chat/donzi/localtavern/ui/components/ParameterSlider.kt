@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -44,6 +45,26 @@ fun ParameterSlider(
     var sliderValue by remember(value) { mutableFloatStateOf(value) }
     var textValue by remember(value) { mutableStateOf(format(value)) }
     var isEditing by remember { mutableStateOf(false) }
+
+    // Shared by the Enter handler and the focus-loss handler.
+    fun commitOrRevert() {
+        val parsed = textValue.toFloatOrNull()
+        // toFloatOrNull() accepts "NaN"/"Infinity" as valid floats; a
+        // non-finite value must be rejected or it poisons the Slider state
+        // and is persisted into the API request (which then fails to
+        // serialize).
+        if (parsed != null && parsed.isFinite()) {
+            val clamped = parsed.coerceIn(range.start, range.endInclusive)
+            // Sync the local slider/text state so the display reflects the
+            // committed value even when the clamped value equals the current one.
+            sliderValue = clamped
+            textValue = format(clamped)
+            onValueChange(clamped)
+        } else {
+            // Invalid input: revert to the last valid value.
+            textValue = format(sliderValue)
+        }
+    }
     
     Column(modifier = Modifier.padding(vertical = 8.dp)) {
         Row(
@@ -61,18 +82,22 @@ fun ParameterSlider(
                         .width(60.dp)
                         .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
                         .padding(horizontal = 4.dp, vertical = 2.dp)
+                        .onFocusChanged { focusState ->
+                            // Commit (or revert) when the user clicks away:
+                            // otherwise the raw uncommitted text keeps
+                            // displaying next to a mismatched thumb.
+                            if (!focusState.isFocused && isEditing) {
+                                commitOrRevert()
+                                isEditing = false
+                            }
+                        }
                         .onPreviewKeyEvent { event ->
-                            if (event.type == KeyEventType.KeyUp && event.key == Key.Enter) {
-                                val parsed = textValue.toFloatOrNull()
-                                if (parsed != null) {
-                                    val clamped = parsed.coerceIn(range.start, range.endInclusive)
-                                    // Sync the local slider/text state so the display
-                                    // reflects the committed value even when the
-                                    // clamped value equals the current one.
-                                    sliderValue = clamped
-                                    textValue = format(clamped)
-                                    onValueChange(clamped)
-                                }
+                            if (event.type == KeyEventType.KeyUp && event.key == Key.Escape) {
+                                textValue = format(sliderValue)
+                                isEditing = false
+                                true
+                            } else if (event.type == KeyEventType.KeyUp && event.key == Key.Enter) {
+                                commitOrRevert()
                                 isEditing = false
                                 true
                             } else false

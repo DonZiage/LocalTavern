@@ -37,22 +37,22 @@ fun ParameterControls(
     // revert the first change (out-of-order DB writes).
     var workingConnection by remember(connection.id) { mutableStateOf(connection) }
     var paramWriteJob by remember { mutableStateOf<Job?>(null) }
-    var hasPendingParamWrite by remember { mutableStateOf(false) }
 
-    // Re-seed the working copy from the DB once the pending write has landed.
+    // Re-seed the working copy whenever the parent supplies a new connection
+    // object — whether from this component's own write or an external edit
+    // (e.g. the connection dialog). A pending debounced write was computed
+    // from the stale copy and must be cancelled, otherwise it would clobber
+    // the fresh values once it lands.
     LaunchedEffect(connection) {
-        if (!hasPendingParamWrite) {
-            workingConnection = connection
-        }
+        paramWriteJob?.cancel()
+        workingConnection = connection
     }
 
     fun persistParams() {
-        hasPendingParamWrite = true
         paramWriteJob?.cancel()
         paramWriteJob = coroutineScope.launch {
             delay(250)
             apiSettingsRepository.updateApiConnection(workingConnection)
-            hasPendingParamWrite = false
             onUpdate(workingConnection)
         }
     }

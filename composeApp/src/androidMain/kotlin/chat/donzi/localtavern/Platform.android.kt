@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Environment
 import java.io.File
+import java.lang.ref.WeakReference
 import android.content.Intent
 import android.content.Context
 import androidx.core.app.ActivityCompat
@@ -19,7 +20,9 @@ import java.io.ByteArrayOutputStream
 
 object AndroidAppContext {
     private var applicationContext: Context? = null
-    private var currentActivity: Activity? = null
+    // Weak so a finished Activity (rotation, back) is not retained: the
+    // reference is only used to launch permission prompts while alive.
+    private var currentActivityRef: WeakReference<Activity>? = null
 
     fun setContext(context: Context) {
         if (applicationContext == null) {
@@ -28,11 +31,11 @@ object AndroidAppContext {
     }
 
     fun setActivity(activity: Activity) {
-        currentActivity = activity
+        currentActivityRef = WeakReference(activity)
     }
 
     fun getContext(): Context? = applicationContext
-    fun getActivity(): Activity? = currentActivity
+    fun getActivity(): Activity? = currentActivityRef?.get()
 }
 
 actual fun saveFile(fileName: String, bytes: ByteArray): String? {

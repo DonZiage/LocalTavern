@@ -13,6 +13,7 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.serialization.json.Json
 
 class AppContainer(driverFactory: DriverFactory) {
@@ -40,5 +41,15 @@ class AppContainer(driverFactory: DriverFactory) {
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     val chatController: ChatController = ChatController(sessionRepository, apiSettingsRepository, chatClient, appScope)
-    val appState: AppState = AppState(characterRepository, apiSettingsRepository, appScope)
+    val appState: AppState = AppState(characterRepository, apiSettingsRepository, sessionRepository, appScope)
+
+    // Cancels all app-level coroutines (generation, flows, settings writes)
+    // and releases the HTTP client. Called when the composition is disposed,
+    // e.g. on Android activity recreation: without this, an in-flight
+    // generation keeps running in a leaked scope and its stop button in the
+    // new UI silently does nothing.
+    fun close() {
+        appScope.cancel()
+        httpClient.close()
+    }
 }

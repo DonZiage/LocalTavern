@@ -33,4 +33,25 @@ class FuzzyScoreTest {
     fun noMatchScoresZero() {
         assertEquals(0, "OpenAI".fuzzyScore("zzzz"))
     }
+
+    @Test
+    fun punctuationOnlyQueryScoresZero() {
+        // "!!!" has no searchable characters; it must not match every
+        // target at the contains-tier score.
+        assertEquals(0, "anything".fuzzyScore("!!!"))
+        assertEquals(0, "anything".fuzzyScore("..."))
+    }
+
+    @Test
+    fun longSubsequenceDoesNotOutrankContains() {
+        // A long subsequence match (240 before the cap) must not beat a real
+        // contains-tier match (200).
+        val target = "abcdefghijklmnopqrstuvwxyz"
+        // 24 chars of the target with 'n' skipped: a subsequence, not a prefix/contains.
+        val subseqScore = target.fuzzyScore("abcdefghijklmopqrstuvwxyz")
+        val containsScore = target.fuzzyScore("jklmn")
+        assertTrue(subseqScore < containsScore,
+            "Subsequence score ($subseqScore) must stay below contains score ($containsScore)")
+        assertEquals(199, subseqScore, "Subsequence score must be capped at 199")
+    }
 }

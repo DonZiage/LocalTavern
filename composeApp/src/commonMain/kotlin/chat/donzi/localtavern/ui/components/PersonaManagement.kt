@@ -119,9 +119,12 @@ private fun PersonaEditDialog(
     onDismiss: () -> Unit,
     onSave: (String, String?, ByteArray?) -> Unit
 ) {
-    var name by remember { mutableStateOf(initialName) }
-    var description by remember { mutableStateOf(initialDescription) }
-    var avatarData by remember { mutableStateOf(initialAvatar) }
+    // Keyed on the initial values: if the dialog ever stays composed while
+    // the target persona changes (auto-edit firing mid-edit), the fields
+    // self-correct instead of showing persona A's fields for persona B.
+    var name by remember(initialName) { mutableStateOf(initialName) }
+    var description by remember(initialDescription) { mutableStateOf(initialDescription) }
+    var avatarData by remember(initialAvatar) { mutableStateOf(initialAvatar) }
 
     var showImageMenu by remember { mutableStateOf(false) }
     var showFullImage by remember { mutableStateOf(false) }

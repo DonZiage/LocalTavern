@@ -17,7 +17,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import chat.donzi.localtavern.domain.PromptBlock
+import kotlin.math.abs
 import kotlin.math.roundToInt
+
+// roundToInt() rounds half up toward positive infinity (0.5 -> 1, -0.5 -> 0),
+// so a drag DOWN swaps at exactly half a row while a drag UP needs more than
+// half; round half away from zero so both directions register symmetrically.
+private fun symmetricRound(value: Float): Int {
+    val sign = if (value < 0f) -1 else 1
+    return sign * (abs(value) + 0.5f).toInt()
+}
 
 @Composable
 fun SystemPromptSettings(
@@ -47,7 +56,7 @@ fun SystemPromptSettings(
 
     val currentIdx = blocks.indexOfFirst { it.id == draggedBlockId }
     val targetIdx = if (currentIdx != -1) {
-        (currentIdx + (dragDisplacement / rowHeightPx).roundToInt()).coerceIn(0, blocks.size - 1)
+        (currentIdx + symmetricRound(dragDisplacement / rowHeightPx)).coerceIn(0, blocks.size - 1)
     } else -1
 
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
@@ -135,7 +144,7 @@ fun SystemPromptSettings(
                                     val currentBlockList = latestBlocks
                                     val curIdx = currentBlockList.indexOfFirst { it.id == block.id }
                                     val tgtIdx = if (curIdx != -1) {
-                                        (curIdx + (dragDisplacement / rowHeightPx).roundToInt()).coerceIn(0, currentBlockList.size - 1)
+                                        (curIdx + symmetricRound(dragDisplacement / rowHeightPx)).coerceIn(0, currentBlockList.size - 1)
                                     } else -1
                                     if (curIdx != -1 && tgtIdx != -1 && tgtIdx != curIdx) {
                                         val newList = currentBlockList.toMutableList()

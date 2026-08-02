@@ -63,4 +63,52 @@ class CharacterManagerTest {
         assertEquals("Bob", imported.card.name)
         assertEquals("No wrapper", imported.card.description)
     }
+
+    @Test
+    fun tavernAIV1Card_importsAsV2() {
+        val v1 = """
+            {"char_name":"Old Kate","char_persona":"A grizzled innkeeper","char_greeting":"Welcome, traveler!",
+             "world_scenario":"A rainy tavern","example_dialogue":"Kate: Hmm.<START>Kate: *grins*",
+             "alternate_greetings":"Alt one|||Alt two"}
+        """.trimIndent()
+        val imported = CharacterManager.processImport(v1.encodeToByteArray(), "Old Kate.json")
+
+        assertNotNull(imported, "Legacy TavernAI v1 cards must import instead of becoming blank characters")
+        assertEquals("Old Kate", imported.card.name)
+        assertEquals("A grizzled innkeeper", imported.card.description)
+        assertEquals("A rainy tavern", imported.card.scenario)
+        assertEquals("Welcome, traveler!", imported.card.first_mes)
+        assertEquals(listOf("Alt one", "Alt two"), imported.card.alternate_greetings)
+        assertEquals(2, imported.card.mes_example.split("<START>").size,
+            "v1 example_dialogue separators must be preserved")
+    }
+
+    @Test
+    fun corruptAvatar_neverWritesBrokenPng() {
+        // A non-PNG avatar that the platform converter cannot convert must
+        // fall back to a JSON card instead of writing a corrupt .png.
+        val fakeJpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(), 0, 1)
+        val (fileName, bytes) = CharacterManager.prepareExportBytes(
+            character.copy(avatarData = fakeJpeg)
+        )
+        assertTrue(fileName.endsWith(".json"), "Unconvertible avatar must fall back to JSON export, got $fileName")
+        val root = Json.parseToJsonElement(bytes.decodeToString()).jsonObject
+        assertEquals("chara_card_v2", root["spec"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun truncatedPng_doesNotCrashExport() {
+        // A PNG whose IHDR length field is garbage must not splice outside
+        // the buffer (the old code threw ArrayIndexOutOfBoundsException).
+        val corruptPng = byteArrayOf(
+            0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+            0x7F, 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), // IHDR length: huge
+            0x49, 0x48, 0x44, 0x52
+        )
+        val (fileName, bytes) = CharacterManager.prepareExportBytes(
+            character.copy(avatarData = corruptPng)
+        )
+        assertTrue(fileName.endsWith(".png"), "Signature-valid PNG must still export as .png, got $fileName")
+        assertTrue(bytes.size == corruptPng.size, "Corrupt PNG must pass through unchanged, not crash")
+    }
 }

@@ -1,14 +1,20 @@
 package chat.donzi.localtavern.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.controller.AppContainer
 import chat.donzi.localtavern.data.database.DriverFactory
 import chat.donzi.localtavern.ui.components.ActiveDrawer
@@ -18,6 +24,11 @@ import chat.donzi.localtavern.ui.theme.ThemeTransition
 @Composable
 fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
     val container = remember { AppContainer(driverFactory) }
+    DisposableEffect(container) {
+        onDispose {
+            container.close()
+        }
+    }
     val appState = container.appState
     val chatController = container.chatController
 
@@ -26,6 +37,7 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
     val activePersonaId by appState.activePersonaId.collectAsState()
     val darkModeFromDb by appState.isDarkMode.collectAsState()
     val isInitialized by appState.isInitialized.collectAsState()
+    val initError by appState.initError.collectAsState()
 
     val systemDark = isSystemInDarkTheme()
     var activeDrawer by remember { mutableStateOf(ActiveDrawer.None) }
@@ -36,13 +48,36 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
                 modifier = Modifier.fillMaxSize(),
                 color = MaterialTheme.colorScheme.background
             ) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator(
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                if (initError != null) {
+                    // Surface initialization failures instead of spinning
+                    // forever with no explanation.
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Text(
+                                text = initError.orEmpty(),
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(horizontal = 32.dp)
+                            )
+                            Button(onClick = { appState.retry() }) {
+                                Text("Retry")
+                            }
+                        }
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
             }
         }

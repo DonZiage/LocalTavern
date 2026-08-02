@@ -33,6 +33,12 @@ class ApiSettingsRepository(
             val existingActive = queries.selectActiveApiConnection().executeAsOneOrNull()
             val shouldActivate = isActive || existingActive == null
             val nextOrder = (queries.selectAllApiConnections().executeAsList().maxOfOrNull { it.displayOrder } ?: -1L) + 1L
+            if (shouldActivate && existingActive != null) {
+                // Only one connection may be active at a time; without this the
+                // row above would be a second active one and chat traffic
+                // would silently go to an arbitrary endpoint.
+                queries.setActiveApiConnection(updatedAt = now)
+            }
             queries.insertApiConnection(
                 id = newId, provider = provider, name = name, baseUrl = baseUrl, apiKey = apiKey, model = model,
                 isActive = if (shouldActivate) 1L else 0L, isChatCompletion = if (isChatCompletion) 1L else 0L,
@@ -72,18 +78,26 @@ class ApiSettingsRepository(
         responseLimit: Long, displayOrder: Long, timeoutLimit: Long
     ) = withContext(ioDispatcher) {
         val now = currentTimeMillis()
-        queries.updateApiConnection(
-            provider = provider, name = name, baseUrl = baseUrl, apiKey = apiKey, model = model,
-            isActive = if (isActive) 1L else 0L, isChatCompletion = if (isChatCompletion) 1L else 0L,
-            temperature = temperature, topP = topP, topK = topK,
-            presencePenalty = presencePenalty, frequencyPenalty = frequencyPenalty, contextLimit = contextLimit,
-            responseLimit = responseLimit, displayOrder = displayOrder, timeoutLimit = timeoutLimit,
-            updatedAt = now, id = id
-        )
-        // Only touch lastUsed when explicitly provided or when activating the
-        // profile; editing an inactive connection must not wipe its marker.
-        if (lastUsed != null || isActive) {
-            queries.updateApiConnectionLastUsed(lastUsed = lastUsed ?: now, updatedAt = now, id = id)
+        // Activating a connection must atomically deactivate any other one;
+        // the update and the lastUsed write share the same transaction so a
+        // failure between them cannot leave the profile half-written.
+        database.transaction {
+            if (isActive) {
+                queries.setActiveApiConnection(updatedAt = now)
+            }
+            queries.updateApiConnection(
+                provider = provider, name = name, baseUrl = baseUrl, apiKey = apiKey, model = model,
+                isActive = if (isActive) 1L else 0L, isChatCompletion = if (isChatCompletion) 1L else 0L,
+                temperature = temperature, topP = topP, topK = topK,
+                presencePenalty = presencePenalty, frequencyPenalty = frequencyPenalty, contextLimit = contextLimit,
+                responseLimit = responseLimit, displayOrder = displayOrder, timeoutLimit = timeoutLimit,
+                updatedAt = now, id = id
+            )
+            // Only touch lastUsed when explicitly provided or when activating the
+            // profile; editing an inactive connection must not wipe its marker.
+            if (lastUsed != null || isActive) {
+                queries.updateApiConnectionLastUsed(lastUsed = lastUsed ?: now, updatedAt = now, id = id)
+            }
         }
     }
 
@@ -96,8 +110,14 @@ class ApiSettingsRepository(
 
     suspend fun setActiveApiConnection(id: String) = withContext(ioDispatcher) {
         val now = currentTimeMillis()
-        queries.setActiveApiConnection(updatedAt = now)
-        queries.updateActiveApiConnection(lastUsed = now, updatedAt = now, id = id)
+        // Deactivating all rows and activating the target must be atomic: a
+        // crash between the two would leave the app with zero active
+        // connections (silently losing its API profile), and two concurrent
+        // activations could both succeed.
+        database.transaction {
+            queries.setActiveApiConnection(updatedAt = now)
+            queries.updateActiveApiConnection(lastUsed = now, updatedAt = now, id = id)
+        }
     }
 
     suspend fun getActiveApiConnection(): ApiConfig? = withContext(ioDispatcher) {
@@ -122,18 +142,31 @@ class ApiSettingsRepository(
     }
 
     suspend fun updateActivePersonaId(personaId: String?) = withContext(ioDispatcher) {
-        queries.updateActivePersonaId(personaId)
+        // Self-healing: the settings row may not exist yet if no code path
+        // ever ran getAppSettings(); without the insert the update silently
+        // affects zero rows and the setting is lost.
+        database.transaction {
+            queries.insertDefaultSettings()
+            queries.updateActivePersonaId(personaId)
+        }
     }
 
     suspend fun updateDarkMode(isDarkMode: Boolean) = withContext(ioDispatcher) {
-        queries.updateDarkMode(if (isDarkMode) 1L else 0L)
+        database.transaction {
+            queries.insertDefaultSettings()
+            queries.updateDarkMode(if (isDarkMode) 1L else 0L)
+        }
     }
 
     suspend fun getAllPromptBlocks(): List<PromptBlock> = withContext(ioDispatcher) {
-        val storedBlocks = queries.selectAllPromptBlocks().executeAsList()
-        if (storedBlocks.isEmpty()) {
-            val now = currentTimeMillis()
-            database.transaction {
+        // The emptiness check and the seeding run inside one transaction: two
+        // concurrent cold starts (settings screen + prompt editor) would both
+        // see an empty table and the second INSERT would fail on the unique
+        // "system" block, crashing the startup path.
+        database.transactionWithResult {
+            val storedBlocks = queries.selectAllPromptBlocks().executeAsList()
+            if (storedBlocks.isEmpty()) {
+                val now = currentTimeMillis()
                 var initialOrder = 0L
                 queries.insertPromptBlock("system", "System Prompt", "You are roleplaying. Stay in character, describe actions vividly, and adapt seamlessly to the story scenario.", 1L, 0L, initialOrder++, now, 0L)
                 queries.insertPromptBlock("persona", "User Persona", "User Persona:\n{{user_persona}}", 1L, 0L, initialOrder++, now, 0L)
@@ -141,10 +174,10 @@ class ApiSettingsRepository(
                 queries.insertPromptBlock("personality", "Personality", "Personality:\n{{personality}}", 1L, 0L, initialOrder++, now, 0L)
                 queries.insertPromptBlock("scenario", "Scenario", "Scenario:\n{{scenario}}", 1L, 0L, initialOrder++, now, 0L)
                 queries.insertPromptBlock("chat_history", "Chat History", "{{chat_history}}", 1L, 0L, initialOrder, now, 0L)
+                queries.selectAllPromptBlocks().executeAsList().map { it.toDomain() }
+            } else {
+                storedBlocks.map { it.toDomain() }
             }
-            queries.selectAllPromptBlocks().executeAsList().map { it.toDomain() }
-        } else {
-            storedBlocks.map { it.toDomain() }
         }
     }
 

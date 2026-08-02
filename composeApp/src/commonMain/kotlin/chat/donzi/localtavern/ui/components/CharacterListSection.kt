@@ -3,6 +3,8 @@ package chat.donzi.localtavern.ui.components
 import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -21,6 +23,7 @@ import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.utils.CharacterManager
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -106,6 +109,10 @@ fun CharacterListSection(
             ) { active ->
                 if (active) {
                     LaunchedEffect(Unit) {
+                        // The field may not be attached yet while the enter
+                        // transition runs; requesting focus immediately can
+                        // silently no-op.
+                        delay(50)
                         focusRequester.requestFocus()
                     }
 
@@ -212,6 +219,7 @@ fun CharacterListSection(
                         leadingIcon = { Icon(Icons.Default.Create, contentDescription = null) },
                         onClick = {
                             showCharacterMenu = false
+                            newCharacterName = ""
                             showCreateDialog = true
                         }
                     )
@@ -253,41 +261,41 @@ fun CharacterListSection(
             }
         }
 
-        Column(modifier = Modifier.fillMaxWidth()) {
-            filtered.forEach { char ->
-                key(char.id) {
-                    val isSelected = selectedIds.contains(char.id)
-                    CharacterItem(
-                        id = char.id,
-                        name = char.name,
-                        description = char.personality,
-                        avatarData = char.avatarData,
-                        selected = isSelected,
-                        selectionMode = selectionMode,
-                        onClick = {
-                            if (selectionMode) {
-                                if (isSelected) selectedIds.remove(char.id) else selectedIds.add(char.id)
-                                if (selectedIds.isEmpty()) selectionMode = false
-                            } else {
-                                onSelect(char)
-                            }
-                        },
-                        onLongClick = {
-                            if (!selectionMode) selectionMode = true
-                            if (!isSelected) selectedIds.add(char.id)
-                        },
-                        onEditClick = { onEditCharacter(char) },
-                        onExportClick = { onExportCharacter(char) },
-                        onDeleteClick = { characterToDelete = char }
-                    )
-                }
+        // LazyColumn so search keystrokes and selection toggles only compose
+        // the visible rows instead of the whole list on every recomposition.
+        LazyColumn(modifier = Modifier.fillMaxWidth()) {
+            items(filtered, key = { it.id }) { char ->
+                val isSelected = selectedIds.contains(char.id)
+                CharacterItem(
+                    id = char.id,
+                    name = char.name,
+                    description = char.personality,
+                    avatarData = char.avatarData,
+                    selected = isSelected,
+                    selectionMode = selectionMode,
+                    onClick = {
+                        if (selectionMode) {
+                            if (isSelected) selectedIds.remove(char.id) else selectedIds.add(char.id)
+                            if (selectedIds.isEmpty()) selectionMode = false
+                        } else {
+                            onSelect(char)
+                        }
+                    },
+                    onLongClick = {
+                        if (!selectionMode) selectionMode = true
+                        if (!isSelected) selectedIds.add(char.id)
+                    },
+                    onEditClick = { onEditCharacter(char) },
+                    onExportClick = { onExportCharacter(char) },
+                    onDeleteClick = { characterToDelete = char }
+                )
             }
         }
     }
 
     if (showCreateDialog) {
         AlertDialog(
-            onDismissRequest = { showCreateDialog = false },
+            onDismissRequest = { showCreateDialog = false; newCharacterName = "" },
             title = { Text("Create New Character") },
             text = {
                 OutlinedTextField(
@@ -313,7 +321,7 @@ fun CharacterListSection(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showCreateDialog = false }) {
+                TextButton(onClick = { showCreateDialog = false; newCharacterName = "" }) {
                     Text("Cancel")
                 }
             }

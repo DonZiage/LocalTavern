@@ -53,14 +53,26 @@ fun parseMarkdownToAnnotatedString(text: String, defaultColor: Color): Annotated
                         }
                     }
                     token.startsWith("*") && token.endsWith("*") -> {
-                        withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = defaultColor.copy(alpha = 0.85f))) {
-                            append(token.removeSurrounding("*"))
+                        val inner = token.substring(1, token.length - 1)
+                        // Reject pseudo-emphasis like "3 * 4 * 5": real emphasis
+                        // does not wrap in whitespace and carries a word.
+                        if (inner.isNotBlank() && !inner.startsWith(" ") && !inner.endsWith(" ") && inner.any { it.isLetterOrDigit() }) {
+                            withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = defaultColor.copy(alpha = 0.85f))) {
+                                append(inner)
+                            }
+                        } else {
+                            append(token)
                         }
                     }
                     // Every remaining match is an underscore-delimited italic token.
                     else -> {
-                        withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = defaultColor.copy(alpha = 0.85f))) {
-                            append(token.removeSurrounding("_"))
+                        val inner = token.removeSurrounding("_")
+                        if (inner.isNotBlank() && !inner.startsWith(" ") && !inner.endsWith(" ") && inner.any { it.isLetterOrDigit() }) {
+                            withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = defaultColor.copy(alpha = 0.85f))) {
+                                append(inner)
+                            }
+                        } else {
+                            append(token)
                         }
                     }
                 }

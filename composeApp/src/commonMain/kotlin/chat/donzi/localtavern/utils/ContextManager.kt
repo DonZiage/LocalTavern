@@ -79,7 +79,16 @@ object ContextManager {
         for (block in activeBlocks) {
             val content = replacePlaceholders(block.template, processedHistory)
 
-            if (content.isNotBlank() && !content.contains("{{chat_history}}")) {
+            if (content.isNotBlank() && content.contains("{{chat_history}}")) {
+                // {{chat_history}} is a structural marker: the history is sent
+                // as separate messages after the system prompt, so the marker
+                // itself is dropped inline. A block that MIXES the marker with
+                // real text must keep its text (e.g. "Important: {{chat_history}}").
+                val cleaned = content.replace("{{chat_history}}", "").trim()
+                if (cleaned.isNotBlank()) {
+                    promptBuilder.append(cleaned).append("\n\n")
+                }
+            } else if (content.isNotBlank()) {
                 promptBuilder.append(content.trim()).append("\n\n")
             }
         }
@@ -91,19 +100,29 @@ object ContextManager {
         // A contextLimit of 0 (or less) means "Unlimited". Cap at Int.MAX_VALUE
         // so the token budget arithmetic below cannot overflow or go negative.
         val effectiveContextLimit = if (contextLimit <= 0L) Int.MAX_VALUE.toLong() else contextLimit.coerceAtMost(Int.MAX_VALUE.toLong())
-        val responseReservation = responseLimit.coerceAtLeast(0L).coerceAtMost(effectiveContextLimit)
-        var availableTokens = (effectiveContextLimit - responseReservation - systemPromptTokens - safeBuffer).toInt()
+        val rawReservation = responseLimit.coerceAtLeast(0L).coerceAtMost(effectiveContextLimit)
+        // A response limit at or above the context limit must not starve the
+        // prompt and history: without this cap the reservation would eat the
+        // whole budget, the prompt would truncate to "", history would drop,
+        // and the payload would collapse to a generic assistant fallback.
+        val responseReservation = if (rawReservation >= effectiveContextLimit) effectiveContextLimit / 2 else rawReservation
+        val promptBudget = (effectiveContextLimit - responseReservation - safeBuffer).coerceAtLeast(0).toInt()
+
+        // An oversized system prompt must not crowd out the conversation
+        // either: truncate it to half the budget so the model still sees the
+        // history (including the message it is replying to).
+        var safeSystemPrompt = systemPromptStr
+        if (systemPromptTokens > 0 && systemPromptTokens > promptBudget) {
+            safeSystemPrompt = tokenizer.truncateByTokens(systemPromptStr, promptBudget / 2)
+        }
 
         val finalMessages = mutableListOf<ChatMessage>()
-
-        val safeSystemPrompt = if (systemPromptTokens > 0 && availableTokens < 0) {
-            tokenizer.truncateByTokens(systemPromptStr, (effectiveContextLimit - responseReservation - safeBuffer).coerceAtLeast(0).toInt())
-        } else {
-            systemPromptStr
-        }
         if (safeSystemPrompt.isNotBlank()) {
             finalMessages.add(ChatMessage(role = "system", content = safeSystemPrompt))
         }
+
+        // Budget remaining after the (possibly truncated) system prompt.
+        var availableTokens = promptBudget - tokenizer.countTokens(safeSystemPrompt)
 
         val selectedHistory = mutableListOf<ChatMessage>()
         for (msg in processedHistory.reversed()) {

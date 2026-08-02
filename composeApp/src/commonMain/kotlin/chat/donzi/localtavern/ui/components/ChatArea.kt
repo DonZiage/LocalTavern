@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -23,7 +24,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -100,18 +103,23 @@ fun ChatArea(
                         color = MaterialTheme.colorScheme.primary
                     )
 
+                    // Ordinal numbering: the visible steps are renumbered 1..N
+                    // after filtering (previously a missing API step would make
+                    // the persona card show "2 -").
                     val visibleSteps = remember(hasApiProfile, hasPersona, hasCharacter) {
                         listOf(
-                            OnboardingStep.API to 1,
-                            OnboardingStep.PERSONA to 2,
-                            OnboardingStep.CHARACTER to 3
-                        ).filter { (step, _) ->
-                            when (step) {
-                                OnboardingStep.API -> !hasApiProfile
-                                OnboardingStep.PERSONA -> !hasPersona
-                                OnboardingStep.CHARACTER -> !hasCharacter
+                            OnboardingStep.API,
+                            OnboardingStep.PERSONA,
+                            OnboardingStep.CHARACTER
+                        )
+                            .filter { step ->
+                                when (step) {
+                                    OnboardingStep.API -> !hasApiProfile
+                                    OnboardingStep.PERSONA -> !hasPersona
+                                    OnboardingStep.CHARACTER -> !hasCharacter
+                                }
                             }
-                        }
+                            .mapIndexed { index, step -> step to index + 1 }
                     }
 
                     if (visibleSteps.isNotEmpty()) {
@@ -206,8 +214,31 @@ fun ChatArea(
             val currentIndex = lastMessage?.let { siblings.indexOfFirst { child -> child.id == it.id } }?.coerceAtLeast(0) ?: 0
             val totalCount = siblings.size
 
-            LaunchedEffect(activeCharacter) {
-                focusRequester.requestFocus()
+            // Whether the list is pinned to the newest message. The list is
+            // reversed, so index 0 (with no scroll offset) is the bottom.
+            var autoScroll by remember { mutableStateOf(true) }
+
+            LaunchedEffect(listState) {
+                snapshotFlow {
+                    listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+                }.collect { (index, offset) ->
+                    autoScroll = index <= 0 && offset <= 0
+                }
+            }
+
+            // Follow new messages only while the user is at the bottom; if
+            // they scrolled up to re-read, don't yank them back down.
+            LaunchedEffect(messages.size, autoScroll) {
+                if (autoScroll && messages.isNotEmpty()) {
+                    listState.scrollToItem(0)
+                }
+            }
+
+            // Switching sessions must always land on the newest message,
+            // regardless of the previous list's scroll position.
+            LaunchedEffect(chatState.currentSession?.id) {
+                listState.scrollToItem(0)
+                autoScroll = true
             }
 
             LazyColumn(
@@ -308,6 +339,9 @@ fun ChatArea(
                             onSelectToggle = { onSelectMessageToggle(message.id) },
                             isSwipeable = isSwipeable,
                             isGenerating = isGenerating,
+                            // Editing the in-flight message would be overwritten
+                            // by the stream; gate only the streaming message.
+                            canEdit = !(isGenerating && isLastMessage),
                             onSwipeRight = {
                                 if (!isGenerating) {
                                     if (msgCurrentIndex > 0) {
@@ -328,7 +362,7 @@ fun ChatArea(
                             }
                         )
 
-                        if (!isUserMessage && isLastMessage) {
+                        if (!isUserMessage && isLastMessage && !isSelectMode) {
                             Row(
                                 modifier = Modifier
                                     .padding(start = 54.dp, top = 2.dp, bottom = 6.dp)
@@ -384,11 +418,22 @@ fun ChatArea(
             }
         }
 
+        // Draft state lives here (not inside ChatInputBar) so it survives
+        // select mode, where the input bar leaves the composition entirely.
+        var draftText by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+            mutableStateOf(TextFieldValue(""))
+        }
+        var draftImages by remember { mutableStateOf<List<ByteArray>>(emptyList()) }
+
         if (!isSelectMode) {
             ChatInputBar(
+                textValue = draftText,
+                onTextValueChange = { draftText = it },
+                attachedImages = draftImages,
+                onAttachedImagesChange = { draftImages = it },
                 onSendMessage = actions.onSendMessage,
                 onRegenerate = actions.onRegenerate,
-                canRegenerate = messages.any { it.role == "user" },
+                canRegenerate = messages.any { it.role == "user" } && !isGenerating,
                 onEnterSelectMode = onEnterSelectMode,
                 canDelete = messages.isNotEmpty(),
                 isGenerating = isGenerating,
@@ -476,7 +521,7 @@ fun ChatArea(
                                     messageToDelete = null
                                 },
                                 colors = ButtonDefaults.textButtonColors(
-                                    contentColor = MaterialTheme.colorScheme.primary
+                                    contentColor = MaterialTheme.colorScheme.error
                                 )
                             ) {
                                 Text("Message")

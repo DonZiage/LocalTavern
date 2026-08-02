@@ -37,10 +37,10 @@ fun ApiConnectionDialog(
 
     val maskedApiKey = remember(initialConnection?.apiKey) {
         val key = initialConnection?.apiKey ?: ""
-        // Reveal only the last 4 characters; the first characters of a stored
-        // secret should never be displayed.
+        // Never reveal part of a stored secret: show only masking dots so the
+        // key fragment cannot be inferred from the field.
         if (key.isNotEmpty()) {
-            "••••${key.takeLast(4)}"
+            "••••••••"
         } else {
             ""
         }
@@ -81,7 +81,6 @@ fun ApiConnectionDialog(
 
     LaunchedEffect(apiKey, baseUrl, selectedProvider) {
         val requestId = ++validationRequestId
-        delay(800)
         val keyToTest = apiKey.ifBlank { initialConnection?.apiKey ?: "" }
         val effectiveBaseUrl = if (isCloudInference) ProviderCatalog.defaultUrls[selectedProvider] ?: baseUrl else baseUrl
 
@@ -99,20 +98,30 @@ fun ApiConnectionDialog(
             return@LaunchedEffect
         }
 
+        // A new (possibly edited) key is being validated: the stale result of
+        // the previous request must not keep Save enabled in the meantime.
+        isKeyValid = false
+
+        delay(800)
         isLoadingModels = true
         try {
             val valid = chatClient.checkStatus(effectiveBaseUrl, keyToTest, selectedProvider)
-            allModels = if (valid) {
-                chatClient.fetchModels(effectiveBaseUrl, keyToTest, selectedProvider)
+            if (valid) {
+                // The key is confirmed working even if the model list fetch
+                // fails below; that failure must not disable Save for a valid
+                // key (the model can still be typed in manually).
+                isKeyValid = true
+                allModels = chatClient.fetchModels(effectiveBaseUrl, keyToTest, selectedProvider)
             } else {
-                emptyList()
+                allModels = emptyList()
             }
-            isKeyValid = valid
             lastValidatedRequest = request
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            isKeyValid = false
+            // Status check failed (endpoint unreachable, network hiccup): the
+            // key cannot be confirmed valid. isKeyValid was already reset
+            // above for this request.
             allModels = emptyList()
         } finally {
             // Only the newest validation request may clear the spinner; a
@@ -170,10 +179,13 @@ fun ApiConnectionDialog(
 
                 val matchesFilter = modelProviderFilter.isEmpty() || model.provider == modelProviderFilter
 
-                if (modelSearch.isNotEmpty()) {
-                    if (matchesFilter) finalScore += 50
-                } else {
-                    if (!matchesFilter) finalScore = 0
+                // The provider filter must be enforced regardless of the
+                // search text; otherwise a model from another provider could
+                // be selected and saved.
+                if (!matchesFilter) {
+                    finalScore = 0
+                } else if (modelSearch.isNotEmpty()) {
+                    finalScore += 50
                 }
 
                 model to finalScore
@@ -282,16 +294,19 @@ fun ApiConnectionDialog(
                                 modelProviderFilter = model.provider
                             }
                         )
-
-                        val profileNameLabelStep = if (isCloudInference) "4" else "5"
-                        OutlinedTextField(
-                            value = name,
-                            onValueChange = { name = it },
-                            label = { Text("$profileNameLabelStep. Profile Name (Optional)") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
-                        )
                     }
+
+                    // The profile name stays editable even when validation
+                    // fails (e.g. the endpoint is down): hiding it would make
+                    // the dialog a dead end for renaming an existing profile.
+                    val profileNameLabelStep = if (isCloudInference) "4" else "5"
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("$profileNameLabelStep. Profile Name (Optional)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
                 }
             }
         },

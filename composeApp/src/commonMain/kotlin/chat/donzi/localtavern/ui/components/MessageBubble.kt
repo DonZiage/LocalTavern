@@ -18,6 +18,9 @@ import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -33,10 +36,13 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -61,7 +67,8 @@ fun MessageBubble(
     isSwipeable: Boolean = false,
     onSwipeLeft: () -> Unit = {},
     onSwipeRight: () -> Unit = {},
-    isGenerating: Boolean = false
+    isGenerating: Boolean = false,
+    canEdit: Boolean = true
 ) {
     var isEditing by remember { mutableStateOf(false) }
     var editedTextValue by remember(content) {
@@ -81,6 +88,11 @@ fun MessageBubble(
     val isHovered by interactionSource.collectIsHoveredAsState()
 
     val actionsVisible = (isHovered || showActionsOnMobile || showMenu) && !isEditing && !isSelectMode
+
+    // Swipe feedback: the bubble follows the finger; the trigger threshold is
+    // dp-based so it feels the same on high- and low-DPI screens.
+    var dragOffset by remember { mutableFloatStateOf(0f) }
+    val swipeThresholdPx = with(LocalDensity.current) { 80.dp.toPx() }
 
     LaunchedEffect(isEditing) {
         if (isEditing) {
@@ -126,6 +138,7 @@ fun MessageBubble(
                 visible = actionsVisible,
                 showMenu = showMenu,
                 onShowMenuChange = { showMenu = it },
+                canEdit = canEdit,
                 onEdit = {
                     editedTextValue = TextFieldValue(content, selection = TextRange(content.length))
                     editedImages = messageImages
@@ -192,21 +205,26 @@ fun MessageBubble(
                     shape = RoundedCornerShape(16.dp)
                 )
                 .let { modifier -> if (!isUser) modifier.animateContentSize() else modifier }
+                .graphicsLayer { translationX = dragOffset }
                 .pointerInput(isSwipeable) {
                     if (isSwipeable) {
-                        var totalDrag = 0f
                         detectHorizontalDragGestures(
                             onDragEnd = {
-                                if (totalDrag > 80f) {
+                                if (dragOffset > swipeThresholdPx) {
                                     onSwipeRight()
-                                } else if (totalDrag < -80f) {
+                                } else if (dragOffset < -swipeThresholdPx) {
                                     onSwipeLeft()
                                 }
-                                totalDrag = 0f
+                                dragOffset = 0f
                             },
-                            onDragCancel = { totalDrag = 0f },
-                            onHorizontalDrag = { _, dragAmount ->
-                                totalDrag += dragAmount
+                            onDragCancel = { dragOffset = 0f },
+                            onHorizontalDrag = { change, dragAmount ->
+                                // Follow the finger and stop hijacking the
+                                // list's vertical scrolling by consuming the
+                                // change once a horizontal drag is detected.
+                                change.consume()
+                                dragOffset = (dragOffset + dragAmount)
+                                    .coerceIn(-swipeThresholdPx * 1.5f, swipeThresholdPx * 1.5f)
                             }
                         )
                     }
@@ -231,12 +249,14 @@ fun MessageBubble(
                         }
                     )
                 } else if (content.isNotBlank()) {
-                    Text(
-                        text = annotatedContent,
-                        color = textColor,
-                        fontSize = 16.sp,
-                        lineHeight = 22.sp
-                    )
+                    SelectionContainer {
+                        Text(
+                            text = annotatedContent,
+                            color = textColor,
+                            fontSize = 16.sp,
+                            lineHeight = 22.sp
+                        )
+                    }
                 }
 
                 if (isEditing) {
@@ -348,6 +368,10 @@ private fun MessageEditTextField(
             fontSize = 16.sp,
             lineHeight = 22.sp
         ),
+        // IME action so mobile soft keyboards can submit the edit; hardware
+        // Enter is handled by onPreviewKeyEvent above.
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+        keyboardActions = KeyboardActions(onSend = { onSubmit() }),
         cursorBrush = SolidColor(textColor)
     )
 }
@@ -385,6 +409,7 @@ fun MessageActions(
     visible: Boolean,
     showMenu: Boolean,
     onShowMenuChange: (Boolean) -> Unit,
+    canEdit: Boolean = true,
     onEdit: () -> Unit,
     onCopy: () -> Unit,
     onDelete: () -> Unit,
@@ -400,7 +425,7 @@ fun MessageActions(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(horizontal = 4.dp)
         ) {
-            IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
+            IconButton(onClick = onEdit, enabled = canEdit, modifier = Modifier.size(32.dp)) {
                 Icon(
                     Icons.Default.Edit,
                     contentDescription = "Edit",

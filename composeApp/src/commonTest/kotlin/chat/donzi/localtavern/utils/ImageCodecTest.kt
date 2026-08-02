@@ -51,4 +51,39 @@ class ImageCodecTest {
 
         assertEquals("image/jpeg", detectMimeType(ByteArray(2)))
     }
+
+    @Test
+    fun detectMimeType_recognizesHeic() {
+        val heic = ByteArray(16).also {
+            "ftypheic".encodeToByteArray().copyInto(it, 4)
+        }
+        assertEquals("image/heic", detectMimeType(heic))
+
+        val heif = ByteArray(16).also {
+            "ftypmif1".encodeToByteArray().copyInto(it, 4)
+        }
+        assertEquals("image/heic", detectMimeType(heif))
+
+        // A random ftyp brand is not an image and stays at the JPEG default.
+        val mp4 = ByteArray(16).also {
+            "ftypisom".encodeToByteArray().copyInto(it, 4)
+        }
+        assertEquals("image/jpeg", detectMimeType(mp4))
+    }
+
+    @Test
+    fun deserialize_corruptCountDoesNotPreallocateHugeList() {
+        // A blob claiming 0x7FFFFFFF images must not attempt a multi-GB
+        // pre-allocation; it degrades to an empty list.
+        val corrupt = ByteArray(8) { 0xFF.toByte() }
+        assertTrue(deserializeImageList(corrupt).isEmpty())
+
+        // A count above the 64-image cap must also be rejected.
+        val overCap = ByteArray(4) { 0x41.toByte() }
+        assertTrue(deserializeImageList(overCap).isEmpty())
+
+        // Lengths running past the buffer end must also be rejected.
+        val truncated = byteArrayOf(1, 0, 0, 0, 0, 0, 0, 64)
+        assertTrue(deserializeImageList(truncated).isEmpty())
+    }
 }

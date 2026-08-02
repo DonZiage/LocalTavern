@@ -14,8 +14,8 @@ fun PromptBlockEditDialog(
     onSave: (String, String) -> Unit,
     onDelete: (() -> Unit)? = null
 ) {
-    var blockName by remember { mutableStateOf(block.name) }
-    var templateText by remember { mutableStateOf(block.template) }
+    var blockName by remember(block.id, block.name, block.template) { mutableStateOf(block.name) }
+    var templateText by remember(block.id, block.name, block.template) { mutableStateOf(block.template) }
 
     AlertDialog(
         onDismissRequest = onDismiss,

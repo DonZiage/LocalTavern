@@ -4,6 +4,7 @@ import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.data.network.GenerationParams
+import chat.donzi.localtavern.data.network.StreamTruncatedException
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Message
 import chat.donzi.localtavern.domain.Persona
@@ -30,6 +31,7 @@ import kotlinx.coroutines.withTimeout
 import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 data class ChatUiState(
     val messages: List<Message> = emptyList(),
@@ -55,6 +57,23 @@ class ChatController(
     // The session the UI is currently showing. Background generation for another
     // session must not overwrite this view when it completes.
     private var viewedSessionId: String? = null
+
+    // Cancels an in-flight generation and waits for its cleanup to finish.
+    // Destructive actions (delete, edit, swipe, regenerate) must never run
+    // while the stream is still writing into the message rows: the partial
+    // response would be silently lost or clobber the user's action.
+    private suspend fun cancelGenerationIfActive() {
+        if (_state.value.isGenerating) {
+            responseJob?.cancel()
+            responseJob?.join()
+        }
+    }
+
+    // Surfaces a transient user-facing message through the same error bubble
+    // used by generation failures (e.g. a send that had to be dropped).
+    fun reportError(message: String) {
+        _state.update { it.copy(errorMessage = message, errorIsWarning = true) }
+    }
 
     fun refresh(sessionId: String?) {
         viewedSessionId = sessionId
@@ -100,9 +119,13 @@ class ChatController(
     }
 
     fun requestAiResponse(sessionId: String, character: Character?, persona: Persona?, targetParentId: String? = null) {
-        if (_state.value.isGenerating) return
+        // A new request supersedes any in-flight one: cancel the previous job
+        // (its cleanup preserves or removes its placeholder) and start fresh,
+        // so e.g. "regenerate" during streaming restarts cleanly instead of
+        // deleting the placeholder and silently no-oping. A stale error from
+        // a previous run is cleared so it cannot coexist with a live attempt.
         responseJob?.cancel()
-        _state.update { it.copy(isGenerating = true) }
+        _state.update { it.copy(isGenerating = true, errorMessage = null, errorIsWarning = false) }
         responseJob = scope.launch {
             try {
                 val activeConnection = apiSettingsRepository.getActiveApiConnection()
@@ -149,6 +172,13 @@ class ChatController(
                         val timeoutLimitSeconds = activeConnection.timeoutLimit
                         val tokenChannel = Channel<String>(Channel.UNLIMITED)
 
+                        // Idle timeout: the deadline restarts on every token, so
+                        // a continuously streaming response is never killed by a
+                        // total-stream deadline, while a stalled stream (long
+                        // silence with no tokens) still surfaces a timeout.
+                        val timeoutDuration = if (timeoutLimitSeconds <= 0L) null else timeoutLimitSeconds.seconds
+                        var lastTokenAt = TimeSource.Monotonic.markNow()
+
                         val generationParams = GenerationParams(
                             temperature = activeConnection.temperature,
                             topP = activeConnection.topP,
@@ -174,23 +204,18 @@ class ChatController(
                             tokenChannel.close()
                         }
 
-                        val responseDeadline = if (timeoutLimitSeconds == 0L) {
-                            null
-                        } else {
-                            Clock.System.now().plus(timeoutLimitSeconds.seconds)
-                        }
-
                         try {
                             while (true) {
-                                val channelResult = when {
-                                    responseDeadline == null -> tokenChannel.receiveCatching()
-                                    else -> {
-                                        val remaining = responseDeadline - Clock.System.now()
-                                        if (remaining <= Duration.ZERO) {
-                                            withTimeout(Duration.ZERO) { tokenChannel.receiveCatching() }
-                                        } else {
-                                            withTimeout(remaining) { tokenChannel.receiveCatching() }
-                                        }
+                                val channelResult = if (timeoutDuration == null) {
+                                    tokenChannel.receiveCatching()
+                                } else {
+                                    val elapsedSinceLastToken = lastTokenAt.elapsedNow()
+                                    if (elapsedSinceLastToken >= timeoutDuration) {
+                                        // Force the timeout so the partial
+                                        // response is kept with a warning.
+                                        withTimeout(Duration.ZERO) { tokenChannel.receiveCatching() }
+                                    } else {
+                                        withTimeout(timeoutDuration - elapsedSinceLastToken) { tokenChannel.receiveCatching() }
                                     }
                                 }
 
@@ -204,6 +229,8 @@ class ChatController(
 
                                 val token = channelResult.getOrNull() ?: break
 
+                                // Any progress resets the idle timer.
+                                lastTokenAt = TimeSource.Monotonic.markNow()
                                 responseBuilder.append(token)
 
                                 val now = Clock.System.now().toEpochMilliseconds()
@@ -233,6 +260,43 @@ class ChatController(
                                 sessionRepository.updateMessageContent(aiMessageId, fullResponse)
                             }
                             refreshIfViewed(sessionId)
+                        } catch (e: StreamTruncatedException) {
+                            // The stream delivered tokens but closed without a
+                            // terminator: recover the full response with a
+                            // non-streaming request and replace the partial
+                            // text, so a truncated reply is never persisted as
+                            // complete (and the partial is never duplicated).
+                            streamJob.cancel()
+                            try {
+                                val recovered = withContext(payloadDispatcher) {
+                                    chatClient.sendChatRequest(
+                                        baseUrl = activeConnection.baseUrl ?: "", apiKey = activeConnection.apiKey ?: "",
+                                        model = activeConnection.model ?: "", messages = messagesPayload,
+                                        isChatCompletion = activeConnection.isChatCompletion, params = generationParams,
+                                        provider = activeConnection.provider, timeoutSeconds = activeConnection.timeoutLimit
+                                    )
+                                }
+                                if (recovered.isBlank()) {
+                                    sessionRepository.deleteMessage(aiMessageId)
+                                } else {
+                                    sessionRepository.updateMessageContent(aiMessageId, recovered)
+                                    _state.update { st ->
+                                        if (viewedSessionId != sessionId) {
+                                            st
+                                        } else {
+                                            st.copy(messages = st.messages.map { msg -> if (msg.id == aiMessageId) msg.copy(content = recovered) else msg })
+                                        }
+                                    }
+                                }
+                                refreshIfViewed(sessionId)
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (_: Exception) {
+                                // Recovery failed: keep the partial text and
+                                // surface the truncation error.
+                                _state.update { it.copy(errorMessage = e.message ?: "Response was interrupted.", errorIsWarning = false) }
+                                refreshIfViewed(sessionId)
+                            }
                         } catch (_: TimeoutCancellationException) {
                             streamJob.cancel()
                             val partialResponse = responseBuilder.toString()
@@ -286,9 +350,21 @@ class ChatController(
                     _state.update { it.copy(errorMessage = "No active API connection configured.", errorIsWarning = false) }
                     refreshIfViewed(sessionId)
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Failure before the placeholder was inserted (e.g. a DB error
+                // reading the active connection): surface it instead of letting
+                // the exception vanish into the app scope's SupervisorJob.
+                _state.update { it.copy(errorMessage = e.message ?: "Unknown error occurred", errorIsWarning = false) }
             } finally {
-                _state.update { it.copy(isGenerating = false) }
-                responseJob = null
+                // Only the job that is still the current one may reset the
+                // generating flag; a superseded job that finishes its cleanup
+                // after a newer generation started must not touch its state.
+                if (responseJob === coroutineContext[Job]) {
+                    _state.update { it.copy(isGenerating = false) }
+                    responseJob = null
+                }
             }
         }
     }
@@ -298,10 +374,13 @@ class ChatController(
     }
 
     fun regenerate(sessionId: String, character: Character?, persona: Persona?) {
-        val currentMessages = _state.value.messages
-        if (currentMessages.isEmpty()) return
         scope.launch {
-            val lastMsg = currentMessages.last()
+            // Regenerating while a response is streaming would delete the
+            // in-flight placeholder under the live stream; stop it first.
+            cancelGenerationIfActive()
+            // Read from the DB, not the possibly-stale UI snapshot: the
+            // cancelled job may have just removed or updated the last message.
+            val lastMsg = sessionRepository.getMessagesForSession(sessionId).lastOrNull() ?: return@launch
             val parentId = if (lastMsg.role == "assistant") {
                 sessionRepository.deleteMessage(lastMsg.id)
                 lastMsg.parentId
@@ -318,6 +397,7 @@ class ChatController(
 
     fun selectVariation(sessionId: String, messageId: String, parentId: String?) {
         scope.launch {
+            cancelGenerationIfActive()
             sessionRepository.selectVariation(sessionId, messageId, parentId)
             refresh(sessionId)
         }
@@ -325,6 +405,9 @@ class ChatController(
 
     fun deleteMessage(sessionId: String, id: String) {
         scope.launch {
+            // Deleting while streaming would cascade into the in-flight
+            // placeholder (or the stream into a deactivated row): stop first.
+            cancelGenerationIfActive()
             val activeTimeline = sessionRepository.getMessagesForSession(sessionId)
             if (activeTimeline.any { it.id == id }) {
                 val msg = activeTimeline.find { it.id == id }
@@ -344,6 +427,7 @@ class ChatController(
 
     fun deleteMessages(sessionId: String, ids: List<String>) {
         scope.launch {
+            cancelGenerationIfActive()
             val activeTimeline = sessionRepository.getMessagesForSession(sessionId)
             val activeDeleted = activeTimeline.find { it.id in ids }
             if (activeDeleted != null) {
@@ -360,6 +444,7 @@ class ChatController(
 
     fun deleteMessagesRaw(sessionId: String, ids: List<String>) {
         scope.launch {
+            cancelGenerationIfActive()
             ids.forEach { sessionRepository.deleteMessage(it) }
             // The bulk delete has no per-message sibling/parent fix-up; repoint
             // a dangling currentMessageId at the last surviving message (or
@@ -377,6 +462,9 @@ class ChatController(
 
     fun editMessage(sessionId: String, id: String, content: String, updatedImages: List<ByteArray>) {
         scope.launch {
+            // Editing the in-flight message would be overwritten by the next
+            // stream tick; stop the generation so the edit sticks.
+            cancelGenerationIfActive()
             sessionRepository.updateMessageContent(id, content)
             sessionRepository.updateMessageImage(id, updatedImages)
             refresh(sessionId)
@@ -385,9 +473,9 @@ class ChatController(
 
     fun addImageToMessage(sessionId: String, targetMessageId: String, pickedBytesList: List<ByteArray>) {
         scope.launch {
-            val targetMsg = _state.value.messages.find { it.id == targetMessageId }
-            val combinedImages = (targetMsg?.images ?: emptyList()) + pickedBytesList
-            sessionRepository.updateMessageImage(targetMessageId, combinedImages)
+            // Read-modify-write runs inside one DB transaction (the UI
+            // snapshot could be stale and would lose a concurrent add).
+            sessionRepository.appendImagesToMessage(sessionId, targetMessageId, pickedBytesList)
             refresh(sessionId)
         }
     }

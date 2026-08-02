@@ -36,10 +36,15 @@ public fun deserializeImageList(bytes: ByteArray?): List<ByteArray> {
         var offset = 0
         val count = bytes.readInt(offset)
         offset += 4
+        // Guard against a corrupt blob claiming a huge image count: the
+        // pre-allocated list would OOM the process (OutOfMemoryError is not
+        // an Exception and escapes the catch below).
+        if (count < 0 || count > 64) return emptyList()
         val list = ArrayList<ByteArray>(count)
         for (i in 0 until count) {
             val size = bytes.readInt(offset)
             offset += 4
+            if (size < 0 || offset + size > bytes.size) return emptyList()
             val img = ByteArray(size)
             bytes.copyInto(img, destinationOffset = 0, startIndex = offset, endIndex = offset + size)
             offset += size
@@ -75,6 +80,17 @@ public fun detectMimeType(bytes: ByteArray): String {
         bytes[2] == 'F'.code.toByte()
     ) {
         return "image/gif"
+    }
+    // HEIC/HEIF (iPhone photos): ISO BMFF files start with a "ftyp" box at
+    // offset 4; otherwise they would silently be labeled JPEG below.
+    if (bytes.size >= 12 &&
+        bytes[4] == 'f'.code.toByte() && bytes[5] == 't'.code.toByte() &&
+        bytes[6] == 'y'.code.toByte() && bytes[7] == 'p'.code.toByte()
+    ) {
+        val brand = bytes.copyOfRange(8, 12).decodeToString()
+        if (brand == "heic" || brand == "heix" || brand == "hevc" || brand == "mif1") {
+            return "image/heic"
+        }
     }
     return "image/jpeg"
 }

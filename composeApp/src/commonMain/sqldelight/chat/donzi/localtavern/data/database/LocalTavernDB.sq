@@ -124,11 +124,14 @@ SELECT * FROM ChatSession WHERE characterId = ? AND personaId = ? AND isDeleted 
 selectSessionsForCharacter:
 SELECT * FROM ChatSession WHERE characterId = ? AND isDeleted = 0 ORDER BY lastTimestamp DESC;
 
+selectSessionsForPersona:
+SELECT * FROM ChatSession WHERE personaId = ? AND isDeleted = 0 ORDER BY lastTimestamp DESC;
+
 selectActiveTimeline:
-SELECT * FROM MessageEntity WHERE isDeleted = 0 AND sessionId = ? AND isActivePath = 1 ORDER BY timestamp ASC;
+SELECT * FROM MessageEntity WHERE isDeleted = 0 AND sessionId = ? AND isActivePath = 1 ORDER BY timestamp ASC, rowid ASC;
 
 selectSiblings:
-SELECT * FROM MessageEntity WHERE isDeleted = 0 AND sessionId = ? AND parentId IS ? ORDER BY timestamp ASC;
+SELECT * FROM MessageEntity WHERE isDeleted = 0 AND sessionId = ? AND parentId IS ? AND isActivePath = 1 ORDER BY timestamp ASC, rowid ASC;
 
 selectAllApiConnections:
 SELECT * FROM ApiConnection WHERE isDeleted = 0 ORDER BY displayOrder ASC;

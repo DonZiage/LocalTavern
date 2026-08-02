@@ -62,8 +62,13 @@ fun ExportNotificationBubble(
                             }
                         },
                         onHorizontalDrag = { change, dragAmount ->
-                            change.consume()
-                            swipeOffsetX += dragAmount
+                            // Only track the drag while the pointer is actually
+                            // pressed: stale drag events after release would
+                            // otherwise push the bubble off-screen.
+                            if (change.pressed) {
+                                change.consume()
+                                swipeOffsetX += dragAmount
+                            }
                         }
                     )
                 }

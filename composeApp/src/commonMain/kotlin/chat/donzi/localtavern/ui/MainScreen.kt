@@ -111,6 +111,7 @@ fun MainScreen(
     var editingCharacter by remember { mutableStateOf<Character?>(null) }
 
     var hasApiProfile by remember { mutableStateOf(false) }
+    var sendInFlight by remember { mutableStateOf(false) }
 
     var autoEditPersonaTrigger by remember { mutableStateOf(false) }
     var autoShowCharacterMenuTrigger by remember { mutableStateOf(false) }
@@ -132,10 +133,13 @@ fun MainScreen(
     }
 
     var lastEditingCharacter by remember { mutableStateOf<Character?>(null) }
-    LaunchedEffect(editingCharacter) {
-        if (editingCharacter != null) {
-            lastEditingCharacter = editingCharacter
-        }
+
+    // Sets the editor target synchronously: a LaunchedEffect would only run
+    // after the first frame, briefly showing the previous character's editor
+    // (with its callbacks) and playing the enter animation empty on first use.
+    fun openEditor(character: Character?) {
+        editingCharacter = character
+        if (character != null) lastEditingCharacter = character
     }
 
     var pendingCreationName by remember { mutableStateOf<String?>(null) }
@@ -143,7 +147,7 @@ fun MainScreen(
         pendingCreationName?.let { name ->
             val newChar = characters.findLast { it.name == name }
             if (newChar != null) {
-                editingCharacter = newChar
+                openEditor(newChar)
                 pendingCreationName = null
             }
         }
@@ -218,22 +222,46 @@ fun MainScreen(
     }
 
     val onSendMessage: (String, List<ByteArray>) -> Unit = { userMessage, imageList ->
-        if (!isGenerating) {
+        if (!isGenerating && !sendInFlight) {
+            // Set the flag synchronously, before any suspend point: the DB
+            // round-trips below let a second tap slip through the flow-based
+            // isGenerating check (it is only set once requestAiResponse runs),
+            // which would insert a duplicate user message.
+            sendInFlight = true
             coroutineScope.launch {
-                var currentActiveCharacter = activeCharacter
-                if (currentActiveCharacter == null) {
-                    var assistant = characterRepository.getAssistant()
-                    if (assistant == null) {
-                        characterRepository.createAssistant()
-                        assistant = characterRepository.getAssistant()
+                try {
+                    var currentActiveCharacter = activeCharacter
+                    if (currentActiveCharacter == null) {
+                        var assistant = characterRepository.getAssistant()
+                        if (assistant == null) {
+                            characterRepository.createAssistant()
+                            assistant = characterRepository.getAssistant()
+                        }
+                        if (assistant != null) {
+                            activeCharacter = assistant
+                            currentActiveCharacter = assistant
+                        }
                     }
-                    if (assistant != null) {
-                        activeCharacter = assistant
-                        currentActiveCharacter = assistant
-                    }
-                }
 
-                if (currentActiveCharacter != null && activePersonaId != null) {
+                    if (currentActiveCharacter == null || activePersonaId == null) {
+                        // Never drop a send silently: the input was already
+                        // cleared, so the user must at least learn why.
+                        chatController.reportError(
+                            if (activePersonaId == null) {
+                                "Create a persona before sending a message."
+                            } else {
+                                "Could not create the Assistant character."
+                            }
+                        )
+                        return@launch
+                    }
+
+                    // Guard again after the DB round-trips above: a fast double
+                    // send can still pass the UI-level isGenerating check, and
+                    // inserting a second user message would orphan it without a
+                    // response.
+                    if (chatController.state.value.isGenerating) return@launch
+
                     val sessionId = sessionRepository.getOrCreateSession(currentActiveCharacter.id, activePersonaId)
                     activeSessionId = sessionId
 
@@ -256,6 +284,8 @@ fun MainScreen(
                         }
                     }
                     chatController.requestAiResponse(sessionId, currentActiveCharacter, activePersona, updatedSession2?.currentMessageId)
+                } finally {
+                    sendInFlight = false
                 }
             }
         }
@@ -298,7 +328,7 @@ fun MainScreen(
                             ChatTopBar(
                                 activeCharacter = activeCharacter,
                                 isDesktop = isDesktop,
-                                onEditCharacter = { editingCharacter = activeCharacter },
+                                onEditCharacter = { openEditor(activeCharacter) },
                                 onCloseChat = { activeCharacter = null },
                                 onOpenSettings = { onActiveDrawerChange(ActiveDrawer.Settings) },
                                 onOpenCharacters = { onActiveDrawerChange(ActiveDrawer.Characters) }
@@ -306,7 +336,9 @@ fun MainScreen(
                         }
                     }
                 ) { paddingValues ->
-                    Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
+                    // imePadding keeps the input bar (and the message list)
+                    // above the soft keyboard in edge-to-edge mode on Android.
+                    Box(modifier = Modifier.fillMaxSize().padding(paddingValues).imePadding()) {
                         ChatArea(
                             chatState = chatState,
                             activeCharacter = activeCharacter,
@@ -402,7 +434,7 @@ fun MainScreen(
                         onCharactersDelete = { ids -> if (activeCharacter?.id in ids) activeCharacter = null; onCharactersDelete(ids) },
                         onCharacterImport = onCharacterImport,
                         onCharacterCreate = { name -> pendingCreationName = name; onCharacterCreate(name) },
-                        onCharacterEdit = { character -> editingCharacter = character },
+                        onCharacterEdit = { character -> openEditor(character) },
                         onCharacterExport = { character -> exportCharacterFromList(character) },
                         autoEditDefaultPersona = autoEditPersonaTrigger,
                         onAutoEditConsumed = { autoEditPersonaTrigger = false },
@@ -424,7 +456,7 @@ fun MainScreen(
                 personas = personas, activePersonaId = activePersonaId, onPersonaSelect = onPersonaSelect, onPersonaAdd = onPersonaAdd, onPersonaUpdate = onPersonaUpdate, onPersonaDelete = onPersonaDelete,
                 characters = characters, onCharacterSelect = { character -> activeCharacter = character; onActiveDrawerChange(ActiveDrawer.None) },
                 onCharactersDelete = { ids -> if (activeCharacter?.id in ids) activeCharacter = null; onCharactersDelete(ids) }, onCharacterImport = onCharacterImport,
-                onCharacterCreate = { name -> pendingCreationName = name; onCharacterCreate(name); onActiveDrawerChange(ActiveDrawer.None) }, onCharacterEdit = { character -> editingCharacter = character; onActiveDrawerChange(ActiveDrawer.None) },
+                onCharacterCreate = { name -> pendingCreationName = name; onCharacterCreate(name); onActiveDrawerChange(ActiveDrawer.None) }, onCharacterEdit = { character -> openEditor(character); onActiveDrawerChange(ActiveDrawer.None) },
                 onCharacterExport = { character -> exportCharacterFromList(character) }, autoEditDefaultPersona = autoEditPersonaTrigger, onAutoEditConsumed = { autoEditPersonaTrigger = false },
                 autoShowNewCharacterMenu = autoShowCharacterMenuTrigger, onAutoShowMenuConsumed = { autoShowCharacterMenuTrigger = false },
                 onApiChanged = {
@@ -440,13 +472,13 @@ fun MainScreen(
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     key(targetCharacter.id) {
                         CharacterDefinitionEditor(
-                            character = targetCharacter, onClose = { editingCharacter = null },
+                            character = targetCharacter, onClose = { openEditor(null) },
                             onSave = { name, desc, personality, scenario, firstMes, mesExample, altGreetings, avatarData ->
                                 coroutineScope.launch {
                                     characterRepository.updateCharacter(targetCharacter.id, name, personality, scenario, desc, firstMes, mesExample, altGreetings, avatarData)
                                     val freshCharacter = characterRepository.getCharacterById(targetCharacter.id)
                                     if (freshCharacter != null && editingCharacter?.id == targetCharacter.id) {
-                                        editingCharacter = freshCharacter
+                                        openEditor(freshCharacter)
                                     }
 
                                     if (activeCharacter?.id == targetCharacter.id) activeCharacter = freshCharacter
@@ -466,12 +498,28 @@ fun MainScreen(
                                                 if (index < textList.size) {
                                                     sessionRepository.updateMessageContent(existingMessage.id, textList[index])
                                                 } else {
-                                                    sessionRepository.deleteMessage(existingMessage.id)
+                                                    // Only delete a root that is not part of a live
+                                                    // conversation. Deleting a root cascades to its
+                                                    // entire subtree (deactivating every descendant),
+                                                    // which would make the session look empty even
+                                                    // though its chat history is intact.
+                                                    val hasActiveConversation = sessionRepository
+                                                        .getMessagesForSession(session.id)
+                                                        .any { it.parentId == existingMessage.id }
+                                                    if (!hasActiveConversation) {
+                                                        sessionRepository.deleteMessage(existingMessage.id)
+                                                    }
                                                 }
                                             }
                                             if (textList.size > currentRoots.size) {
                                                 for (i in currentRoots.size until textList.size) {
-                                                    sessionRepository.insertMessageRaw(session.id, "assistant", textList[i], null, false)
+                                                    // When no active root survived the sync (e.g. the old
+                                                    // greeting roots were deleted or never existed), the
+                                                    // first replacement must be ACTIVE: a session whose
+                                                    // roots are all inactive shows an empty chat with no
+                                                    // way to reach the new greeting.
+                                                    val activateFirst = currentRoots.isEmpty() && i == currentRoots.size
+                                                    sessionRepository.insertMessageRaw(session.id, "assistant", textList[i], null, activateFirst)
                                                 }
                                             }
                                         }
@@ -488,7 +536,7 @@ fun MainScreen(
                                     refreshMessages()
                                 }
                             },
-                            onDelete = { coroutineScope.launch { characterRepository.deleteCharacters(setOf(targetCharacter.id)); if (activeCharacter?.id == targetCharacter.id) activeCharacter = null; editingCharacter = null } },
+                            onDelete = { coroutineScope.launch { characterRepository.deleteCharacters(setOf(targetCharacter.id)); if (activeCharacter?.id == targetCharacter.id) activeCharacter = null; openEditor(null) } },
                             onExport = { updatedCharacter -> exportCharacterFromList(updatedCharacter) }
                         )
                     }
@@ -541,7 +589,12 @@ fun ChatManagerDialog(
     var sessionToDelete by remember { mutableStateOf<Session?>(null) }
 
     fun loadSessions() { coroutineScope.launch { sessions = sessionRepository.getSessionsForCharacter(characterId) } }
-    LaunchedEffect(characterId) { loadSessions() }
+    LaunchedEffect(characterId) {
+        // Clear the previous character's sessions immediately; otherwise the
+        // dialog briefly shows the old list until the reload completes.
+        sessions = emptyList()
+        loadSessions()
+    }
 
     AlertDialog(
         onDismissRequest = onDismissRequest,

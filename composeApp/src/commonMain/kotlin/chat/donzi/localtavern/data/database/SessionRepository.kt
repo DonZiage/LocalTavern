@@ -3,6 +3,7 @@ package chat.donzi.localtavern.data.database
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Message
 import chat.donzi.localtavern.domain.Session
+import chat.donzi.localtavern.utils.deserializeImageList
 import chat.donzi.localtavern.utils.serializeImageList
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -19,16 +20,23 @@ class SessionRepository(
     }
 
     suspend fun getOrCreateSession(characterId: String, personaId: String): String = withContext(ioDispatcher) {
-        val session = queries.selectLastSessionForCharacterAndPersona(characterId, personaId).executeAsOneOrNull()
         val now = currentTimeMillis()
-        session?.id ?: database.transactionWithResult {
-            val newId = generateUuid()
-            queries.insertChatSession(
-                id = newId, characterId = characterId, personaId = personaId, title = null,
-                lastTimestamp = now, currentMessageId = null, parentSessionId = null,
-                updatedAt = now, isDeleted = 0L
-            )
-            newId
+        // The lookup and the insert must be one atomic step: two concurrent
+        // calls (e.g. a double-tap on send) must not both see "no session"
+        // and each create a duplicate row.
+        database.transactionWithResult {
+            val session = queries.selectLastSessionForCharacterAndPersona(characterId, personaId).executeAsOneOrNull()
+            if (session != null) {
+                session.id
+            } else {
+                val newId = generateUuid()
+                queries.insertChatSession(
+                    id = newId, characterId = characterId, personaId = personaId, title = null,
+                    lastTimestamp = now, currentMessageId = null, parentSessionId = null,
+                    updatedAt = now, isDeleted = 0L
+                )
+                newId
+            }
         }
     }
 
@@ -135,6 +143,21 @@ class SessionRepository(
 
     suspend fun updateMessageImage(id: String, imageDataList: List<ByteArray>?) = withContext(ioDispatcher) {
         queries.updateMessageImage(imageData = serializeImageList(imageDataList), updatedAt = currentTimeMillis(), id = id)
+    }
+
+    suspend fun appendImagesToMessage(sessionId: String, messageId: String, newImages: List<ByteArray>) = withContext(ioDispatcher) {
+        // Read-modify-write inside a single transaction: two rapid "add image"
+        // actions on the same message must not read the same base list and
+        // drop each other's images.
+        database.transaction {
+            val existing = queries.selectMessageById(messageId).executeAsOneOrNull()?.imageData
+            val combined = deserializeImageList(existing) + newImages
+            queries.updateMessageImage(
+                imageData = serializeImageList(combined),
+                updatedAt = currentTimeMillis(),
+                id = messageId
+            )
+        }
     }
 
     suspend fun deleteMessage(id: String) = withContext(ioDispatcher) {
@@ -244,6 +267,32 @@ class SessionRepository(
         database.transaction {
             queries.deleteMessagesForSession(updatedAt = now, sessionId = sessionId)
             queries.deleteSession(updatedAt = now, id = sessionId)
+        }
+    }
+
+    // Sessions of deleted characters/personas must not linger: they would
+    // keep being returned by session queries and could be resumed against an
+    // entity the UI can no longer load.
+    suspend fun deleteSessionsForCharacters(characterIds: Set<String>) = withContext(ioDispatcher) {
+        if (characterIds.isEmpty()) return@withContext
+        val now = currentTimeMillis()
+        database.transaction {
+            characterIds.forEach { characterId ->
+                queries.selectSessionsForCharacter(characterId).executeAsList().forEach { session ->
+                    queries.deleteMessagesForSession(updatedAt = now, sessionId = session.id)
+                    queries.deleteSession(updatedAt = now, id = session.id)
+                }
+            }
+        }
+    }
+
+    suspend fun deleteSessionsForPersona(personaId: String) = withContext(ioDispatcher) {
+        val now = currentTimeMillis()
+        database.transaction {
+            queries.selectSessionsForPersona(personaId).executeAsList().forEach { session ->
+                queries.deleteMessagesForSession(updatedAt = now, sessionId = session.id)
+                queries.deleteSession(updatedAt = now, id = session.id)
+            }
         }
     }
 

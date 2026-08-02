@@ -730,7 +730,8 @@ data: [DONE]
         val messages = Json.parseToJsonElement(capturedBody).jsonObject["messages"]!!.jsonArray
         assertEquals(3, messages.size, "A leading user turn must be prepended")
         assertEquals("user", messages[0].jsonObject["role"]?.jsonPrimitive?.content)
-        assertEquals("", messages[0].jsonObject["content"]?.jsonPrimitive?.content)
+        // The leading turn must be non-empty: Anthropic rejects blank content.
+        assertEquals(" ", messages[0].jsonObject["content"]?.jsonPrimitive?.content)
         assertEquals("assistant", messages[1].jsonObject["role"]?.jsonPrimitive?.content)
         assertEquals("user", messages[2].jsonObject["role"]?.jsonPrimitive?.content)
     }
@@ -771,5 +772,193 @@ data: [DONE]
         assertEquals("base64", source["type"]?.jsonPrimitive?.content)
         assertEquals("image/png", source["media_type"]?.jsonPrimitive?.content)
         assertEquals("aGVsbG8=", source["data"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun regenerateDuringGeneration_restartsCleanly() = runTest {
+        val (controller, db) = newController("""{"choices":[{"delta":{"content":"New reply"}}]}""", "[DONE]")
+        val seed = seedSession(db)
+        val sessionRepository = seed.sessionRepository
+
+        controller.refresh(seed.sessionId)
+        testScheduler.advanceUntilIdle()
+
+        // Start a generation, then regenerate while it is still in flight.
+        // The in-flight placeholder must not survive and a fresh response
+        // must be attached to the last user message.
+        controller.requestAiResponse(seed.sessionId, CHARACTER, PERSONA, seed.userId)
+        assertTrue(controller.state.value.isGenerating)
+
+        controller.regenerate(seed.sessionId, CHARACTER, PERSONA)
+        testScheduler.advanceUntilIdle()
+
+        val timeline = sessionRepository.getMessagesForSession(seed.sessionId)
+        assertEquals(3, timeline.size, "Regenerating mid-stream must produce exactly one fresh response")
+        assertTrue(timeline.none { it.id == seed.assistantId }, "Old assistant message must be deleted")
+        assertEquals("New reply", timeline.last().content)
+        assertEquals(seed.userId, timeline.last().parentId)
+        assertFalse(controller.state.value.isGenerating)
+    }
+
+    @Test
+    fun truncatedStream_withoutTerminator_emitsPartialThenThrows() = runTest {
+        var requestCount = 0
+        val client = ChatClient(
+            HttpClient(MockEngine { request ->
+                requestCount++
+                respond(
+                    content = ByteReadChannel("""data: {"choices":[{"delta":{"content":"Partial"}}]}
+
+"""),
+                    status = HttpStatusCode.OK,
+                    headers = headersOf(HttpHeaders.ContentType, "text/event-stream")
+                )
+            }) {
+                install(ContentNegotiation) {
+                    json(Json { ignoreUnknownKeys = true; isLenient = true })
+                }
+            }
+        )
+        val tokens = mutableListOf<String>()
+        var thrown: Exception? = null
+        try {
+            client.streamChatRequest(
+                baseUrl = "https://example.com", apiKey = "k", model = "m",
+                messages = listOf(chat.donzi.localtavern.utils.ChatMessage(role = "user", content = "hi"))
+            ).collect { tokens.add(it) }
+        } catch (e: Exception) {
+            thrown = e
+        }
+
+        assertEquals(listOf("Partial"), tokens, "Partial tokens must still be delivered")
+        assertEquals("Response stream ended before completion.", thrown?.message,
+            "A stream without [DONE] must be reported as truncated")
+        assertEquals(1, requestCount, "A truncated stream must not be retried inside the client")
+    }
+
+    @Test
+    fun truncatedStream_recoversFullResponseReplacingPartial() = runTest {
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        val db = TestDb()
+        val sessionRepository = SessionRepository(db.database, testDispatcher)
+        val apiSettingsRepository = ApiSettingsRepository(db.database, testDispatcher)
+        apiSettingsRepository.insertApiConnection(
+            provider = "test", name = "Test", baseUrl = "https://example.com",
+            apiKey = "key", model = "model", isActive = true
+        )
+        var requestCount = 0
+        val client = ChatClient(
+            HttpClient(
+                MockEngine(
+                    MockEngineConfig().apply {
+                        dispatcher = testDispatcher
+                        addHandler {
+                            requestCount++
+                            if (requestCount == 1) {
+                                respond(
+                                    content = ByteReadChannel("""data: {"choices":[{"delta":{"content":"Partial"}}]}
+
+"""),
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf(HttpHeaders.ContentType, "text/event-stream")
+                                )
+                            } else {
+                                respond(
+                                    content = """{"choices":[{"message":{"content":"Full reply"}}]}""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf(HttpHeaders.ContentType, "application/json")
+                                )
+                            }
+                        }
+                    }
+                )
+            ) {
+                install(ContentNegotiation) {
+                    json(Json { ignoreUnknownKeys = true; isLenient = true })
+                }
+            }
+        )
+        val controller = ChatController(
+            sessionRepository, apiSettingsRepository, client,
+            CoroutineScope(testDispatcher + SupervisorJob()),
+            payloadDispatcher = testDispatcher
+        )
+        val seed = seedSession(db)
+
+        controller.refresh(seed.sessionId)
+        testScheduler.advanceUntilIdle()
+
+        controller.requestAiResponse(seed.sessionId, CHARACTER, PERSONA, seed.userId)
+        testScheduler.advanceUntilIdle()
+
+        val timeline = sessionRepository.getMessagesForSession(seed.sessionId)
+        assertEquals(3, timeline.size)
+        assertEquals("Full reply", timeline.last().content,
+            "The recovered response must replace the partial text, not append to it")
+        assertEquals(null, controller.state.value.errorMessage)
+        assertFalse(controller.state.value.isGenerating)
+    }
+
+    @Test
+    fun truncatedStream_withFailedRecovery_keepsPartialAndSurfacesError() = runTest {
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        val db = TestDb()
+        val sessionRepository = SessionRepository(db.database, testDispatcher)
+        val apiSettingsRepository = ApiSettingsRepository(db.database, testDispatcher)
+        apiSettingsRepository.insertApiConnection(
+            provider = "test", name = "Test", baseUrl = "https://example.com",
+            apiKey = "key", model = "model", isActive = true
+        )
+        var requestCount = 0
+        val client = ChatClient(
+            HttpClient(
+                MockEngine(
+                    MockEngineConfig().apply {
+                        dispatcher = testDispatcher
+                        addHandler {
+                            requestCount++
+                            if (requestCount == 1) {
+                                respond(
+                                    content = ByteReadChannel("""data: {"choices":[{"delta":{"content":"Partial"}}]}
+
+"""),
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf(HttpHeaders.ContentType, "text/event-stream")
+                                )
+                            } else {
+                                respond(
+                                    content = ByteReadChannel("""{"error": {"message": "boom"}}"""),
+                                    status = HttpStatusCode.InternalServerError,
+                                    headers = headersOf(HttpHeaders.ContentType, "application/json")
+                                )
+                            }
+                        }
+                    }
+                )
+            ) {
+                install(ContentNegotiation) {
+                    json(Json { ignoreUnknownKeys = true; isLenient = true })
+                }
+            }
+        )
+        val controller = ChatController(
+            sessionRepository, apiSettingsRepository, client,
+            CoroutineScope(testDispatcher + SupervisorJob()),
+            payloadDispatcher = testDispatcher
+        )
+        val seed = seedSession(db)
+
+        controller.refresh(seed.sessionId)
+        testScheduler.advanceUntilIdle()
+
+        controller.requestAiResponse(seed.sessionId, CHARACTER, PERSONA, seed.userId)
+        testScheduler.advanceUntilIdle()
+
+        val timeline = sessionRepository.getMessagesForSession(seed.sessionId)
+        assertEquals(3, timeline.size)
+        assertEquals("Partial", timeline.last().content,
+            "Partial tokens of a truncated stream must be kept, not deleted")
+        assertEquals("Response stream ended before completion.", controller.state.value.errorMessage)
+        assertFalse(controller.state.value.errorIsWarning)
     }
 }

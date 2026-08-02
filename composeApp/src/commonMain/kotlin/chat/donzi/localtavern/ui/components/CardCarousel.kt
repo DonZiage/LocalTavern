@@ -100,6 +100,18 @@ fun <T> CardCarousel(
     }
 
     LaunchedEffect(items) {
+        // A reload that re-issues the same order (e.g. a parameter write
+        // refreshing the DB) must not reset the list under a live drag.
+        if (draggedItemId != null) return@LaunchedEffect
+
+        val sameOrder = reorderableItems.size == items.size &&
+                reorderableItems.indices.all { i -> key(reorderableItems[i]) == key(items[i]) }
+        if (sameOrder) {
+            reorderableItems.clear()
+            reorderableItems.addAll(items)
+            return@LaunchedEffect
+        }
+
         val wasEmpty = reorderableItems.isEmpty()
         val newlyAddedItemIndex = if (wasEmpty) {
             -1
@@ -198,7 +210,10 @@ fun <T> CardCarousel(
             val horizontalPaddingDp = (this.maxWidth - itemWidthDp) / 2
             val itemWidthPx = with(density) { itemWidthDp.toPx() }
 
-            LaunchedEffect(initialIndex) {
+            // Also re-center when the list size changes: deleting an item after
+            // the active one would otherwise leave the active card off-center
+            // while the highlight moves to a different card.
+            LaunchedEffect(initialIndex, items.size) {
                 val size = items.size
                 if (size > 0) {
                     val targetIndex = initialIndex?.coerceIn(0, size - 1) ?: -1
@@ -335,7 +350,15 @@ fun <T> CardCarousel(
                     }
 
                     val onRequestCenter: () -> Unit = {
-                        scope.launch { scrollToIndexCentered(index) }
+                        // Resolve the item's CURRENT index by key: the captured
+                        // composition index may point at a different card after
+                        // a reorder (e.g. selection reorders the list first).
+                        scope.launch {
+                            val currentIdx = reorderableItems.indexOfFirst { key(it) == itemId }
+                            if (currentIdx != -1) {
+                                scrollToIndexCentered(currentIdx)
+                            }
+                        }
                     }
 
                     val itemModifier = Modifier

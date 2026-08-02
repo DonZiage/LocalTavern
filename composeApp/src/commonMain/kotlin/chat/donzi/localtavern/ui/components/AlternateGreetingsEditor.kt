@@ -43,6 +43,10 @@ fun AlternateGreetingsStrip(
     modifier: Modifier = Modifier
 ) {
     var editingIndex by remember { mutableStateOf<Int?>(null) }
+    // The index of an entry added in this session: cancelling its (blank)
+    // edit dialog prunes it, but cancelling the edit of a PRE-EXISTING blank
+    // greeting must not silently delete it.
+    var justAddedIndex by remember { mutableStateOf<Int?>(null) }
     val scrollState = rememberScrollState()
 
     // Reset a stale edit target after the list shrinks (deleted entries).
@@ -94,6 +98,7 @@ fun AlternateGreetingsStrip(
                         val newList = greetings + ""
                         onChange(newList)
                         editingIndex = newList.size - 1
+                        justAddedIndex = newList.size - 1
                     },
                     shape = RoundedCornerShape(16.dp),
                     color = MaterialTheme.colorScheme.primaryContainer,
@@ -118,18 +123,22 @@ fun AlternateGreetingsStrip(
                 initial = greetings[idx],
                 indexLabel = idx + 1,
                 onDismiss = {
-                    // Cancelling a freshly added empty entry must not leave a ghost pill.
-                    if (idx in greetings.indices && greetings[idx].isBlank()) {
+                    // Cancelling a freshly added empty entry must not leave a
+                    // ghost pill; a pre-existing blank greeting is preserved.
+                    if (justAddedIndex == idx && greetings[idx].isBlank()) {
                         onChange(greetings.toMutableList().also { it.removeAt(idx) })
                     }
+                    justAddedIndex = null
                     editingIndex = null
                 },
                 onSave = { newValue ->
                     onChange(greetings.toMutableList().also { it[idx] = newValue })
+                    justAddedIndex = null
                     editingIndex = null
                 },
                 onDelete = {
                     onChange(greetings.toMutableList().also { it.removeAt(idx) })
+                    justAddedIndex = null
                     editingIndex = null
                 }
             )

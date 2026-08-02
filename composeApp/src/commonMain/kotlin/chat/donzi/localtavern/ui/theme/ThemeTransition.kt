@@ -71,8 +71,10 @@ fun ThemeTransition(
 
     val triggerTransition: (Offset) -> Unit = { center ->
         // A toggle during an in-flight reveal restarts the transition instead
-        // of being silently dropped.
+        // of being silently dropped. Clear the previous snapshot so the OLD
+        // theme image cannot flash on screen while the new one is captured.
         transitionJob?.cancel()
+        snapshot = null
         animationCenter = center
         val targetDark = !isDark
         // Persist the new theme immediately so a transition cancelled mid-flight
@@ -86,6 +88,10 @@ fun ThemeTransition(
                 if (revealProgress.value < 1f) {
                     revealProgress.animateTo(1f, animationSpec = tween(180))
                 }
+                // The freshly enabled recording layer has not drawn anything
+                // yet; wait for the next frame so the capture is not empty
+                // (which silently skips the very first toggle's animation).
+                withFrameNanos { }
                 val captured = try {
                     graphicsLayer.toImageBitmap()
                 } catch (_: Exception) {

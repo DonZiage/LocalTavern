@@ -24,18 +24,24 @@ actual class DriverFactory {
         // schemas behind on app updates.
         val currentVersion = readUserVersion(driver)
         if (currentVersion < LocalTavernDB.Schema.version) {
-            val hasV1Tables = queryRow(driver, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'CharacterEntity';") > 0L
-            if (!hasV1Tables) {
+            val hasTables = queryRow(driver, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'CharacterEntity';") > 0L
+            if (!hasTables) {
                 LocalTavernDB.Schema.create(driver)
             } else {
-                // An existing database from an older release: its user_version
-                // was never stamped (0), but the tables already exist. Treat it
-                // as version 1 and run the migrations from there.
-                LocalTavernDB.Schema.migrate(
-                    driver,
-                    oldVersion = currentVersion.coerceAtLeast(1),
-                    newVersion = LocalTavernDB.Schema.version
-                )
+                // An existing database whose user_version was never stamped (0)
+                // cannot be assumed to be v1: it may already carry the v2
+                // round-trip columns (e.g. from an intermediate dev build).
+                // Re-running the v1 migration on a v2 schema would crash every
+                // launch with "duplicate column name". Detect the real schema
+                // from the columns instead of trusting the version number.
+                val actualOldVersion = currentVersion.coerceAtLeast(if (hasColumn(driver, "CharacterEntity", "systemPrompt")) 2L else 1L)
+                if (actualOldVersion < LocalTavernDB.Schema.version) {
+                    LocalTavernDB.Schema.migrate(
+                        driver,
+                        oldVersion = actualOldVersion,
+                        newVersion = LocalTavernDB.Schema.version
+                    )
+                }
             }
             writeUserVersion(driver, LocalTavernDB.Schema.version)
         }
@@ -64,4 +70,9 @@ actual class DriverFactory {
             },
             parameters = 0
         ).value
+
+    private fun hasColumn(driver: SqlDriver, table: String, column: String): Boolean =
+        // pragma_table_info is a table-valued function available since
+        // SQLite 3.16; table/column names are compile-time constants.
+        queryRow(driver, "SELECT count(*) FROM pragma_table_info('$table') WHERE name = '$column';") > 0L
 }

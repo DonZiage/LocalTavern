@@ -31,15 +31,28 @@ actual fun rememberImagePickerLauncher(
         contract = ActivityResultContracts.PickMultipleVisualMedia(ImageSanitizer.MAX_PICKED_IMAGES)
     ) { uris ->
         scope.launch {
+            // A cancelled pick (or one whose files all failed to load) must
+            // not invoke the callback: callers that REPLACE the current image
+            // set (e.g. the character editor's avatar) would otherwise wipe
+            // the existing image on a no-op pick.
+            if (uris.isEmpty()) return@launch
             val byteArrays = withContext(Dispatchers.IO) {
                 val rawImages = uris.mapNotNull { uri ->
-                    context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                        inputStream.readBytes()
+                    try {
+                        // A per-URI guard: expired grants and IO failures on
+                        // one photo must not kill the whole pick.
+                        context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                            inputStream.readBytes()
+                        }
+                    } catch (e: Exception) {
+                        null
                     }
                 }
                 ImageSanitizer.sanitize(rawImages, preserveOriginal)
             }
-            currentOnImagesPicked(byteArrays)
+            if (byteArrays.isNotEmpty()) {
+                currentOnImagesPicked(byteArrays)
+            }
         }
     }
 
