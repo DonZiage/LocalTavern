@@ -49,7 +49,9 @@ class ImageCodecTest {
         val gif = byteArrayOf('G'.code.toByte(), 'I'.code.toByte(), 'F'.code.toByte(), '8'.code.toByte())
         assertEquals("image/gif", detectMimeType(gif))
 
-        assertEquals("image/jpeg", detectMimeType(ByteArray(2)))
+        // Unknown formats must report null instead of lying that they are JPEG,
+        // so callers can drop them from vision payloads.
+        assertEquals(null, detectMimeType(ByteArray(2)))
     }
 
     @Test
@@ -64,11 +66,52 @@ class ImageCodecTest {
         }
         assertEquals("image/heic", detectMimeType(heif))
 
-        // A random ftyp brand is not an image and stays at the JPEG default.
+        // A random ftyp brand is not an image and reports no media type.
         val mp4 = ByteArray(16).also {
             "ftypisom".encodeToByteArray().copyInto(it, 4)
         }
-        assertEquals("image/jpeg", detectMimeType(mp4))
+        assertEquals(null, detectMimeType(mp4))
+    }
+
+    @Test
+    fun readImageDimensions_parsesHeadersWithoutDecoding() {
+        // PNG: IHDR width/height live at offsets 16..23 (big-endian).
+        val png = ByteArray(24).also {
+            byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A).copyInto(it, 0)
+            it[16] = 0
+            it[17] = 0
+            it[18] = 4
+            it[19] = 0.toByte()
+            it[20] = 0
+            it[21] = 0
+            it[22] = 2
+            it[23] = 0x80.toByte()
+        }
+        assertEquals(1024 to 640, readImageDimensions(png))
+
+        // JPEG: SOF0 segment carries height then width (big-endian).
+        val jpeg = byteArrayOf(
+            0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(), 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46,
+            0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+            0xFF.toByte(), 0xC0.toByte(), 0x00, 0x11, 0x08, 0x02, 0x58, 0x04, 0x00, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01
+        )
+        assertEquals(1024 to 600, readImageDimensions(jpeg))
+
+        // WebP: VP8X extended header stores (width-1)/(height-1) little-endian.
+        val webp = ByteArray(30).also {
+            "RIFF".encodeToByteArray().copyInto(it, 0)
+            "WEBP".encodeToByteArray().copyInto(it, 8)
+            "VP8X".encodeToByteArray().copyInto(it, 12)
+            it[24] = 0x7F.toByte()
+            it[25] = 0x03
+            it[27] = 0x3F
+            it[28] = 0x01
+        }
+        assertEquals(896 to 320, readImageDimensions(webp))
+
+        // Garbage and truncated headers report null.
+        assertEquals(null, readImageDimensions(ByteArray(8)))
+        assertEquals(null, readImageDimensions(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte())))
     }
 
     @Test

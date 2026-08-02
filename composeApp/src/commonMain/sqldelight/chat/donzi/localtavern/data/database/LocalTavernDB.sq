@@ -56,7 +56,9 @@ CREATE TABLE MessageEntity (
     isActivePath INTEGER NOT NULL DEFAULT 1,
     updatedAt INTEGER NOT NULL DEFAULT 0,
     isDeleted INTEGER NOT NULL DEFAULT 0,
-    imageData BLOB
+    imageData BLOB,
+    reasoningText TEXT,
+    costEstimate REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_message_active_timeline ON MessageEntity(sessionId, isActivePath, timestamp ASC);
@@ -81,6 +83,34 @@ CREATE TABLE ApiConnection (
     responseLimit INTEGER NOT NULL DEFAULT 0,
     displayOrder INTEGER NOT NULL DEFAULT 0,
     timeoutLimit INTEGER NOT NULL DEFAULT 60,
+    reasoningOverride INTEGER NOT NULL DEFAULT 0,
+    updatedAt INTEGER NOT NULL DEFAULT 0,
+    isDeleted INTEGER NOT NULL DEFAULT 0
+);
+
+-- User overrides for the bundled pricing catalog. A row whose modelPattern
+-- matches a model name wins over the built-in price for that provider/model.
+CREATE TABLE ModelPricing (
+    provider TEXT NOT NULL,
+    modelPattern TEXT NOT NULL,
+    inputPerMillion REAL NOT NULL,
+    outputPerMillion REAL NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'USD',
+    PRIMARY KEY (provider, modelPattern)
+);
+
+-- Trusted sync peers (device-to-device pairing). Keys and identity are
+-- managed by the sync layer; the table is the durable trust store. The
+-- X25519 public key is the pairing identity and the sync authentication
+-- factor (per-exchange ephemeral keys provide the secrecy).
+CREATE TABLE SyncPeer (
+    deviceId TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    publicKey BLOB,
+    lastKnownAddress TEXT,
+    receivedCursor INTEGER NOT NULL DEFAULT 0,
+    peerReceivedCursor INTEGER NOT NULL DEFAULT 0,
+    lastSyncAt INTEGER NOT NULL DEFAULT 0,
     updatedAt INTEGER NOT NULL DEFAULT 0,
     isDeleted INTEGER NOT NULL DEFAULT 0
 );
@@ -138,6 +168,12 @@ SELECT * FROM ApiConnection WHERE isDeleted = 0 ORDER BY displayOrder ASC;
 
 selectActiveApiConnection:
 SELECT * FROM ApiConnection WHERE isActive = 1 AND isDeleted = 0 LIMIT 1;
+
+selectApiConnectionById:
+SELECT * FROM ApiConnection WHERE id = ? AND isDeleted = 0 LIMIT 1;
+
+updateApiConnectionApiKey:
+UPDATE ApiConnection SET apiKey = ?, updatedAt = ? WHERE id = ?;
 
 getAppSettings:
 SELECT * FROM AppSettings WHERE id = 1;
@@ -199,7 +235,7 @@ deleteSession:
 UPDATE ChatSession SET isDeleted = 1, updatedAt = ? WHERE id = ?;
 
 insertMessageWithParent:
-INSERT INTO MessageEntity(id, sessionId, role, content, timestamp, parentId, isActivePath, updatedAt, isDeleted, imageData) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO MessageEntity(id, sessionId, role, content, timestamp, parentId, isActivePath, updatedAt, isDeleted, imageData, reasoningText, costEstimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 deactivateSiblings:
 UPDATE MessageEntity SET isActivePath = 0, updatedAt = ? WHERE sessionId = ? AND parentId IS ? AND id != ?;
@@ -219,6 +255,15 @@ SELECT COUNT(*) FROM MessageEntity WHERE sessionId = ?;
 updateMessageContent:
 UPDATE MessageEntity SET content = ?, updatedAt = ? WHERE id = ?;
 
+updateMessageReasoning:
+UPDATE MessageEntity SET reasoningText = ?, updatedAt = ? WHERE id = ?;
+
+updateMessageCostEstimate:
+UPDATE MessageEntity SET costEstimate = ?, updatedAt = ? WHERE id = ?;
+
+updateMessageContentAndReasoning:
+UPDATE MessageEntity SET content = ?, reasoningText = ?, updatedAt = ? WHERE id = ?;
+
 updateMessageImage:
 UPDATE MessageEntity SET imageData = ?, updatedAt = ? WHERE id = ?;
 
@@ -231,9 +276,9 @@ UPDATE MessageEntity SET isDeleted = 1, updatedAt = ? WHERE sessionId = ?;
 insertApiConnection:
 INSERT INTO ApiConnection(
     id, provider, name, baseUrl, apiKey, model, isActive, isChatCompletion, lastUsed,
-    temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit, displayOrder, timeoutLimit, updatedAt, isDeleted
+    temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit, displayOrder, timeoutLimit, reasoningOverride, updatedAt, isDeleted
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 updateApiConnection:
 UPDATE ApiConnection
@@ -253,6 +298,7 @@ SET provider = ?,
     responseLimit = ?,
     displayOrder = ?,
     timeoutLimit = ?,
+    reasoningOverride = ?,
     updatedAt = ?
 WHERE id = ?;
 
@@ -303,3 +349,186 @@ SELECT * FROM CharacterEntity WHERE id = ? AND isDeleted = 0 LIMIT 1;
 
 selectMessageById:
 SELECT * FROM MessageEntity WHERE id = ? AND isDeleted = 0;
+
+-- ==========================================
+-- Model Pricing
+-- ==========================================
+
+selectAllModelPricing:
+SELECT * FROM ModelPricing ORDER BY provider ASC, modelPattern ASC;
+
+selectModelPricing:
+SELECT * FROM ModelPricing WHERE provider = ? AND modelPattern = ?;
+
+insertModelPricing:
+INSERT OR REPLACE INTO ModelPricing(provider, modelPattern, inputPerMillion, outputPerMillion, currency)
+VALUES (?, ?, ?, ?, ?);
+
+updateModelPricing:
+UPDATE ModelPricing
+SET inputPerMillion = ?,
+    outputPerMillion = ?,
+    currency = ?
+WHERE provider = ? AND modelPattern = ?;
+
+deleteModelPricing:
+DELETE FROM ModelPricing WHERE provider = ? AND modelPattern = ?;
+
+-- ==========================================
+-- Sync Peers
+-- ==========================================
+
+selectAllSyncPeers:
+SELECT * FROM SyncPeer WHERE isDeleted = 0 ORDER BY name ASC;
+
+selectSyncPeer:
+SELECT * FROM SyncPeer WHERE deviceId = ? AND isDeleted = 0 LIMIT 1;
+
+selectSyncPeerAny:
+SELECT * FROM SyncPeer WHERE deviceId = ? LIMIT 1;
+
+insertSyncPeer:
+INSERT INTO SyncPeer(deviceId, name, publicKey, lastKnownAddress, receivedCursor, peerReceivedCursor, lastSyncAt, updatedAt, isDeleted)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- Re-pairing a peer that was previously removed must revive the trust row:
+-- isDeleted is reset so app-facing queries see it again.
+updateSyncPeer:
+UPDATE SyncPeer
+SET name = ?,
+    publicKey = ?,
+    lastKnownAddress = ?,
+    receivedCursor = ?,
+    peerReceivedCursor = ?,
+    lastSyncAt = ?,
+    updatedAt = ?,
+    isDeleted = 0
+WHERE deviceId = ?;
+
+updateSyncPeerCursors:
+UPDATE SyncPeer SET receivedCursor = ?, peerReceivedCursor = ?, lastSyncAt = ?, updatedAt = ? WHERE deviceId = ?;
+
+updateSyncPeerAddress:
+UPDATE SyncPeer SET lastKnownAddress = ?, updatedAt = ? WHERE deviceId = ?;
+
+deleteSyncPeer:
+UPDATE SyncPeer SET isDeleted = 1, updatedAt = ? WHERE deviceId = ?;
+
+-- Used when the device rotates its sync identity key: every pairing is
+-- invalidated by the new key, so the local trust store is cleared.
+deleteAllSyncPeers:
+UPDATE SyncPeer SET isDeleted = 1, updatedAt = ? WHERE isDeleted = 0;
+
+-- ==========================================
+-- Sync Deltas (include tombstones: no isDeleted filter)
+-- ==========================================
+
+selectCharacterDeltas:
+SELECT * FROM CharacterEntity WHERE updatedAt > ?;
+
+selectPersonaDeltas:
+SELECT * FROM PersonaEntity WHERE updatedAt > ?;
+
+selectSessionDeltas:
+SELECT * FROM ChatSession WHERE updatedAt > ?;
+
+selectMessageDeltas:
+SELECT * FROM MessageEntity WHERE updatedAt > ?;
+
+selectApiConnectionDeltas:
+SELECT * FROM ApiConnection WHERE updatedAt > ?;
+
+selectPromptBlockDeltas:
+SELECT * FROM PromptBlockEntity WHERE updatedAt > ?;
+
+-- ==========================================
+-- Sync upserts (full-row writes, LWW resolved in code)
+-- ==========================================
+
+selectCharacterByIdAny:
+SELECT * FROM CharacterEntity WHERE id = ? LIMIT 1;
+
+selectPersonaByIdAny:
+SELECT * FROM PersonaEntity WHERE id = ? LIMIT 1;
+
+selectSessionByIdAny:
+SELECT * FROM ChatSession WHERE id = ? LIMIT 1;
+
+selectMessageByIdAny:
+SELECT * FROM MessageEntity WHERE id = ? LIMIT 1;
+
+selectApiConnectionByIdAny:
+SELECT * FROM ApiConnection WHERE id = ? LIMIT 1;
+
+selectPromptBlockByIdAny:
+SELECT * FROM PromptBlockEntity WHERE id = ? LIMIT 1;
+
+upsertCharacterFull:
+UPDATE CharacterEntity
+SET name = ?, description = ?, personality = ?, scenario = ?, firstMes = ?,
+    mesExample = ?, creatorNotes = ?, altGreetings = ?, avatarData = ?,
+    isAssistant = ?, updatedAt = ?, isDeleted = ?, systemPrompt = ?,
+    postHistoryInstructions = ?, creator = ?, characterVersion = ?, tags = ?,
+    extensions = ?, characterBook = ?
+WHERE id = ?;
+
+insertCharacterFull:
+INSERT INTO CharacterEntity(id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant, updatedAt, isDeleted, systemPrompt, postHistoryInstructions, creator, characterVersion, tags, extensions, characterBook)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+upsertPersonaFull:
+UPDATE PersonaEntity
+SET name = ?, description = ?, avatarData = ?, updatedAt = ?, isDeleted = ?
+WHERE id = ?;
+
+insertPersonaFull:
+INSERT INTO PersonaEntity(id, name, description, avatarData, updatedAt, isDeleted)
+VALUES (?, ?, ?, ?, ?, ?);
+
+upsertSessionFull:
+UPDATE ChatSession
+SET characterId = ?, personaId = ?, title = ?, lastTimestamp = ?,
+    currentMessageId = ?, parentSessionId = ?, updatedAt = ?, isDeleted = ?
+WHERE id = ?;
+
+insertSessionFull:
+INSERT INTO ChatSession(id, characterId, personaId, title, lastTimestamp, currentMessageId, parentSessionId, updatedAt, isDeleted)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+upsertMessageFull:
+UPDATE MessageEntity
+SET sessionId = ?, role = ?, content = ?, timestamp = ?, parentId = ?,
+    isActivePath = ?, updatedAt = ?, isDeleted = ?, imageData = ?,
+    reasoningText = ?, costEstimate = ?
+WHERE id = ?;
+
+insertMessageFull:
+INSERT INTO MessageEntity(id, sessionId, role, content, timestamp, parentId, isActivePath, updatedAt, isDeleted, imageData, reasoningText, costEstimate)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+upsertApiConnectionFull:
+UPDATE ApiConnection
+SET provider = ?, name = ?, baseUrl = ?, apiKey = ?, model = ?,
+    isActive = ?, isChatCompletion = ?, lastUsed = ?, temperature = ?,
+    topP = ?, topK = ?, presencePenalty = ?, frequencyPenalty = ?,
+    contextLimit = ?, responseLimit = ?, displayOrder = ?, timeoutLimit = ?,
+    reasoningOverride = ?, updatedAt = ?, isDeleted = ?
+WHERE id = ?;
+
+insertApiConnectionFull:
+INSERT INTO ApiConnection(
+    id, provider, name, baseUrl, apiKey, model, isActive, isChatCompletion, lastUsed,
+    temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit,
+    displayOrder, timeoutLimit, reasoningOverride, updatedAt, isDeleted
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+upsertPromptBlockFull:
+UPDATE PromptBlockEntity
+SET name = ?, template = ?, isEnabled = ?, isCustom = ?, displayOrder = ?,
+    updatedAt = ?, isDeleted = ?
+WHERE id = ?;
+
+insertPromptBlockFull:
+INSERT INTO PromptBlockEntity(id, name, template, isEnabled, isCustom, displayOrder, updatedAt, isDeleted)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);

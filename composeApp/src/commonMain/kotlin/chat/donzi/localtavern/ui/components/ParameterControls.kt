@@ -1,8 +1,10 @@
 package chat.donzi.localtavern.ui.components
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -13,6 +15,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.domain.ApiConfig
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
+import chat.donzi.localtavern.data.database.PricingRepository
 import chat.donzi.localtavern.domain.PromptBlock
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -23,6 +26,7 @@ import kotlin.math.roundToInt
 fun ParameterControls(
     connection: ApiConfig,
     apiSettingsRepository: ApiSettingsRepository,
+    pricingRepository: PricingRepository,
     onUpdate: (ApiConfig) -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -225,6 +229,72 @@ fun ParameterControls(
                         persistParams()
                     }
                 )
+
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider(modifier = Modifier.alpha(0.3f))
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    "Reasoning Mode",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "Auto detects o-series / R1 / reasoner models. On captures and stores the chain of thought.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val reasoningOptions = listOf(
+                        "Auto" to 0,
+                        "On" to 1,
+                        "Off" to 2
+                    )
+                    reasoningOptions.forEachIndexed { index, (label, value) ->
+                        val selected = workingConnection.reasoningOverride == value
+                        FilterChip(
+                            selected = selected,
+                            onClick = {
+                                workingConnection = workingConnection.copy(reasoningOverride = value)
+                                persistParams()
+                            },
+                            label = { Text(label) },
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider(modifier = Modifier.alpha(0.3f))
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    "Cost Estimation",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "Heuristic estimate based on the bundled price list. Set a custom price per model here.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                var showPricingDialog by remember { mutableStateOf(false) }
+                OutlinedButton(onClick = { showPricingDialog = true }) {
+                    Text("Model Pricing…")
+                }
+                if (showPricingDialog) {
+                    ModelPricingDialog(
+                        connection = workingConnection,
+                        pricingRepository = pricingRepository,
+                        onDismiss = { showPricingDialog = false },
+                        onSaved = { onUpdate(workingConnection) }
+                    )
+                }
             }
         }
     }

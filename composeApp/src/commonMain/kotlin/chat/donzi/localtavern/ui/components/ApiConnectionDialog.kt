@@ -10,6 +10,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import chat.donzi.localtavern.data.network.ChatClient
+import chat.donzi.localtavern.data.network.ConnectionProbe
 import chat.donzi.localtavern.data.network.ModelInfo
 import chat.donzi.localtavern.domain.ApiConfig
 import chat.donzi.localtavern.utils.fuzzyScore
@@ -50,6 +51,10 @@ fun ApiConnectionDialog(
     var isLoadingModels by remember { mutableStateOf(false) }
     var isKeyValid by remember { mutableStateOf(false) }
     var lastValidatedRequest by remember { mutableStateOf<ValidationRequest?>(null) }
+    // Last probe outcome, so the UI can tell an auth rejection apart from an
+    // unreachable endpoint instead of blaming the key for a network failure.
+    var probeResult by remember { mutableStateOf<ConnectionProbe?>(null) }
+    var connectionError by remember { mutableStateOf<String?>(null) }
 
     var modelSearch by remember { mutableStateOf(initialConnection?.model ?: "") }
     var selectedModelFullId by remember { mutableStateOf(initialConnection?.model ?: "") }
@@ -86,6 +91,8 @@ fun ApiConnectionDialog(
 
         if (selectedProvider.isEmpty() || (keyToTest.length <= 5 && isCloudInference) || effectiveBaseUrl.isBlank()) {
             isKeyValid = false
+            probeResult = null
+            connectionError = null
             allModels = emptyList()
             lastValidatedRequest = null
             isLoadingModels = false
@@ -101,18 +108,26 @@ fun ApiConnectionDialog(
         // A new (possibly edited) key is being validated: the stale result of
         // the previous request must not keep Save enabled in the meantime.
         isKeyValid = false
+        probeResult = null
+        connectionError = null
 
         delay(800)
         isLoadingModels = true
         try {
-            val valid = chatClient.checkStatus(effectiveBaseUrl, keyToTest, selectedProvider)
-            if (valid) {
+            val probe = chatClient.probeConnection(effectiveBaseUrl, keyToTest, selectedProvider)
+            probeResult = probe
+            if (probe == ConnectionProbe.Ok) {
                 // The key is confirmed working even if the model list fetch
                 // fails below; that failure must not disable Save for a valid
                 // key (the model can still be typed in manually).
                 isKeyValid = true
                 allModels = chatClient.fetchModels(effectiveBaseUrl, keyToTest, selectedProvider)
             } else {
+                isKeyValid = false
+                connectionError = when (probe) {
+                    ConnectionProbe.AuthFailed -> "The API key was rejected. Check the key and try again."
+                    else -> "Could not reach the API endpoint. Check the URL and your network connection."
+                }
                 allModels = emptyList()
             }
             lastValidatedRequest = request
@@ -122,6 +137,8 @@ fun ApiConnectionDialog(
             // Status check failed (endpoint unreachable, network hiccup): the
             // key cannot be confirmed valid. isKeyValid was already reset
             // above for this request.
+            probeResult = ConnectionProbe.Unreachable
+            connectionError = "Could not reach the API endpoint. Check the URL and your network connection."
             allModels = emptyList()
         } finally {
             // Only the newest validation request may clear the spinner; a
@@ -253,12 +270,23 @@ fun ApiConnectionDialog(
                         placeholder = { Text(maskedApiKey) },
                         modifier = Modifier.fillMaxWidth(),
                         visualTransformation = PasswordVisualTransformation(),
-                        isError = isCloudInference && apiKey.isNotEmpty() && !isKeyValid && !isLoadingModels,
+                        isError = isCloudInference && apiKey.isNotEmpty() && probeResult == ConnectionProbe.AuthFailed,
                         trailingIcon = {
                             if (isLoadingModels) CircularProgressIndicator(modifier = Modifier.size(24.dp))
                         },
                         singleLine = true
                     )
+
+                    // Distinguish a rejected key from an unreachable endpoint so
+                    // the user fixes the right thing.
+                    if (connectionError != null) {
+                        Text(
+                            text = connectionError.orEmpty(),
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
 
                     if (isKeyValid || !isCloudInference || selectedModelFullId.isNotEmpty()) {
                         ModelPicker(

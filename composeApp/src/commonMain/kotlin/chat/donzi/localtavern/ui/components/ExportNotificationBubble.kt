@@ -33,7 +33,10 @@ fun ExportNotificationBubble(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var swipeOffsetX by remember(visible) { mutableStateOf(0f) }
+    // A second export while the bubble is already visible must not keep the
+    // previous notification's partial swipe offset (the pointer handler below
+    // is keyed the same way so a stale drag cannot survive into the new one).
+    var swipeOffsetX by remember(visible, exportedDir) { mutableStateOf(0f) }
     val currentOnDismiss by rememberUpdatedState(onDismiss)
     val animatedSwipeOffsetX by animateFloatAsState(
         targetValue = swipeOffsetX,
@@ -52,7 +55,7 @@ fun ExportNotificationBubble(
         Card(
             modifier = Modifier
                 .offset { IntOffset(animatedSwipeOffsetX.roundToInt(), 0) }
-                .pointerInput(Unit) {
+                .pointerInput(visible, exportedDir) {
                     detectHorizontalDragGestures(
                         onDragEnd = {
                             if (abs(swipeOffsetX) > 150f) {

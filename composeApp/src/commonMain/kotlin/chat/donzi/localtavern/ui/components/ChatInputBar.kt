@@ -46,7 +46,7 @@ fun ChatInputBar(
     onTextValueChange: (TextFieldValue) -> Unit,
     attachedImages: List<ByteArray>,
     onAttachedImagesChange: (List<ByteArray>) -> Unit,
-    onSendMessage: (String, List<ByteArray>) -> Unit,
+    onSendMessage: (String, List<ByteArray>) -> Boolean,
     onRegenerate: () -> Unit,
     canRegenerate: Boolean,
     onEnterSelectMode: () -> Unit,
@@ -67,9 +67,12 @@ fun ChatInputBar(
 
     fun handleSend() {
         if ((textValue.text.isNotBlank() || attachedImages.isNotEmpty()) && !isGenerating) {
-            onSendMessage(textValue.text, attachedImages)
-            onTextValueChange(TextFieldValue(""))
-            onAttachedImagesChange(emptyList())
+            // Clear the draft only when the send was actually accepted; a
+            // refused send (e.g. no API connection) must keep the typed text.
+            if (onSendMessage(textValue.text, attachedImages)) {
+                onTextValueChange(TextFieldValue(""))
+                onAttachedImagesChange(emptyList())
+            }
         }
     }
 

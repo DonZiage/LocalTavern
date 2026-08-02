@@ -2,25 +2,38 @@ package chat.donzi.localtavern.data.database
 
 import chat.donzi.localtavern.domain.ApiConfig
 import chat.donzi.localtavern.domain.PromptBlock
+import chat.donzi.localtavern.data.security.ApiKeyCipher
+import app.cash.sqldelight.coroutines.asFlow
+import app.cash.sqldelight.coroutines.mapToOneOrNull
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 
 class ApiSettingsRepository(
     database: LocalTavernDB,
+    private val apiKeyCipher: ApiKeyCipher,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) : BaseRepository(database) {
 
+    // Live stream of the active connection so UI checks (e.g. refusing a send
+    // without a profile) never rely on a stale snapshot loaded once.
+    fun observeActiveApiConnection(): Flow<ApiConfig?> =
+        queries.selectActiveApiConnection().asFlow().mapToOneOrNull(ioDispatcher)
+            .map { it?.toDomain()?.withDecryptedKey() }
+
     suspend fun getAllApiConnections(): List<ApiConfig> = withContext(ioDispatcher) {
-        queries.selectAllApiConnections().executeAsList().map { it.toDomain() }
+        queries.selectAllApiConnections().executeAsList().map { it.toDomain().withDecryptedKey() }
     }
 
     suspend fun insertApiConnection(
         provider: String, name: String, baseUrl: String?, apiKey: String?, model: String?,
         isActive: Boolean = false, isChatCompletion: Boolean = true, temperature: Double = 1.0,
         topP: Double = 1.0, topK: Long = 0, presencePenalty: Double = 0.0, frequencyPenalty: Double = 0.0,
-        contextLimit: Long = 4096, responseLimit: Long = 1024, timeoutLimit: Long = 60
+        contextLimit: Long = 4096, responseLimit: Long = 1024, timeoutLimit: Long = 60,
+        reasoningOverride: Int = 0
     ): String = withContext(ioDispatcher) {
         val newId = generateUuid()
         val now = currentTimeMillis()
@@ -40,11 +53,12 @@ class ApiSettingsRepository(
                 queries.setActiveApiConnection(updatedAt = now)
             }
             queries.insertApiConnection(
-                id = newId, provider = provider, name = name, baseUrl = baseUrl, apiKey = apiKey, model = model,
+                id = newId, provider = provider, name = name, baseUrl = baseUrl, apiKey = apiKeyCipher.encryptForStorage(apiKey), model = model,
                 isActive = if (shouldActivate) 1L else 0L, isChatCompletion = if (isChatCompletion) 1L else 0L,
                 lastUsed = if (shouldActivate) now else 0L, temperature = temperature, topP = topP, topK = topK,
                 presencePenalty = presencePenalty, frequencyPenalty = frequencyPenalty, contextLimit = contextLimit,
                 responseLimit = responseLimit, displayOrder = nextOrder, timeoutLimit = timeoutLimit,
+                reasoningOverride = reasoningOverride.toLong(),
                 updatedAt = now, isDeleted = 0L
             )
             newId
@@ -68,16 +82,27 @@ class ApiSettingsRepository(
         contextLimit = connection.contextLimit,
         responseLimit = connection.responseLimit,
         displayOrder = connection.displayOrder,
-        timeoutLimit = connection.timeoutLimit
+        timeoutLimit = connection.timeoutLimit,
+        reasoningOverride = connection.reasoningOverride
     )
 
     suspend fun updateApiConnection(
         id: String, provider: String, name: String, baseUrl: String?, apiKey: String?, model: String?,
         isActive: Boolean, isChatCompletion: Boolean, lastUsed: Long? = null, temperature: Double,
         topP: Double, topK: Long, presencePenalty: Double, frequencyPenalty: Double, contextLimit: Long,
-        responseLimit: Long, displayOrder: Long, timeoutLimit: Long
+        responseLimit: Long, displayOrder: Long, timeoutLimit: Long,
+        reasoningOverride: Int = 0
     ) = withContext(ioDispatcher) {
         val now = currentTimeMillis()
+        // A stored key that is unchanged (or unreadable while locked) must be
+        // carried forward untouched; only a genuinely new key is re-encrypted.
+        val storedRow = queries.selectApiConnectionById(id).executeAsOneOrNull()
+        val storedKey = storedRow?.apiKey
+        val finalKey = if (apiKey == null || apiKey == apiKeyCipher.decryptFromStorage(storedKey)) {
+            storedKey
+        } else {
+            apiKeyCipher.encryptForStorage(apiKey)
+        }
         // Activating a connection must atomically deactivate any other one;
         // the update and the lastUsed write share the same transaction so a
         // failure between them cannot leave the profile half-written.
@@ -86,11 +111,12 @@ class ApiSettingsRepository(
                 queries.setActiveApiConnection(updatedAt = now)
             }
             queries.updateApiConnection(
-                provider = provider, name = name, baseUrl = baseUrl, apiKey = apiKey, model = model,
+                provider = provider, name = name, baseUrl = baseUrl, apiKey = finalKey, model = model,
                 isActive = if (isActive) 1L else 0L, isChatCompletion = if (isChatCompletion) 1L else 0L,
                 temperature = temperature, topP = topP, topK = topK,
                 presencePenalty = presencePenalty, frequencyPenalty = frequencyPenalty, contextLimit = contextLimit,
                 responseLimit = responseLimit, displayOrder = displayOrder, timeoutLimit = timeoutLimit,
+                reasoningOverride = reasoningOverride.toLong(),
                 updatedAt = now, id = id
             )
             // Only touch lastUsed when explicitly provided or when activating the
@@ -100,6 +126,40 @@ class ApiSettingsRepository(
             }
         }
     }
+
+    // Re-encrypts every stored API key with the current crypto state. Called
+    // after the desktop passphrase is set (or changed) so keys that were
+    // stored as plaintext are protected by the new key.
+    suspend fun reencryptAllApiKeys() = withContext(ioDispatcher) {
+        val now = currentTimeMillis()
+        database.transaction {
+            queries.selectAllApiConnections().executeAsList().forEach { row ->
+                val decrypted = apiKeyCipher.decryptFromStorage(row.apiKey)
+                val reEncrypted = apiKeyCipher.encryptForStorage(decrypted)
+                if (reEncrypted != row.apiKey) {
+                    queries.updateApiConnectionApiKey(apiKey = reEncrypted, updatedAt = now, id = row.id)
+                }
+            }
+        }
+    }
+
+    // Stores every API key as plaintext. Only used when REMOVING desktop
+    // protection, and only valid while the crypto is unlocked (so decryption
+    // actually succeeds); the passphrase is forgotten right after.
+    suspend fun decryptAllApiKeysToPlaintext() = withContext(ioDispatcher) {
+        val now = currentTimeMillis()
+        database.transaction {
+            queries.selectAllApiConnections().executeAsList().forEach { row ->
+                val decrypted = apiKeyCipher.decryptFromStorage(row.apiKey)
+                if (decrypted != row.apiKey) {
+                    queries.updateApiConnectionApiKey(apiKey = decrypted, updatedAt = now, id = row.id)
+                }
+            }
+        }
+    }
+
+    private fun ApiConfig.withDecryptedKey(): ApiConfig =
+        if (apiKey == null) this else copy(apiKey = apiKeyCipher.decryptFromStorage(apiKey))
 
     suspend fun deleteApiConnection(id: String) = withContext(ioDispatcher) {
         queries.deleteApiConnection(
@@ -124,7 +184,7 @@ class ApiSettingsRepository(
         // No silent fallback to the last-used profile: a connection is active
         // only when explicitly marked as such, so the UI never claims a
         // deactivated profile is in use.
-        queries.selectActiveApiConnection().executeAsOneOrNull()?.toDomain()
+        queries.selectActiveApiConnection().executeAsOneOrNull()?.toDomain()?.withDecryptedKey()
     }
 
     suspend fun updateApiConnectionDisplayOrders(orderedIds: List<String>): Unit = withContext(ioDispatcher) {

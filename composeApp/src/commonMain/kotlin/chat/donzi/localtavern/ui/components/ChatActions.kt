@@ -3,7 +3,9 @@ package chat.donzi.localtavern.ui.components
 import chat.donzi.localtavern.domain.Message
 
 data class ChatActions(
-    val onSendMessage: (String, List<ByteArray>) -> Unit,
+    // Returns true when the send was accepted (message committed to the
+    // session); false when it was refused, so the input keeps the draft.
+    val onSendMessage: (String, List<ByteArray>) -> Boolean,
     val onEditMessage: (String, String, List<ByteArray>) -> Unit,
     val onDeleteMessage: (String) -> Unit,
     val onDeleteMessages: (List<String>) -> Unit,

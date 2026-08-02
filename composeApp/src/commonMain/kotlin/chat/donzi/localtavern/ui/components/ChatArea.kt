@@ -1,46 +1,20 @@
 package chat.donzi.localtavern.ui.components
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.filled.AccountBox
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.key.*
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import chat.donzi.localtavern.controller.ChatUiState
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Message
-import chat.donzi.localtavern.utils.ContextManager
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
-import kotlinx.coroutines.launch
-
-private enum class OnboardingStep {
-    API, PERSONA, CHARACTER
-}
 
 @Composable
 fun ChatArea(
@@ -57,16 +31,8 @@ fun ChatArea(
     onEnterSelectMode: () -> Unit = {},
     actions: ChatActions
 ) {
-    val messages = chatState.messages
-    val siblingsMap = chatState.siblingsMap
-    val isGenerating = chatState.isGenerating
-
     var messageToDelete by remember { mutableStateOf<Message?>(null) }
     var imageTargetMessageId by remember { mutableStateOf<String?>(null) }
-
-    val coroutineScope = rememberCoroutineScope()
-
-    val clipboardManager = LocalClipboardManager.current
 
     val bubbleImagePicker = rememberImagePickerLauncher(
         onImagesPicked = { imagesList ->
@@ -80,456 +46,54 @@ fun ChatArea(
     )
 
     Column(modifier = Modifier.fillMaxSize()) {
-        if (activeCharacter == null && messages.isEmpty()) {
-            Box(
+        if (activeCharacter == null && chatState.messages.isEmpty()) {
+            ChatOnboarding(
+                hasApiProfile = hasApiProfile,
+                hasPersona = hasPersona,
+                hasCharacter = hasCharacter,
+                onNavigateToSettings = actions.onNavigateToSettings,
+                onNavigateToPersonas = actions.onNavigateToPersonas,
+                onNavigateToCharacters = actions.onNavigateToCharacters,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(24.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                    modifier = Modifier.fillMaxWidth(0.85f)
-                ) {
-                    Text(
-                        text = "Welcome to LocalTavern",
-                        style = MaterialTheme.typography.headlineMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.5.sp
-                        ),
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-
-                    // Ordinal numbering: the visible steps are renumbered 1..N
-                    // after filtering (previously a missing API step would make
-                    // the persona card show "2 -").
-                    val visibleSteps = remember(hasApiProfile, hasPersona, hasCharacter) {
-                        listOf(
-                            OnboardingStep.API,
-                            OnboardingStep.PERSONA,
-                            OnboardingStep.CHARACTER
-                        )
-                            .filter { step ->
-                                when (step) {
-                                    OnboardingStep.API -> !hasApiProfile
-                                    OnboardingStep.PERSONA -> !hasPersona
-                                    OnboardingStep.CHARACTER -> !hasCharacter
-                                }
-                            }
-                            .mapIndexed { index, step -> step to index + 1 }
-                    }
-
-                    if (visibleSteps.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(24.dp))
-
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            visibleSteps.forEach { (step, stepDisplayNumber) ->
-
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text(
-                                        text = "$stepDisplayNumber - ",
-                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                        color = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.padding(end = 6.dp)
-                                    )
-
-                                    Surface(
-                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                        shape = RoundedCornerShape(8.dp),
-                                        tonalElevation = 1.dp,
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .clickable {
-                                                when (step) {
-                                                    OnboardingStep.API -> actions.onNavigateToSettings()
-                                                    OnboardingStep.PERSONA -> actions.onNavigateToPersonas()
-                                                    OnboardingStep.CHARACTER -> actions.onNavigateToCharacters()
-                                                }
-                                            }
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = when (step) {
-                                                    OnboardingStep.API -> "Add an API connection in Settings"
-                                                    OnboardingStep.PERSONA -> "Introduce yourself in Personas"
-                                                    OnboardingStep.CHARACTER -> "Meet your first Character"
-                                                },
-                                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.9f),
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                            Icon(
-                                                imageVector = when (step) {
-                                                    OnboardingStep.API -> Icons.Default.Settings
-                                                    OnboardingStep.PERSONA -> Icons.Default.Person
-                                                    OnboardingStep.CHARACTER -> Icons.Default.AccountBox
-                                                },
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.outline,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = "Select a character from the menu side panel to begin your conversation.",
-                            style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 24.sp),
-                            textAlign = TextAlign.Center,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(36.dp))
-
-                    Text(
-                        text = "Or type below to talk with the Assistant",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.75f),
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
+                    .padding(24.dp)
+            )
         } else {
-            val focusRequester = remember { FocusRequester() }
-            val listState = rememberLazyListState()
-            val lastMessage = messages.lastOrNull()
-            val siblings = lastMessage?.let { siblingsMap[it.id] ?: listOf(it) } ?: emptyList()
-
-            val currentIndex = lastMessage?.let { siblings.indexOfFirst { child -> child.id == it.id } }?.coerceAtLeast(0) ?: 0
-            val totalCount = siblings.size
-
-            // Whether the list is pinned to the newest message. The list is
-            // reversed, so index 0 (with no scroll offset) is the bottom.
-            var autoScroll by remember { mutableStateOf(true) }
-
-            LaunchedEffect(listState) {
-                snapshotFlow {
-                    listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
-                }.collect { (index, offset) ->
-                    autoScroll = index <= 0 && offset <= 0
-                }
-            }
-
-            // Follow new messages only while the user is at the bottom; if
-            // they scrolled up to re-read, don't yank them back down.
-            LaunchedEffect(messages.size, autoScroll) {
-                if (autoScroll && messages.isNotEmpty()) {
-                    listState.scrollToItem(0)
-                }
-            }
-
-            // Switching sessions must always land on the newest message,
-            // regardless of the previous list's scroll position.
-            LaunchedEffect(chatState.currentSession?.id) {
-                listState.scrollToItem(0)
-                autoScroll = true
-            }
-
-            LazyColumn(
-                state = listState,
+            ChatMessageList(
+                chatState = chatState,
+                activeCharacter = activeCharacter,
+                activePersonaName = activePersonaName,
+                activePersonaAvatar = activePersonaAvatar,
+                isSelectMode = isSelectMode,
+                selectedMessageIds = selectedMessageIds,
+                actions = actions,
+                onSelectMessageToggle = onSelectMessageToggle,
+                onRequestDelete = { messageToDelete = it },
+                onRequestAddImage = { message ->
+                    imageTargetMessageId = message.id
+                    bubbleImagePicker()
+                },
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .focusRequester(focusRequester)
-                    .focusable()
-                    .onKeyEvent { event ->
-                        if (event.type == KeyEventType.KeyDown) {
-                            if (isGenerating) {
-                                if ((event.key == Key.Enter || event.key == Key.NumPadEnter) && !event.isShiftPressed) {
-                                    actions.onStopGeneration()
-                                    true
-                                } else false
-                            } else if (lastMessage != null && lastMessage.role != "user") {
-                                when (event.key) {
-                                    Key.DirectionLeft -> {
-                                        if (currentIndex > 0) {
-                                            actions.onSelectVariation(siblings[currentIndex - 1].id)
-                                            coroutineScope.launch { listState.animateScrollToItem(0) }
-                                            true
-                                        } else if (totalCount > 1) {
-                                            actions.onSelectVariation(siblings[totalCount - 1].id)
-                                            coroutineScope.launch { listState.animateScrollToItem(0) }
-                                            true
-                                        } else false
-                                    }
-                                    Key.DirectionRight -> {
-                                        if (currentIndex < totalCount - 1) {
-                                            actions.onSelectVariation(siblings[currentIndex + 1].id)
-                                            coroutineScope.launch { listState.animateScrollToItem(0) }
-                                            true
-                                        } else {
-                                            actions.onGenerateNewVariation(lastMessage.id)
-                                            coroutineScope.launch { listState.animateScrollToItem(0) }
-                                            true
-                                        }
-                                    }
-                                    else -> false
-                                }
-                            } else false
-                        } else false
-                    },
-                contentPadding = PaddingValues(8.dp),
-                reverseLayout = true
-            ) {
-                items(messages.reversed(), key = { it.id }) { message ->
-                    val isUserMessage = message.role == "user"
-
-                    val currentAvatar = remember(isUserMessage, activePersonaAvatar, activeCharacter?.avatarData) {
-                        if (isUserMessage) {
-                            activePersonaAvatar
-                        } else {
-                            activeCharacter?.avatarData
-                        }
-                    }
-
-                    val isLastMessage = messages.lastOrNull()?.id == message.id
-                    val isSwipeable = !isUserMessage && isLastMessage && !isGenerating
-
-                    val msgSiblings = siblingsMap[message.id] ?: listOf(message)
-                    val msgCurrentIndex = msgSiblings.indexOfFirst { it.id == message.id }.coerceAtLeast(0)
-                    val msgTotalCount = msgSiblings.size
-
-                    val displayContent = remember(message.content, activeCharacter?.name, activePersonaName) {
-                        ContextManager.replaceSimpleMacros(
-                            text = message.content,
-                            charName = activeCharacter?.name.orEmpty(),
-                            userName = activePersonaName
-                        )
-                    }
-
-                    val messageImages = remember(message.id, message.images) {
-                        message.images
-                    }
-
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = if (isUserMessage) Alignment.End else Alignment.Start
-                    ) {
-                        MessageBubble(
-                            content = displayContent,
-                            isUser = isUserMessage,
-                            onEdit = { newContent, updatedImages -> actions.onEditMessage(message.id, newContent, updatedImages) },
-                            onCopy = { clipboardManager.setText(AnnotatedString(message.content)) },
-                            onDelete = { messageToDelete = message },
-                            onAddImage = {
-                                imageTargetMessageId = message.id
-                                bubbleImagePicker()
-                            },
-                            onBranch = { actions.onBranchMessage(message) },
-                            avatarData = currentAvatar,
-                            messageImages = messageImages,
-                            isSelectMode = isSelectMode,
-                            isSelected = selectedMessageIds.contains(message.id),
-                            onSelectToggle = { onSelectMessageToggle(message.id) },
-                            isSwipeable = isSwipeable,
-                            isGenerating = isGenerating,
-                            // Editing the in-flight message would be overwritten
-                            // by the stream; gate only the streaming message.
-                            canEdit = !(isGenerating && isLastMessage),
-                            onSwipeRight = {
-                                if (!isGenerating) {
-                                    if (msgCurrentIndex > 0) {
-                                        actions.onSelectVariation(msgSiblings[msgCurrentIndex - 1].id)
-                                    } else if (msgTotalCount > 1) {
-                                        actions.onSelectVariation(msgSiblings[msgTotalCount - 1].id)
-                                    }
-                                }
-                            },
-                            onSwipeLeft = {
-                                if (!isGenerating) {
-                                    if (msgCurrentIndex < msgTotalCount - 1) {
-                                        actions.onSelectVariation(msgSiblings[msgCurrentIndex + 1].id)
-                                    } else {
-                                        actions.onGenerateNewVariation(message.id)
-                                    }
-                                }
-                            }
-                        )
-
-                        if (!isUserMessage && isLastMessage && !isSelectMode) {
-                            Row(
-                                modifier = Modifier
-                                    .padding(start = 54.dp, top = 2.dp, bottom = 6.dp)
-                                    .widthIn(max = 460.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                IconButton(
-                                    onClick = {
-                                        if (msgCurrentIndex > 0) {
-                                            actions.onSelectVariation(msgSiblings[msgCurrentIndex - 1].id)
-                                        } else if (msgTotalCount > 1) {
-                                            actions.onSelectVariation(msgSiblings[msgTotalCount - 1].id)
-                                        }
-                                    },
-                                    enabled = !isGenerating,
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                        contentDescription = "Previous variation",
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                }
-
-                                Text(
-                                    text = "${msgCurrentIndex + 1} / $msgTotalCount",
-                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                                )
-
-                                IconButton(
-                                    onClick = {
-                                        if (msgCurrentIndex < msgTotalCount - 1) {
-                                            actions.onSelectVariation(msgSiblings[msgCurrentIndex + 1].id)
-                                        } else {
-                                            actions.onGenerateNewVariation(message.id)
-                                        }
-                                    },
-                                    enabled = !isGenerating,
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                        contentDescription = "Next variation",
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Draft state lives here (not inside ChatInputBar) so it survives
-        // select mode, where the input bar leaves the composition entirely.
-        var draftText by rememberSaveable(stateSaver = TextFieldValue.Saver) {
-            mutableStateOf(TextFieldValue(""))
-        }
-        var draftImages by remember { mutableStateOf<List<ByteArray>>(emptyList()) }
-
-        if (!isSelectMode) {
-            ChatInputBar(
-                textValue = draftText,
-                onTextValueChange = { draftText = it },
-                attachedImages = draftImages,
-                onAttachedImagesChange = { draftImages = it },
-                onSendMessage = actions.onSendMessage,
-                onRegenerate = actions.onRegenerate,
-                canRegenerate = messages.any { it.role == "user" } && !isGenerating,
-                onEnterSelectMode = onEnterSelectMode,
-                canDelete = messages.isNotEmpty(),
-                isGenerating = isGenerating,
-                onStopGeneration = actions.onStopGeneration,
-                onManageChats = actions.onManageChats,
-                canManageChats = activeCharacter != null,
-                onGoToParent = actions.onGoToParentChat
             )
         }
+
+        ChatInputArea(
+            chatState = chatState,
+            activeCharacter = activeCharacter,
+            isSelectMode = isSelectMode,
+            actions = actions,
+            onEnterSelectMode = onEnterSelectMode
+        )
     }
 
-    if (messageToDelete != null) {
-        val currentMsg = messageToDelete!!
-        val isUserMsg = currentMsg.role == "user"
-        val siblings = siblingsMap[currentMsg.id] ?: listOf(currentMsg)
-        val totalCount = siblings.size
-
-        Dialog(onDismissRequest = { messageToDelete = null }) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 6.dp,
-                modifier = Modifier
-                    .padding(16.dp)
-                    .widthIn(max = 340.dp)
-                    .wrapContentSize()
-            ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text(
-                        text = if (isUserMsg || totalCount < 2) "Delete message?" else "Delete option",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Text(
-                        text = if (isUserMsg || totalCount < 2) "This action cannot be undone." else "Delete this swipe or the entire message?",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (isUserMsg || totalCount < 2) {
-                            TextButton(onClick = { messageToDelete = null }) {
-                                Text("Cancel")
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            TextButton(
-                                onClick = {
-                                    actions.onDeleteMessage(currentMsg.id)
-                                    messageToDelete = null
-                                },
-                                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                            ) {
-                                Text("Delete")
-                            }
-                        } else {
-                            TextButton(onClick = { messageToDelete = null }) {
-                                Text("Cancel")
-                            }
-                            Spacer(modifier = Modifier.width(6.dp))
-                            TextButton(
-                                onClick = {
-                                    actions.onDeleteMessage(currentMsg.id)
-                                    messageToDelete = null
-                                },
-                                colors = ButtonDefaults.textButtonColors(
-                                    contentColor = MaterialTheme.colorScheme.primary
-                                )
-                            ) {
-                                Text("Swipe")
-                            }
-                            Spacer(modifier = Modifier.width(6.dp))
-                            TextButton(
-                                onClick = {
-                                    actions.onDeleteMessages(siblings.map { it.id })
-                                    messageToDelete = null
-                                },
-                                colors = ButtonDefaults.textButtonColors(
-                                    contentColor = MaterialTheme.colorScheme.error
-                                )
-                            ) {
-                                Text("Message")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    MessageDeleteDialog(
+        messageToDelete = messageToDelete,
+        siblingsMap = chatState.siblingsMap,
+        onDismiss = { messageToDelete = null },
+        onDeleteMessage = { id -> actions.onDeleteMessage(id) },
+        onDeleteMessages = { ids -> actions.onDeleteMessages(ids) }
+    )
 }

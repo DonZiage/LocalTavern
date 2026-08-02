@@ -63,7 +63,9 @@ fun MessageEntity.toDomain(): Message = Message(
     timestamp = timestamp,
     parentId = parentId,
     isActivePath = isActivePath == 1L,
-    images = deserializeImageList(imageData)
+    images = deserializeImageList(imageData),
+    reasoningText = reasoningText,
+    costEstimateUsd = costEstimate
 )
 
 fun ChatSession.toDomain(): Session = Session(
@@ -94,7 +96,8 @@ fun ApiConnection.toDomain(): ApiConfig = ApiConfig(
     contextLimit = contextLimit,
     responseLimit = responseLimit,
     displayOrder = displayOrder,
-    timeoutLimit = timeoutLimit
+    timeoutLimit = timeoutLimit,
+    reasoningOverride = reasoningOverride.toInt()
 )
 
 fun PromptBlockEntity.toDomain(): PromptBlock = PromptBlock(

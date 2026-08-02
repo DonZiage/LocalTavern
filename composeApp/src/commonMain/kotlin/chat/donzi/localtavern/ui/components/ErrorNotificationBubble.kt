@@ -50,7 +50,9 @@ fun ErrorNotificationBubble(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var swipeOffsetX by remember(visible) { mutableStateOf(0f) }
+    // A new error while the bubble is already visible must not keep the
+    // previous notification's partial swipe offset.
+    var swipeOffsetX by remember(visible, message) { mutableStateOf(0f) }
     val baseContentColor = if (isWarning) Color.Black else Color.White
 
     val currentOnDismiss by rememberUpdatedState(onDismiss)

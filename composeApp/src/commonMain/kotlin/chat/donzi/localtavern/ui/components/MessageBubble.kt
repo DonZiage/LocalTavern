@@ -1,9 +1,6 @@
 package chat.donzi.localtavern.ui.components
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -14,18 +11,9 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.relocation.BringIntoViewRequester
-import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -33,21 +21,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
-import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -68,7 +50,9 @@ fun MessageBubble(
     onSwipeLeft: () -> Unit = {},
     onSwipeRight: () -> Unit = {},
     isGenerating: Boolean = false,
-    canEdit: Boolean = true
+    canEdit: Boolean = true,
+    reasoningText: String? = null,
+    costText: String? = null
 ) {
     var isEditing by remember { mutableStateOf(false) }
     var editedTextValue by remember(content) {
@@ -78,7 +62,6 @@ fun MessageBubble(
 
     val focusRequester = remember { FocusRequester() }
     val bringIntoViewRequester = remember { BringIntoViewRequester() }
-    val coroutineScope = rememberCoroutineScope()
 
     var showActionsOnMobile by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
@@ -113,14 +96,15 @@ fun MessageBubble(
         MaterialTheme.colorScheme.onSecondaryContainer
     }
 
-    val annotatedContent = parseMarkdownToAnnotatedString(text = content, defaultColor = textColor)
-
     val rowBgColor = if (isSelectMode && isSelected) {
         MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
     } else {
         Color.Transparent
     }
 
+    // Defined once and slotted into whichever side carries the actions (left
+    // for the user, right for the assistant); it closes over the edit state
+    // so entering/cancelling/saving an edit stays in one place.
     val actionsBlock = @Composable {
         if (isEditing) {
             EditActions(
@@ -233,45 +217,26 @@ fun MessageBubble(
                 .widthIn(max = 460.dp)
                 .padding(12.dp)
         ) {
-            Column {
-                if (!isUser && isGenerating && content == "...") {
-                    AnimatedEllipsis(color = textColor)
-                } else if (isEditing) {
-                    MessageEditTextField(
-                        value = editedTextValue,
-                        textColor = textColor,
-                        focusRequester = focusRequester,
-                        bringIntoViewRequester = bringIntoViewRequester,
-                        onValueChange = { editedTextValue = it },
-                        onSubmit = {
-                            onEdit(editedTextValue.text, editedImages)
-                            isEditing = false
-                        }
-                    )
-                } else if (content.isNotBlank()) {
-                    SelectionContainer {
-                        Text(
-                            text = annotatedContent,
-                            color = textColor,
-                            fontSize = 16.sp,
-                            lineHeight = 22.sp
-                        )
-                    }
-                }
-
-                if (isEditing) {
-                    MessageImages(
-                        images = editedImages,
-                        isEditing = true,
-                        onRemoveImage = { index -> editedImages = editedImages.filterIndexed { i, _ -> i != index } }
-                    )
-                } else {
-                    MessageImages(
-                        images = messageImages,
-                        topPadding = if (content.isNotBlank() && content != "...") 8.dp else 0.dp
-                    )
-                }
-            }
+            MessageBubbleContent(
+                content = content,
+                isUser = isUser,
+                isGenerating = isGenerating,
+                isEditing = isEditing,
+                textColor = textColor,
+                editedTextValue = editedTextValue,
+                onEditedTextValueChange = { editedTextValue = it },
+                editedImages = editedImages,
+                onRemoveEditedImage = { index -> editedImages = editedImages.filterIndexed { i, _ -> i != index } },
+                focusRequester = focusRequester,
+                bringIntoViewRequester = bringIntoViewRequester,
+                onSubmitEdit = {
+                    onEdit(editedTextValue.text, editedImages)
+                    isEditing = false
+                },
+                messageImages = messageImages,
+                reasoningText = reasoningText,
+                costText = costText
+            )
         }
 
         if (isUser) {
@@ -322,145 +287,4 @@ private fun BubbleAvatar(
             )
         }
     }
-}
-
-@Composable
-private fun MessageEditTextField(
-    value: TextFieldValue,
-    textColor: Color,
-    focusRequester: FocusRequester,
-    bringIntoViewRequester: BringIntoViewRequester,
-    onValueChange: (TextFieldValue) -> Unit,
-    onSubmit: () -> Unit
-) {
-    val coroutineScope = rememberCoroutineScope()
-    BasicTextField(
-        value = value,
-        onValueChange = {
-            onValueChange(it)
-            coroutineScope.launch {
-                bringIntoViewRequester.bringIntoView()
-            }
-        },
-        modifier = Modifier
-            .widthIn(min = 40.dp)
-            .focusRequester(focusRequester)
-            .bringIntoViewRequester(bringIntoViewRequester)
-            .onPreviewKeyEvent { event ->
-                if (event.type == KeyEventType.KeyDown &&
-                    (event.key == Key.Enter || event.key == Key.NumPadEnter)) {
-                    if (event.isShiftPressed) {
-                        onValueChange(value.insertNewline())
-                        coroutineScope.launch {
-                            bringIntoViewRequester.bringIntoView()
-                        }
-                        true
-                    } else {
-                        onSubmit()
-                        true
-                    }
-                } else {
-                    false
-                }
-            },
-        textStyle = LocalTextStyle.current.copy(
-            color = textColor,
-            fontSize = 16.sp,
-            lineHeight = 22.sp
-        ),
-        // IME action so mobile soft keyboards can submit the edit; hardware
-        // Enter is handled by onPreviewKeyEvent above.
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-        keyboardActions = KeyboardActions(onSend = { onSubmit() }),
-        cursorBrush = SolidColor(textColor)
-    )
-}
-
-@Composable
-fun EditActions(
-    onCancel: () -> Unit,
-    onSave: () -> Unit
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(horizontal = 4.dp)
-    ) {
-        IconButton(onClick = onCancel, modifier = Modifier.size(32.dp)) {
-            Icon(
-                Icons.Default.Close,
-                contentDescription = "Cancel",
-                modifier = Modifier.size(18.dp),
-                tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
-            )
-        }
-        IconButton(onClick = onSave, modifier = Modifier.size(32.dp)) {
-            Icon(
-                Icons.Default.Check,
-                contentDescription = "Save",
-                modifier = Modifier.size(18.dp),
-                tint = MaterialTheme.colorScheme.primary
-            )
-        }
-    }
-}
-
-@Composable
-fun MessageActions(
-    visible: Boolean,
-    showMenu: Boolean,
-    onShowMenuChange: (Boolean) -> Unit,
-    canEdit: Boolean = true,
-    onEdit: () -> Unit,
-    onCopy: () -> Unit,
-    onDelete: () -> Unit,
-    onAddImage: () -> Unit,
-    onBranch: () -> Unit
-) {
-    AnimatedVisibility(
-        visible = visible,
-        enter = fadeIn(),
-        exit = fadeOut()
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 4.dp)
-        ) {
-            IconButton(onClick = onEdit, enabled = canEdit, modifier = Modifier.size(32.dp)) {
-                Icon(
-                    Icons.Default.Edit,
-                    contentDescription = "Edit",
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                )
-            }
-            Box {
-                IconButton(onClick = { onShowMenuChange(true) }, modifier = Modifier.size(32.dp)) {
-                    Icon(
-                        Icons.Default.MoreVert,
-                        contentDescription = "More",
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                    )
-                }
-                MessageActionMenu(
-                    expanded = showMenu,
-                    onDismissRequest = { onShowMenuChange(false) },
-                    onCopy = onCopy,
-                    onDelete = onDelete,
-                    onAddImage = onAddImage,
-                    onBranch = onBranch,
-                )
-            }
-        }
-    }
-}
-
-internal fun TextFieldValue.insertNewline(): TextFieldValue {
-    val currentText = this.text
-    val selection = this.selection
-    val newText = currentText.substring(0, selection.min) + "\n" + currentText.substring(selection.max)
-    return TextFieldValue(
-        text = newText,
-        selection = TextRange(selection.min + 1)
-    )
 }

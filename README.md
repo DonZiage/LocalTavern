@@ -33,13 +33,13 @@ The project exists to solve the "service complexity" problem. Most LLM interface
 
     - Multiple user personas with custom avatars and system prompts.
 
-    - Local "Lorebook" (World Info) support for character-specific context triggers.
+    - Local "Lorebook" (World Info) support: trigger-key matching against chat history with automatic prompt injection (or explicit `{{lorebook}}` placement), plus a built-in entry editor.
 
 - **Advanced Control:** Granular parameter sliders (Temperature, Top-P, Presence Penalty, etc.).
 
-    - Real-time cost estimation based on active model pricing and prompt length.
+    - Real-time cost estimation based on active model pricing and prompt length, with per-message and per-session estimates and per-model price overrides.
 
-    - Automatic reasoning mode for supported models (DeepSeek-R1, O1).
+    - Automatic reasoning mode for supported models (DeepSeek-R1, O1, Anthropic extended thinking): chain-of-thought is captured and shown in a collapsible section; Auto/On/Off override per connection.
 
 - **UI/UX:** A refined interface utilizing glassmorphism, fluid animations, and a consistent 12-16pt rounded aesthetic.
 ## Technical Stack
@@ -52,7 +52,9 @@ The project exists to solve the "service complexity" problem. Most LLM interface
 
 **Image Loading:** Coil3
 
-**Encryption:** Not yet implemented — the database is plain SQLite and API keys are stored in plaintext. SQLCipher / Platform-native KeyStore is a planned improvement; do not store sensitive keys on shared machines until it lands.
+**Encryption:** API keys are encrypted at rest. Android uses the AndroidKeyStore (non-exportable AES key), iOS uses a Keychain-held EC key with ECIES/AES-GCM, and the desktop build supports an opt-in passphrase (PBKDF2 + AES-256-GCM). The database itself remains plain SQLite; only secrets are protected.
+
+**P2P Sync:** Devices pair over the local network with a 6-digit PIN (shown by the hosting device). Each device runs an embedded Ktor server; sync exchanges are encrypted end-to-end with forward-secret per-exchange channel keys (static X25519 for authentication + fresh ephemeral X25519 per exchange, HKDF-SHA256 → AES-256-GCM), merged last-writer-wins per row (tombstones included). Pairing is PIN-authenticated without sending the PIN over the wire (HMAC proof, rate-limited), and both devices display a mutual key fingerprint for out-of-band MITM verification. The sync identity key can be rotated, which invalidates all pairings. LAN discovery (UDP broadcast) lists nearby devices and auto-updates peer addresses after DHCP changes. Characters, personas, chats, messages and API profiles all sync; auto-sync runs on app start and after pairing. No intermediary servers.
 
 
 ## Disclaimer

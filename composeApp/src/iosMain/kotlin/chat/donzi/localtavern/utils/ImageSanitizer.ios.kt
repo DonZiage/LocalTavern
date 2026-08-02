@@ -46,8 +46,17 @@ private val JPEG_QUALITY_LADDER = intArrayOf(85, 70, 55)
 actual fun downscaleImageForChat(bytes: ByteArray): ByteArray? {
     if (bytes.isEmpty()) return null
     return try {
-        // Under the byte budget already: keep the original untouched.
-        if (bytes.size <= ImageSanitizer.MAX_BYTES) return bytes
+        // Under the byte budget: keep the original untouched ONLY when it also
+        // fits the dimension cap. A 3000px-wide photo under 1.5 MB would
+        // otherwise reach the API at full resolution (huge base64 payloads,
+        // vision models rejecting oversized dimensions). readImageDimensions
+        // reads only the header, so no full decode is needed for the decision.
+        if (bytes.size <= ImageSanitizer.MAX_BYTES) {
+            val dims = readImageDimensions(bytes)
+            if (dims == null || maxOf(dims.first, dims.second) <= ImageSanitizer.MAX_DIMENSION_PX) {
+                return bytes
+            }
+        }
 
         memScoped {
             val sourceData = bytes.usePinned { pinned ->

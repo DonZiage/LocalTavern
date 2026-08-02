@@ -1,29 +1,22 @@
 package chat.donzi.localtavern.ui.components
 
-import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Create
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
+import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.utils.CharacterManager
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -45,7 +38,6 @@ fun CharacterListSection(
     var selectionMode by remember { mutableStateOf(false) }
     val selectedIds = remember { mutableStateListOf<String>() }
     var isSearchActive by remember { mutableStateOf(false) }
-    val focusRequester = focusRequester()
     var showCharacterMenu by remember { mutableStateOf(false) }
     var showCreateDialog by remember { mutableStateOf(false) }
     var newCharacterName by remember { mutableStateOf("") }
@@ -96,169 +88,40 @@ fun CharacterListSection(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            val interactionSource = remember { MutableInteractionSource() }
+            CharacterSearchBar(
+                query = query,
+                onQueryChange = { query = it },
+                isSearchActive = isSearchActive,
+                onSearchActiveChange = { isSearchActive = it },
+                modifier = Modifier.weight(1f)
+            )
 
-            AnimatedContent(
-                targetState = isSearchActive,
-                modifier = Modifier.weight(1f),
-                transitionSpec = {
-                    (fadeIn() + expandHorizontally(expandFrom = Alignment.Start))
-                        .togetherWith(fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.Start))
+            NewCharacterMenu(
+                expanded = showCharacterMenu,
+                onExpandedChange = { showCharacterMenu = it },
+                onImport = {
+                    showCharacterMenu = false
+                    pickImage()
                 },
-                label = "SearchTransition"
-            ) { active ->
-                if (active) {
-                    LaunchedEffect(Unit) {
-                        // The field may not be attached yet while the enter
-                        // transition runs; requesting focus immediately can
-                        // silently no-op.
-                        delay(50)
-                        focusRequester.requestFocus()
-                    }
-
-                    BasicTextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(40.dp)
-                            .focusRequester(focusRequester),
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(
-                            color = MaterialTheme.colorScheme.onSurface
-                        ),
-                        singleLine = true,
-                        interactionSource = interactionSource,
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        decorationBox = { innerTextField ->
-                            TextFieldDefaults.DecorationBox(
-                                value = query,
-                                innerTextField = innerTextField,
-                                enabled = true,
-                                singleLine = true,
-                                visualTransformation = VisualTransformation.None,
-                                interactionSource = interactionSource,
-                                leadingIcon = {
-                                    IconButton(
-                                        onClick = { isSearchActive = false; query = "" },
-                                        modifier = Modifier.size(40.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Default.Search,
-                                            null,
-                                            tint = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-                                },
-                                trailingIcon = {
-                                    if (query.isNotEmpty()) {
-                                        IconButton(onClick = { query = "" }, modifier = Modifier.size(40.dp)) {
-                                            Icon(Icons.Default.Close, null, modifier = Modifier.size(16.dp))
-                                        }
-                                    }
-                                },
-                                container = {
-                                    OutlinedTextFieldDefaults.Container(
-                                        enabled = true,
-                                        isError = false,
-                                        interactionSource = interactionSource,
-                                        colors = OutlinedTextFieldDefaults.colors(),
-                                        shape = CircleShape
-                                    )
-                                },
-                                contentPadding = PaddingValues(start = 0.dp, end = 12.dp, top = 0.dp, bottom = 0.dp),
-                            )
-                        }
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(40.dp),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        IconButton(
-                            onClick = { isSearchActive = true },
-                            modifier = Modifier
-                                .padding(start = 4.dp)
-                                .size(40.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Search,
-                                contentDescription = "Open Search",
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
+                onCreate = {
+                    showCharacterMenu = false
+                    newCharacterName = ""
+                    showCreateDialog = true
                 }
-            }
-
-            Box {
-                Button(
-                    onClick = { showCharacterMenu = true },
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("New")
-                }
-
-                DropdownMenu(
-                    expanded = showCharacterMenu,
-                    onDismissRequest = { showCharacterMenu = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Import") },
-                        leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
-                        onClick = {
-                            showCharacterMenu = false
-                            pickImage()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Create") },
-                        leadingIcon = { Icon(Icons.Default.Create, contentDescription = null) },
-                        onClick = {
-                            showCharacterMenu = false
-                            newCharacterName = ""
-                            showCreateDialog = true
-                        }
-                    )
-                }
-            }
+            )
 
             actions()
         }
 
         if (selectionMode) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    "${selectedIds.size} selected",
-                    style = MaterialTheme.typography.labelLarge
-                )
-                Row {
-                    TextButton(onClick = {
-                        selectedIds.clear()
-                        selectionMode = false
-                    }) { Text("Cancel") }
-
-                    TextButton(
-                        enabled = selectedIds.isNotEmpty(),
-                        onClick = {
-                            showMultiDeleteConfirm = true
-                        }
-                    ) {
-                        Icon(Icons.Default.Delete, contentDescription = null)
-                        Spacer(Modifier.width(4.dp))
-                        Text("Delete")
-                    }
-                }
-            }
+            CharacterSelectionBar(
+                selectedCount = selectedIds.size,
+                onCancel = {
+                    selectedIds.clear()
+                    selectionMode = false
+                },
+                onDelete = { showMultiDeleteConfirm = true }
+            )
         }
 
         // LazyColumn so search keystrokes and selection toggles only compose
@@ -294,88 +157,106 @@ fun CharacterListSection(
     }
 
     if (showCreateDialog) {
-        AlertDialog(
-            onDismissRequest = { showCreateDialog = false; newCharacterName = "" },
-            title = { Text("Create New Character") },
-            text = {
-                OutlinedTextField(
-                    value = newCharacterName,
-                    onValueChange = { newCharacterName = it },
-                    label = { Text("Character Name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+        CreateCharacterDialog(
+            name = newCharacterName,
+            onNameChange = { newCharacterName = it },
+            onCreate = { name ->
+                onCreateCharacter(name)
+                newCharacterName = ""
+                showCreateDialog = false
             },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (newCharacterName.isNotBlank()) {
-                            onCreateCharacter(newCharacterName)
-                            newCharacterName = ""
-                            showCreateDialog = false
-                        }
-                    },
-                    enabled = newCharacterName.isNotBlank()
-                ) {
-                    Text("Create")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCreateDialog = false; newCharacterName = "" }) {
-                    Text("Cancel")
-                }
-            }
+            onDismiss = { showCreateDialog = false; newCharacterName = "" }
         )
     }
 
     if (characterToDelete != null) {
-        AlertDialog(
-            onDismissRequest = { characterToDelete = null },
-            title = { Text("Delete Character?") },
-            text = { Text("\"${characterToDelete?.name}\" will be permanently removed.") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        onDeleteSelected(setOf(characterToDelete!!.id))
-                        characterToDelete = null
-                    }
-                ) {
-                    Text("Delete", color = MaterialTheme.colorScheme.error)
-                }
+        DeleteCharacterDialog(
+            characterName = characterToDelete!!.name,
+            onConfirm = {
+                onDeleteSelected(setOf(characterToDelete!!.id))
+                characterToDelete = null
             },
-            dismissButton = {
-                TextButton(onClick = { characterToDelete = null }) {
-                    Text("Cancel")
-                }
-            }
+            onDismiss = { characterToDelete = null }
         )
     }
 
     if (showMultiDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = { showMultiDeleteConfirm = false },
-            title = { Text("Delete Characters?") },
-            text = { Text("Are you sure you want to delete ${selectedIds.size} characters?") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        onDeleteSelected(selectedIds.toSet())
-                        selectedIds.clear()
-                        selectionMode = false
-                        showMultiDeleteConfirm = false
-                    }
-                ) {
-                    Text("Delete", color = MaterialTheme.colorScheme.error)
-                }
+        DeleteCharactersDialog(
+            count = selectedIds.size,
+            onConfirm = {
+                onDeleteSelected(selectedIds.toSet())
+                selectedIds.clear()
+                selectionMode = false
+                showMultiDeleteConfirm = false
             },
-            dismissButton = {
-                TextButton(onClick = { showMultiDeleteConfirm = false }) {
-                    Text("Cancel")
-                }
-            }
+            onDismiss = { showMultiDeleteConfirm = false }
         )
     }
 }
 
 @Composable
-fun focusRequester(): FocusRequester = remember { FocusRequester() }
+private fun NewCharacterMenu(
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onImport: () -> Unit,
+    onCreate: () -> Unit
+) {
+    Box {
+        Button(
+            onClick = { onExpandedChange(true) },
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+        ) {
+            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("New")
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { onExpandedChange(false) }
+        ) {
+            DropdownMenuItem(
+                text = { Text("Import") },
+                leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
+                onClick = onImport
+            )
+            DropdownMenuItem(
+                text = { Text("Create") },
+                leadingIcon = { Icon(Icons.Default.Create, contentDescription = null) },
+                onClick = onCreate
+            )
+        }
+    }
+}
+
+@Composable
+private fun CharacterSelectionBar(
+    selectedCount: Int,
+    onCancel: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            "$selectedCount selected",
+            style = MaterialTheme.typography.labelLarge
+        )
+        Row {
+            TextButton(onClick = onCancel) { Text("Cancel") }
+
+            TextButton(
+                enabled = selectedCount > 0,
+                onClick = onDelete
+            ) {
+                Icon(Icons.Default.Delete, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("Delete")
+            }
+        }
+    }
+}

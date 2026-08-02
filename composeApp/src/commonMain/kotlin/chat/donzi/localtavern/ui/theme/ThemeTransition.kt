@@ -64,6 +64,10 @@ fun ThemeTransition(
     // flight; the layer is consumed by toImageBitmap() during the capture and
     // would otherwise re-render the whole UI offscreen on every frame.
     var isCapturing by remember { mutableStateOf(false) }
+    // Monotonic counter identifying the newest transition. A superseded job
+    // that finishes its cleanup after a newer one started must neither clear
+    // isCapturing (the newer job is still capturing) nor publish its snapshot.
+    var transitionGeneration by remember { mutableStateOf(0) }
 
     LaunchedEffect(initialThemeIsDark) {
         isDark = initialThemeIsDark
@@ -74,9 +78,14 @@ fun ThemeTransition(
         // of being silently dropped. Clear the previous snapshot so the OLD
         // theme image cannot flash on screen while the new one is captured.
         transitionJob?.cancel()
+        transitionGeneration++
+        val generation = transitionGeneration
         snapshot = null
         animationCenter = center
         val targetDark = !isDark
+        // Flip the theme synchronously: a rapid double-toggle must land on the
+        // opposite theme, not compute "!isDark" twice from the stale flag.
+        isDark = targetDark
         // Persist the new theme immediately so a transition cancelled mid-flight
         // (second toggle, window close) is not silently lost.
         onThemeSaved(targetDark)
@@ -97,8 +106,7 @@ fun ThemeTransition(
                 } catch (_: Exception) {
                     null
                 }
-                isDark = targetDark
-                if (captured == null) return@launch
+                if (captured == null || generation != transitionGeneration) return@launch
                 snapshot = captured
                 revealProgress.snapTo(0f)
                 delay(50.milliseconds)
@@ -108,7 +116,11 @@ fun ThemeTransition(
                 )
                 snapshot = null
             } finally {
-                isCapturing = false
+                // Only the newest transition may reset the capture flag; a
+                // cancelled job's cleanup must not clobber a live capture.
+                if (generation == transitionGeneration) {
+                    isCapturing = false
+                }
             }
         }
     }

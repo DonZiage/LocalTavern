@@ -82,7 +82,8 @@ class SessionRepository(
             queries.insertMessageWithParent(
                 id = newId, sessionId = sessionId, role = role, content = content,
                 timestamp = now, parentId = parentId, isActivePath = 1L,
-                updatedAt = now, isDeleted = 0L, imageData = serializeImageList(imageDataList)
+                updatedAt = now, isDeleted = 0L, imageData = serializeImageList(imageDataList),
+                reasoningText = null, costEstimate = null
             )
             queries.deactivateSiblings(updatedAt = now, sessionId = sessionId, parentId = parentId, id = newId)
             queries.updateSessionCurrentMessage(currentMessageId = newId, lastTimestamp = now, updatedAt = now, id = sessionId)
@@ -96,7 +97,8 @@ class SessionRepository(
         queries.insertMessageWithParent(
             id = newId, sessionId = sessionId, role = role, content = content,
             timestamp = now, parentId = parentId, isActivePath = if (isActivePath) 1L else 0L,
-            updatedAt = now, isDeleted = 0L, imageData = serializeImageList(imageDataList)
+            updatedAt = now, isDeleted = 0L, imageData = serializeImageList(imageDataList),
+            reasoningText = null, costEstimate = null
         )
         newId
     }
@@ -132,13 +134,31 @@ class SessionRepository(
         queries.insertMessageWithParent(
             id = newId, sessionId = sessionId, role = role, content = content,
             timestamp = timestamp, parentId = parentId, isActivePath = if (isActivePath) 1L else 0L,
-            updatedAt = timestamp, isDeleted = 0L, imageData = null
+            updatedAt = timestamp, isDeleted = 0L, imageData = null,
+            reasoningText = null, costEstimate = null
         )
         return newId
     }
 
     suspend fun updateMessageContent(id: String, content: String) = withContext(ioDispatcher) {
         queries.updateMessageContent(content = content, updatedAt = currentTimeMillis(), id = id)
+    }
+
+    suspend fun updateMessageReasoning(id: String, reasoningText: String?) = withContext(ioDispatcher) {
+        queries.updateMessageReasoning(reasoningText = reasoningText, updatedAt = currentTimeMillis(), id = id)
+    }
+
+    suspend fun updateMessageCostEstimate(id: String, costEstimateUsd: Double?) = withContext(ioDispatcher) {
+        queries.updateMessageCostEstimate(costEstimate = costEstimateUsd, updatedAt = currentTimeMillis(), id = id)
+    }
+
+    suspend fun updateMessageContentAndReasoning(id: String, content: String, reasoningText: String?) = withContext(ioDispatcher) {
+        queries.updateMessageContentAndReasoning(
+            content = content,
+            reasoningText = reasoningText,
+            updatedAt = currentTimeMillis(),
+            id = id
+        )
     }
 
     suspend fun updateMessageImage(id: String, imageDataList: List<ByteArray>?) = withContext(ioDispatcher) {
@@ -197,6 +217,67 @@ class SessionRepository(
         return result
     }
 
+    // Syncs the character's greeting roots of one session inside a single
+    // transaction. Editing a character can fire saves from multiple paths at
+    // once (debounced autosave, close-time flush); without the transaction two
+    // concurrent saves could read the same root list and insert the same
+    // greeting root twice.
+    suspend fun syncGreetingRoots(sessionId: String, textList: List<String>) = withContext(ioDispatcher) {
+        val now = currentTimeMillis()
+        database.transaction {
+            val allMessages = queries.selectAllMessagesForSession(sessionId).executeAsList()
+            val currentRoots = allMessages.filter { it.parentId == null && it.isActivePath == 1L }
+
+            currentRoots.forEachIndexed { index, existingMessage ->
+                if (index < textList.size) {
+                    queries.updateMessageContent(content = textList[index], updatedAt = now, id = existingMessage.id)
+                } else {
+                    // Only delete a root that is not part of a live conversation.
+                    // Deleting a root cascades to its entire subtree (deactivating
+                    // every descendant), which would make the session look empty
+                    // even though its chat history is intact.
+                    val hasActiveConversation = allMessages.any { it.parentId == existingMessage.id && it.isActivePath == 1L }
+                    if (!hasActiveConversation) {
+                        val descendants = collectDescendantIds(allMessages, existingMessage.id)
+                        queries.deleteMessage(updatedAt = now, id = existingMessage.id)
+                        descendants.forEach { descendantId ->
+                            queries.deactivateMessage(updatedAt = now, sessionId = sessionId, id = descendantId)
+                        }
+                        val session = queries.selectSessionById(sessionId).executeAsOneOrNull()
+                        val currentId = session?.currentMessageId
+                        if (currentId != null && (currentId == existingMessage.id || currentId in descendants)) {
+                            queries.updateSessionCurrentMessage(
+                                currentMessageId = existingMessage.parentId,
+                                lastTimestamp = now,
+                                updatedAt = now,
+                                id = sessionId
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (textList.size > currentRoots.size) {
+                for (i in currentRoots.size until textList.size) {
+                    // When no active root survived the sync (e.g. the old greeting
+                    // roots were deleted or never existed), the first replacement
+                    // must be ACTIVE: a session whose roots are all inactive shows
+                    // an empty chat with no way to reach the new greeting.
+                    val activateFirst = currentRoots.isEmpty() && i == currentRoots.size
+                    val newId = generateUuid()
+                    // Monotonic timestamps keep the greeting swipe order stable
+                    // (all roots inserted in the same millisecond otherwise tie).
+                    queries.insertMessageWithParent(
+                        id = newId, sessionId = sessionId, role = "assistant", content = textList[i],
+                        timestamp = now + i, parentId = null, isActivePath = if (activateFirst) 1L else 0L,
+                        updatedAt = now, isDeleted = 0L, imageData = null,
+                        reasoningText = null, costEstimate = null
+                    )
+                }
+            }
+        }
+    }
+
     suspend fun getSessionsForCharacter(characterId: String): List<Session> = withContext(ioDispatcher) {
         queries.selectSessionsForCharacter(characterId).executeAsList().map { it.toDomain() }
     }
@@ -249,7 +330,8 @@ class SessionRepository(
                 queries.insertMessageWithParent(
                     id = newMsgId, sessionId = newSessionId, role = msg.role, content = msg.content,
                     timestamp = msg.timestamp, parentId = lastInsertedNewId, isActivePath = 1L,
-                    updatedAt = now, isDeleted = 0L, imageData = serializeImageList(msg.images)
+                    updatedAt = now, isDeleted = 0L, imageData = serializeImageList(msg.images),
+                    reasoningText = msg.reasoningText, costEstimate = msg.costEstimateUsd
                 )
                 lastInsertedNewId = newMsgId
             }

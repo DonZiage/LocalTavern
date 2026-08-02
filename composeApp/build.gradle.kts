@@ -46,6 +46,12 @@ kotlin {
             implementation(libs.ktor.client.content.negotiation)
             implementation(libs.ktor.serialization.json)
 
+            implementation(libs.ktor.server.core)
+            implementation(libs.ktor.server.cio)
+            implementation(libs.ktor.server.content.negotiation)
+
+            implementation(libs.cryptography.core)
+
             implementation(libs.coil3.coil.compose)
         }
 
@@ -64,6 +70,9 @@ kotlin {
             implementation(libs.sqldelight.driver.android)
             implementation(libs.androidx.activity.compose)
             implementation(libs.ktor.client.okhttp)
+            // BouncyCastle-backed provider: X25519/ChaCha20-Poly1305 are not in
+            // the Android JCA below API 28, BC works on every supported API.
+            implementation(libs.cryptography.provider.jdk.bc)
         }
 
         getByName("desktopMain") {
@@ -74,12 +83,15 @@ kotlin {
 
                 implementation("io.ktor:ktor-client-java:$ktorVersion")
                 implementation(libs.logback.classic)
+                implementation(libs.cryptography.provider.jdk)
             }
         }
 
         iosMain.dependencies {
             implementation(libs.sqldelight.driver.native)
             implementation(libs.ktor.client.darwin)
+            // CryptoKit + CommonCrypto (X25519, ChaCha20-Poly1305, HKDF).
+            implementation(libs.cryptography.provider.optimal)
         }
     }
 }
@@ -124,7 +136,7 @@ sqldelight {
     databases {
         create("LocalTavernDB") {
             packageName.set("chat.donzi.localtavern.data.database")
-            version = 2
+            version = 4
         }
     }
 }

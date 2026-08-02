@@ -3,6 +3,7 @@ package chat.donzi.localtavern.controller
 import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.database.LocalTavernDB
+import chat.donzi.localtavern.data.database.PricingRepository
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.domain.Character
@@ -41,7 +42,7 @@ class ChatControllerTest {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
         val sessionRepository = SessionRepository(db.database, testDispatcher)
-        val apiSettingsRepository = ApiSettingsRepository(db.database, testDispatcher)
+        val apiSettingsRepository = ApiSettingsRepository(db.database, chat.donzi.localtavern.data.security.ApiKeyCipher(chat.donzi.localtavern.data.security.TestSecretCrypto()), testDispatcher)
         apiSettingsRepository.insertApiConnection(
             provider = "test", name = "Test", baseUrl = "https://example.com",
             apiKey = "key", model = "model", isActive = true
@@ -49,6 +50,7 @@ class ChatControllerTest {
         val controller = ChatController(
             sessionRepository = sessionRepository,
             apiSettingsRepository = apiSettingsRepository,
+            pricingRepository = PricingRepository(db.database, testDispatcher),
             chatClient = ChatClient(
                 HttpClient(
                     MockEngine(
@@ -132,7 +134,7 @@ data: [DONE]
         client.streamChatRequest(
             baseUrl = "https://example.com", apiKey = "k", model = "m",
             messages = listOf(chat.donzi.localtavern.utils.ChatMessage(role = "user", content = "hi"))
-        ).collect { tokens.add(it) }
+        ).collect { chunk -> chunk.content?.let { tokens.add(it) } }
         assertEquals(listOf("New reply"), tokens)
     }
 
@@ -157,6 +159,137 @@ data: [DONE]
         assertEquals("New reply", newAssistant.content)
         assertEquals(seed.userId, newAssistant.parentId, "New response must be attached to the last user message")
         assertEquals(newAssistant.id, sessionRepository.getSessionById(seed.sessionId)?.currentMessageId)
+    }
+
+    @Test
+    fun streamChatRequest_deliversReasoningContent() = runTest {
+        val client = ChatClient(
+            HttpClient(MockEngine {
+                respond(
+                    content = ByteReadChannel("""data: {"choices":[{"delta":{"reasoning_content":"Hmm, let me think"}}]}
+
+data: {"choices":[{"delta":{"content":"Answer"}}]}
+
+data: [DONE]
+"""),
+                    status = HttpStatusCode.OK,
+                    headers = headersOf(HttpHeaders.ContentType, "text/event-stream")
+                )
+            }) {
+                install(ContentNegotiation) {
+                    json(Json { ignoreUnknownKeys = true; isLenient = true })
+                }
+            }
+        )
+        val contents = mutableListOf<String?>()
+        val reasonings = mutableListOf<String?>()
+        client.streamChatRequest(
+            baseUrl = "https://example.com", apiKey = "k", model = "deepseek-reasoner",
+            messages = listOf(chat.donzi.localtavern.utils.ChatMessage(role = "user", content = "hi"))
+        ).collect { chunk ->
+            contents.add(chunk.content)
+            reasonings.add(chunk.reasoning)
+        }
+        assertEquals(listOf(null, "Answer"), contents)
+        assertEquals(listOf("Hmm, let me think", null), reasonings)
+    }
+
+    @Test
+    fun anthropicStream_deliversThinkingDeltas() = runTest {
+        val client = ChatClient(
+            HttpClient(MockEngine {
+                respond(
+                    content = ByteReadChannel("""data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"Consider the user"}}
+
+data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}
+
+data: {"type":"message_stop"}
+"""),
+                    status = HttpStatusCode.OK,
+                    headers = headersOf(HttpHeaders.ContentType, "text/event-stream")
+                )
+            }) {
+                install(ContentNegotiation) {
+                    json(Json { ignoreUnknownKeys = true; isLenient = true })
+                }
+            }
+        )
+        val contents = mutableListOf<String?>()
+        val reasonings = mutableListOf<String?>()
+        client.streamChatRequest(
+            baseUrl = "https://api.anthropic.com/v1", apiKey = "k", model = "claude-3-7-sonnet",
+            messages = listOf(chat.donzi.localtavern.utils.ChatMessage(role = "user", content = "hi")),
+            params = chat.donzi.localtavern.data.network.GenerationParams(thinkingBudgetTokens = 2048),
+            provider = "Anthropic"
+        ).collect { chunk ->
+            contents.add(chunk.content)
+            reasonings.add(chunk.reasoning)
+        }
+        assertEquals(listOf(null, "Hi"), contents)
+        assertEquals(listOf("Consider the user", null), reasonings)
+    }
+
+    @Test
+    fun anthropicThinkingRequest_includesThinkingBlockAndBetaHeader() = runTest {
+        var capturedBody = ""
+        var capturedBetaHeader = ""
+        val client = ChatClient(
+            HttpClient(MockEngine { request ->
+                capturedBody = (request.body as TextContent).text
+                capturedBetaHeader = request.headers["anthropic-beta"] ?: ""
+                respond(
+                    content = ByteReadChannel("""data: {"type":"message_stop"}"""),
+                    status = HttpStatusCode.OK,
+                    headers = headersOf(HttpHeaders.ContentType, "text/event-stream")
+                )
+            }) {
+                install(ContentNegotiation) {
+                    json(Json { ignoreUnknownKeys = true; isLenient = true })
+                }
+            }
+        )
+        client.streamChatRequest(
+            baseUrl = "https://api.anthropic.com/v1", apiKey = "k", model = "claude-3-7-sonnet",
+            messages = listOf(chat.donzi.localtavern.utils.ChatMessage(role = "user", content = "hi")),
+            params = chat.donzi.localtavern.data.network.GenerationParams(thinkingBudgetTokens = 2048),
+            provider = "Anthropic"
+        ).collect { }
+
+        val body = Json.parseToJsonElement(capturedBody).jsonObject
+        val thinking = body["thinking"]!!.jsonObject
+        assertEquals("enabled", thinking["type"]?.jsonPrimitive?.content)
+        assertEquals(2048L, thinking["budget_tokens"]?.jsonPrimitive?.content?.toLong())
+        assertEquals("extended-thinking-2025-02-19", capturedBetaHeader)
+    }
+
+    @Test
+    fun reasoningEffort_sentForOSeriesModels() = runTest {
+        var capturedBody = ""
+        val client = ChatClient(
+            HttpClient(MockEngine { request ->
+                capturedBody = (request.body as TextContent).text
+                respond(
+                    content = ByteReadChannel("""data: {"choices":[{"delta":{"content":"hi"}}]}
+
+data: [DONE]
+"""),
+                    status = HttpStatusCode.OK,
+                    headers = headersOf(HttpHeaders.ContentType, "text/event-stream")
+                )
+            }) {
+                install(ContentNegotiation) {
+                    json(Json { ignoreUnknownKeys = true; isLenient = true })
+                }
+            }
+        )
+        client.streamChatRequest(
+            baseUrl = "https://example.com", apiKey = "k", model = "o1",
+            messages = listOf(chat.donzi.localtavern.utils.ChatMessage(role = "user", content = "hi")),
+            params = chat.donzi.localtavern.data.network.GenerationParams(reasoningEffort = "medium")
+        ).collect { }
+
+        val body = Json.parseToJsonElement(capturedBody).jsonObject
+        assertEquals("medium", body["reasoning_effort"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -221,7 +354,7 @@ data: [DONE]
     fun insertApiConnection_derivesActiveFlagAndOrderFromDb() = runTest {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
-        val apiSettingsRepository = ApiSettingsRepository(db.database, testDispatcher)
+        val apiSettingsRepository = ApiSettingsRepository(db.database, chat.donzi.localtavern.data.security.ApiKeyCipher(chat.donzi.localtavern.data.security.TestSecretCrypto()), testDispatcher)
 
         val firstId = apiSettingsRepository.insertApiConnection(
             provider = "a", name = "A", baseUrl = "https://a.example", apiKey = "k", model = "m"
@@ -357,13 +490,13 @@ data: [DONE]
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
         val sessionRepository = SessionRepository(db.database, testDispatcher)
-        val apiSettingsRepository = ApiSettingsRepository(db.database, testDispatcher)
+        val apiSettingsRepository = ApiSettingsRepository(db.database, chat.donzi.localtavern.data.security.ApiKeyCipher(chat.donzi.localtavern.data.security.TestSecretCrypto()), testDispatcher)
         apiSettingsRepository.insertApiConnection(
             provider = "test", name = "Test", baseUrl = "https://example.com",
             apiKey = "key", model = "model", isActive = true
         )
         val controller = ChatController(
-            sessionRepository, apiSettingsRepository,
+            sessionRepository, apiSettingsRepository, PricingRepository(db.database, testDispatcher),
             ChatClient(HttpClient(MockEngine { respond(
                 content = ByteReadChannel("data: [DONE]"),
                 status = HttpStatusCode.OK,
@@ -402,7 +535,8 @@ data: [DONE]
         val sessionRepository = SessionRepository(db.database, testDispatcher)
         val controller = ChatController(
             sessionRepository,
-            ApiSettingsRepository(db.database, testDispatcher),
+            ApiSettingsRepository(db.database, chat.donzi.localtavern.data.security.ApiKeyCipher(chat.donzi.localtavern.data.security.TestSecretCrypto()), testDispatcher),
+            PricingRepository(db.database, testDispatcher),
             ChatClient(HttpClient(MockEngine { respond(
                 content = ByteReadChannel("data: [DONE]"),
                 status = HttpStatusCode.OK,
@@ -506,7 +640,7 @@ data: {"type":"message_stop"}
                 chat.donzi.localtavern.utils.ChatMessage(role = "user", content = "Hi")
             ),
             provider = "Anthropic"
-        ).collect { tokens.add(it) }
+        ).collect { chunk -> chunk.content?.let { tokens.add(it) } }
 
         assertEquals("https://api.anthropic.com/v1/messages", capturedUrl)
         assertEquals("sk-ant-key", capturedKeyHeader)
@@ -587,7 +721,7 @@ data: [DONE]
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
         val sessionRepository = SessionRepository(db.database, testDispatcher)
-        val apiSettingsRepository = ApiSettingsRepository(db.database, testDispatcher)
+        val apiSettingsRepository = ApiSettingsRepository(db.database, chat.donzi.localtavern.data.security.ApiKeyCipher(chat.donzi.localtavern.data.security.TestSecretCrypto()), testDispatcher)
         apiSettingsRepository.insertApiConnection(
             provider = "test", name = "Test", baseUrl = "https://example.com",
             apiKey = "key", model = "model", isActive = true
@@ -613,7 +747,7 @@ data: [DONE]
             }
         )
         val controller = ChatController(
-            sessionRepository, apiSettingsRepository, client,
+            sessionRepository, apiSettingsRepository, PricingRepository(db.database, testDispatcher), client,
             CoroutineScope(testDispatcher + SupervisorJob()),
             payloadDispatcher = testDispatcher
         )
@@ -825,7 +959,7 @@ data: [DONE]
             client.streamChatRequest(
                 baseUrl = "https://example.com", apiKey = "k", model = "m",
                 messages = listOf(chat.donzi.localtavern.utils.ChatMessage(role = "user", content = "hi"))
-            ).collect { tokens.add(it) }
+            ).collect { chunk -> chunk.content?.let { tokens.add(it) } }
         } catch (e: Exception) {
             thrown = e
         }
@@ -841,7 +975,7 @@ data: [DONE]
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
         val sessionRepository = SessionRepository(db.database, testDispatcher)
-        val apiSettingsRepository = ApiSettingsRepository(db.database, testDispatcher)
+        val apiSettingsRepository = ApiSettingsRepository(db.database, chat.donzi.localtavern.data.security.ApiKeyCipher(chat.donzi.localtavern.data.security.TestSecretCrypto()), testDispatcher)
         apiSettingsRepository.insertApiConnection(
             provider = "test", name = "Test", baseUrl = "https://example.com",
             apiKey = "key", model = "model", isActive = true
@@ -879,7 +1013,7 @@ data: [DONE]
             }
         )
         val controller = ChatController(
-            sessionRepository, apiSettingsRepository, client,
+            sessionRepository, apiSettingsRepository, PricingRepository(db.database, testDispatcher), client,
             CoroutineScope(testDispatcher + SupervisorJob()),
             payloadDispatcher = testDispatcher
         )
@@ -904,7 +1038,7 @@ data: [DONE]
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
         val sessionRepository = SessionRepository(db.database, testDispatcher)
-        val apiSettingsRepository = ApiSettingsRepository(db.database, testDispatcher)
+        val apiSettingsRepository = ApiSettingsRepository(db.database, chat.donzi.localtavern.data.security.ApiKeyCipher(chat.donzi.localtavern.data.security.TestSecretCrypto()), testDispatcher)
         apiSettingsRepository.insertApiConnection(
             provider = "test", name = "Test", baseUrl = "https://example.com",
             apiKey = "key", model = "model", isActive = true
@@ -942,7 +1076,7 @@ data: [DONE]
             }
         )
         val controller = ChatController(
-            sessionRepository, apiSettingsRepository, client,
+            sessionRepository, apiSettingsRepository, PricingRepository(db.database, testDispatcher), client,
             CoroutineScope(testDispatcher + SupervisorJob()),
             payloadDispatcher = testDispatcher
         )

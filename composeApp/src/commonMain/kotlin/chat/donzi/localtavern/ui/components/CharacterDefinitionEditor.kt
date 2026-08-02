@@ -12,6 +12,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -45,7 +46,8 @@ fun CharacterDefinitionEditor(
         avatarData: ByteArray?
     ) -> Unit,
     onDelete: () -> Unit,
-    onExport: (Character) -> Unit
+    onExport: (Character) -> Unit,
+    onLorebookSave: (kotlinx.serialization.json.JsonObject?) -> Unit = {}
 ) {
     var name by remember(character.id) { mutableStateOf(character.name) }
     var description by remember(character.id) { mutableStateOf(character.description ?: "") }
@@ -64,6 +66,7 @@ fun CharacterDefinitionEditor(
 
     var showImageMenu by remember { mutableStateOf(false) }
     var showFullImage by remember { mutableStateOf(false) }
+    var showLorebookEditor by remember { mutableStateOf(false) }
 
     fun persist() = onSave(
         name, description, personality, scenario, firstMes,
@@ -157,6 +160,16 @@ fun CharacterDefinitionEditor(
                     Text("Export", style = MaterialTheme.typography.labelLarge)
                 }
 
+                OutlinedButton(
+                    onClick = { showLorebookEditor = true },
+                    modifier = Modifier.height(36.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Lorebook", style = MaterialTheme.typography.labelLarge)
+                }
+
                 Button(
                     onClick = { confirmDelete = true },
                     modifier = Modifier.height(36.dp),
@@ -171,7 +184,7 @@ fun CharacterDefinitionEditor(
                     Text("Delete", style = MaterialTheme.typography.labelLarge)
                 }
 
-                IconButton(onClick = { persist(); onClose() }, modifier = Modifier.size(36.dp)) {
+                IconButton(onClick = { onClose() }, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Default.Close, contentDescription = "Close")
                 }
             }
@@ -260,6 +273,14 @@ fun CharacterDefinitionEditor(
     val currentAvatar = avatarData
     if (showFullImage && currentAvatar != null) {
         FullscreenImageViewer(avatarData = currentAvatar, onDismiss = { showFullImage = false })
+    }
+
+    if (showLorebookEditor) {
+        LorebookEditorDialog(
+            characterBook = character.characterBook,
+            onSave = { bookJson -> onLorebookSave(bookJson) },
+            onDismiss = { showLorebookEditor = false }
+        )
     }
 
     if (confirmDelete) {

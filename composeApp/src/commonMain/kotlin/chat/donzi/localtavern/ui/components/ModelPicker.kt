@@ -103,7 +103,10 @@ fun ModelPicker(
                             providerDropdownExpanded = false
                         }
                     )
-                    providerSuggestions.forEach { provider ->
+                    // Cap the composed items defensively: a provider returning
+                    // thousands of models must not lay out every one of them,
+                    // whatever the caller passed in.
+                    providerSuggestions.take(50).forEach { provider ->
                         DropdownMenuItem(
                             text = { Text(provider) },
                             onClick = {
@@ -156,7 +159,7 @@ fun ModelPicker(
                     onDismissRequest = { modelDropdownExpanded = false },
                     modifier = Modifier.exposedDropdownSize().requiredHeightIn(max = 280.dp)
                 ) {
-                    filteredModels.forEach { model ->
+                    filteredModels.take(50).forEach { model ->
                         DropdownMenuItem(
                             text = {
                                 Column {

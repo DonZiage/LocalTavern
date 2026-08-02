@@ -92,11 +92,18 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
                 onThemeChanged(syncedDarkTheme)
             }
             MainScreen(
-                chatController = chatController,
-                characterRepository = container.characterRepository,
-                sessionRepository = container.sessionRepository,
-                apiSettingsRepository = container.apiSettingsRepository,
-                chatClient = container.chatClient,
+                deps = MainScreenDependencies(
+                    chatController = chatController,
+                    characterRepository = container.characterRepository,
+                    sessionRepository = container.sessionRepository,
+                    apiSettingsRepository = container.apiSettingsRepository,
+                    pricingRepository = container.pricingRepository,
+                    apiKeyCipher = container.apiKeyCipher,
+                    syncService = container.syncService,
+                    syncRepository = container.syncRepository,
+                    syncDiscovery = container.syncDiscovery,
+                    chatClient = container.chatClient
+                ),
                 characters = characters,
                 personas = personas,
                 activePersonaId = activePersonaId,

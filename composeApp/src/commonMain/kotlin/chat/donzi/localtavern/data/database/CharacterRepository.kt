@@ -174,6 +174,31 @@ class CharacterRepository(database: LocalTavernDB) : BaseRepository(database) {
         )
     }
 
+    suspend fun updateCharacterLorebook(id: String, characterBook: JsonObject?) = withContext(Dispatchers.IO) {
+        val existing = queries.selectCharacterById(id).executeAsOneOrNull() ?: return@withContext
+        // Only the round-trip characterBook field changes; carry everything
+        // else forward so the lorebook save cannot strip card metadata.
+        queries.updateCharacter(
+            name = existing.name,
+            description = existing.description,
+            personality = existing.personality ?: "",
+            scenario = existing.scenario ?: "",
+            firstMes = existing.firstMes,
+            mesExample = existing.mesExample,
+            altGreetings = existing.altGreetings,
+            avatarData = existing.avatarData,
+            systemPrompt = existing.systemPrompt,
+            postHistoryInstructions = existing.postHistoryInstructions,
+            creator = existing.creator,
+            characterVersion = existing.characterVersion,
+            tags = existing.tags,
+            extensions = existing.extensions,
+            characterBook = encodeJsonObject(characterBook),
+            updatedAt = currentTimeMillis(),
+            id = id
+        )
+    }
+
     suspend fun getAllPersonas(): List<Persona> = withContext(Dispatchers.IO) {
         queries.selectAllPersonas().executeAsList().map { it.toDomain() }
     }

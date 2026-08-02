@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun ApiConnectionSettings(
     apiSettingsRepository: ApiSettingsRepository,
+    pricingRepository: chat.donzi.localtavern.data.database.PricingRepository,
     chatClient: ChatClient,
     onApiChanged: () -> Unit = {}
 ) {
@@ -97,6 +98,7 @@ fun ApiConnectionSettings(
             ParameterControls(
                 connection = currentActive,
                 apiSettingsRepository = apiSettingsRepository,
+                pricingRepository = pricingRepository,
                 onUpdate = { _ ->
                     // ParameterControls persists the debounced write itself;
                     // this callback only refreshes the UI state afterwards.

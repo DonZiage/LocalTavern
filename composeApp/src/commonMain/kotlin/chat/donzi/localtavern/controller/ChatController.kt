@@ -1,37 +1,23 @@
 package chat.donzi.localtavern.controller
 
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
+import chat.donzi.localtavern.data.database.PricingRepository
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.data.network.ChatClient
-import chat.donzi.localtavern.data.network.GenerationParams
-import chat.donzi.localtavern.data.network.StreamTruncatedException
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Message
 import chat.donzi.localtavern.domain.Persona
 import chat.donzi.localtavern.domain.Session
-import chat.donzi.localtavern.utils.ChatMessage
-import chat.donzi.localtavern.utils.ContextManager
-import chat.donzi.localtavern.utils.ImageAttachment
-import chat.donzi.localtavern.utils.detectMimeType
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
-import kotlin.time.Clock
-import kotlin.time.Duration
-import kotlin.time.Duration.Companion.seconds
-import kotlin.time.TimeSource
 
 data class ChatUiState(
     val messages: List<Message> = emptyList(),
@@ -39,18 +25,30 @@ data class ChatUiState(
     val currentSession: Session? = null,
     val isGenerating: Boolean = false,
     val errorMessage: String? = null,
-    val errorIsWarning: Boolean = false
+    val errorIsWarning: Boolean = false,
+    // Live estimated cost of the in-flight generation (null when unknown).
+    val liveCostEstimate: chat.donzi.localtavern.data.pricing.CostEstimate? = null
 )
 
 class ChatController(
     private val sessionRepository: SessionRepository,
     private val apiSettingsRepository: ApiSettingsRepository,
+    private val pricingRepository: PricingRepository,
     private val chatClient: ChatClient,
     private val scope: CoroutineScope,
     private val payloadDispatcher: CoroutineDispatcher = Dispatchers.Default
 ) {
     private val _state = MutableStateFlow(ChatUiState())
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
+
+    private val generationRunner = GenerationRunner(
+        sessionRepository = sessionRepository,
+        apiSettingsRepository = apiSettingsRepository,
+        pricingRepository = pricingRepository,
+        chatClient = chatClient,
+        scope = scope,
+        payloadDispatcher = payloadDispatcher
+    )
 
     private var responseJob: Job? = null
 
@@ -125,231 +123,18 @@ class ChatController(
         // deleting the placeholder and silently no-oping. A stale error from
         // a previous run is cleared so it cannot coexist with a live attempt.
         responseJob?.cancel()
-        _state.update { it.copy(isGenerating = true, errorMessage = null, errorIsWarning = false) }
+        _state.update { it.copy(isGenerating = true, errorMessage = null, errorIsWarning = false, liveCostEstimate = null) }
         responseJob = scope.launch {
             try {
-                val activeConnection = apiSettingsRepository.getActiveApiConnection()
-                if (activeConnection != null) {
-                    val aiMessageId = sessionRepository.insertMessage(sessionId, "assistant", "...", targetParentId)
-                    refreshIfViewed(sessionId)
-
-                    val responseBuilder = StringBuilder()
-                    var lastStateTime = 0L
-                    var lastPersistTime = 0L
-
-                    // The placeholder is inserted before the payload is built
-                    // and the stream is opened. Any failure in that phase must
-                    // remove the placeholder, or a phantom "..." message would
-                    // remain in the session with no error surfaced.
-                    try {
-                        @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
-                        val messagesPayload = withContext(payloadDispatcher) {
-                            val dbMessages = sessionRepository.getMessagesForSession(sessionId)
-
-                            val chatHistory = dbMessages
-                                .filter { it.id != aiMessageId }
-                                .map { msg ->
-                                    val attachmentsList = msg.images.map { imgBytes ->
-                                        ImageAttachment(
-                                            base64 = kotlin.io.encoding.Base64.encode(imgBytes),
-                                            mimeType = detectMimeType(imgBytes)
-                                        )
-                                    }
-                                    ChatMessage(
-                                        role = msg.role,
-                                        content = msg.content,
-                                        images = attachmentsList
-                                    )
-                                }
-
-                            val blocks = apiSettingsRepository.getAllPromptBlocks()
-                            ContextManager.buildPayload(
-                                blocks = blocks, character = character, persona = persona, chatHistory = chatHistory,
-                                contextLimit = activeConnection.contextLimit, responseLimit = activeConnection.responseLimit
-                            )
-                        }
-
-                        val timeoutLimitSeconds = activeConnection.timeoutLimit
-                        val tokenChannel = Channel<String>(Channel.UNLIMITED)
-
-                        // Idle timeout: the deadline restarts on every token, so
-                        // a continuously streaming response is never killed by a
-                        // total-stream deadline, while a stalled stream (long
-                        // silence with no tokens) still surfaces a timeout.
-                        val timeoutDuration = if (timeoutLimitSeconds <= 0L) null else timeoutLimitSeconds.seconds
-                        var lastTokenAt = TimeSource.Monotonic.markNow()
-
-                        val generationParams = GenerationParams(
-                            temperature = activeConnection.temperature,
-                            topP = activeConnection.topP,
-                            topK = activeConnection.topK,
-                            presencePenalty = activeConnection.presencePenalty,
-                            frequencyPenalty = activeConnection.frequencyPenalty,
-                            maxTokens = activeConnection.responseLimit
-                        )
-
-                        val streamJob = scope.launch {
-                            try {
-                                chatClient.streamChatRequest(
-                                    baseUrl = activeConnection.baseUrl ?: "", apiKey = activeConnection.apiKey ?: "",
-                                    model = activeConnection.model ?: "", messages = messagesPayload,
-                                    isChatCompletion = activeConnection.isChatCompletion,
-                                    params = generationParams, provider = activeConnection.provider,
-                                    timeoutSeconds = activeConnection.timeoutLimit
-                                ).collect { token -> tokenChannel.send(token) }
-                            } catch (e: Exception) {
-                                tokenChannel.close(e)
-                                return@launch
-                            }
-                            tokenChannel.close()
-                        }
-
-                        try {
-                            while (true) {
-                                val channelResult = if (timeoutDuration == null) {
-                                    tokenChannel.receiveCatching()
-                                } else {
-                                    val elapsedSinceLastToken = lastTokenAt.elapsedNow()
-                                    if (elapsedSinceLastToken >= timeoutDuration) {
-                                        // Force the timeout so the partial
-                                        // response is kept with a warning.
-                                        withTimeout(Duration.ZERO) { tokenChannel.receiveCatching() }
-                                    } else {
-                                        withTimeout(timeoutDuration - elapsedSinceLastToken) { tokenChannel.receiveCatching() }
-                                    }
-                                }
-
-                                if (channelResult.isClosed) {
-                                    val cause = channelResult.exceptionOrNull()
-                                    if (cause != null) {
-                                        throw cause
-                                    }
-                                    break
-                                }
-
-                                val token = channelResult.getOrNull() ?: break
-
-                                // Any progress resets the idle timer.
-                                lastTokenAt = TimeSource.Monotonic.markNow()
-                                responseBuilder.append(token)
-
-                                val now = Clock.System.now().toEpochMilliseconds()
-                                // Throttle UI and DB updates so fast token streams do
-                                // not rebuild the message list (and re-encode the full
-                                // response string) on every single token.
-                                if (now - lastStateTime >= 50) {
-                                    lastStateTime = now
-                                    val snapshot = responseBuilder.toString()
-                                    _state.update { st ->
-                                        if (viewedSessionId != sessionId) {
-                                            st
-                                        } else {
-                                            st.copy(messages = st.messages.map { msg -> if (msg.id == aiMessageId) msg.copy(content = snapshot) else msg })
-                                        }
-                                    }
-                                }
-                                if (now - lastPersistTime >= 250) {
-                                    lastPersistTime = now
-                                    sessionRepository.updateMessageContent(aiMessageId, responseBuilder.toString())
-                                }
-                            }
-                            val fullResponse = responseBuilder.toString()
-                            if (fullResponse.isBlank()) {
-                                sessionRepository.deleteMessage(aiMessageId)
-                            } else {
-                                sessionRepository.updateMessageContent(aiMessageId, fullResponse)
-                            }
-                            refreshIfViewed(sessionId)
-                        } catch (e: StreamTruncatedException) {
-                            // The stream delivered tokens but closed without a
-                            // terminator: recover the full response with a
-                            // non-streaming request and replace the partial
-                            // text, so a truncated reply is never persisted as
-                            // complete (and the partial is never duplicated).
-                            streamJob.cancel()
-                            try {
-                                val recovered = withContext(payloadDispatcher) {
-                                    chatClient.sendChatRequest(
-                                        baseUrl = activeConnection.baseUrl ?: "", apiKey = activeConnection.apiKey ?: "",
-                                        model = activeConnection.model ?: "", messages = messagesPayload,
-                                        isChatCompletion = activeConnection.isChatCompletion, params = generationParams,
-                                        provider = activeConnection.provider, timeoutSeconds = activeConnection.timeoutLimit
-                                    )
-                                }
-                                if (recovered.isBlank()) {
-                                    sessionRepository.deleteMessage(aiMessageId)
-                                } else {
-                                    sessionRepository.updateMessageContent(aiMessageId, recovered)
-                                    _state.update { st ->
-                                        if (viewedSessionId != sessionId) {
-                                            st
-                                        } else {
-                                            st.copy(messages = st.messages.map { msg -> if (msg.id == aiMessageId) msg.copy(content = recovered) else msg })
-                                        }
-                                    }
-                                }
-                                refreshIfViewed(sessionId)
-                            } catch (ce: CancellationException) {
-                                throw ce
-                            } catch (_: Exception) {
-                                // Recovery failed: keep the partial text and
-                                // surface the truncation error.
-                                _state.update { it.copy(errorMessage = e.message ?: "Response was interrupted.", errorIsWarning = false) }
-                                refreshIfViewed(sessionId)
-                            }
-                        } catch (_: TimeoutCancellationException) {
-                            streamJob.cancel()
-                            val partialResponse = responseBuilder.toString()
-                            if (partialResponse.isBlank()) {
-                                sessionRepository.deleteMessage(aiMessageId)
-                            } else {
-                                sessionRepository.updateMessageContent(aiMessageId, partialResponse)
-                            }
-                            _state.update { it.copy(errorMessage = "Response timeout exceeded.", errorIsWarning = true) }
-                            refreshIfViewed(sessionId)
-                        } catch (_: CancellationException) {
-                            streamJob.cancel()
-                            withContext(NonCancellable) {
-                                val partialResponse = responseBuilder.toString()
-                                if (partialResponse.isBlank()) {
-                                    sessionRepository.deleteMessage(aiMessageId)
-                                } else {
-                                    sessionRepository.updateMessageContent(aiMessageId, partialResponse)
-                                }
-                            }
-                            refreshIfViewed(sessionId)
-                        } catch (e: Exception) {
-                            streamJob.cancel()
-                            val partialResponse = responseBuilder.toString()
-                            if (partialResponse.isBlank()) {
-                                sessionRepository.deleteMessage(aiMessageId)
-                            } else {
-                                sessionRepository.updateMessageContent(aiMessageId, partialResponse)
-                            }
-                            _state.update { it.copy(errorMessage = e.message ?: "Unknown error occurred", errorIsWarning = false) }
-                            refreshIfViewed(sessionId)
-                        }
-                    } catch (e: CancellationException) {
-                        // Generation was stopped before any token was handled;
-                        // drop the placeholder so it cannot linger in the session.
-                        withContext(NonCancellable) {
-                            sessionRepository.deleteMessage(aiMessageId)
-                        }
-                        refreshIfViewed(sessionId)
-                        throw e
-                    } catch (e: Exception) {
-                        // Payload build or stream setup failed before any token
-                        // was handled; remove the placeholder and surface the error.
-                        withContext(NonCancellable) {
-                            sessionRepository.deleteMessage(aiMessageId)
-                        }
-                        _state.update { it.copy(errorMessage = e.message ?: "Unknown error occurred", errorIsWarning = false) }
-                        refreshIfViewed(sessionId)
-                    }
-                } else {
-                    _state.update { it.copy(errorMessage = "No active API connection configured.", errorIsWarning = false) }
-                    refreshIfViewed(sessionId)
-                }
+                generationRunner.run(
+                    sessionId = sessionId,
+                    character = character,
+                    persona = persona,
+                    targetParentId = targetParentId,
+                    state = _state,
+                    isCurrentView = { viewedSessionId == sessionId },
+                    onRefresh = { refreshIfViewed(it) }
+                )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -362,7 +147,7 @@ class ChatController(
                 // generating flag; a superseded job that finishes its cleanup
                 // after a newer generation started must not touch its state.
                 if (responseJob === coroutineContext[Job]) {
-                    _state.update { it.copy(isGenerating = false) }
+                    _state.update { it.copy(isGenerating = false, liveCostEstimate = null) }
                     responseJob = null
                 }
             }

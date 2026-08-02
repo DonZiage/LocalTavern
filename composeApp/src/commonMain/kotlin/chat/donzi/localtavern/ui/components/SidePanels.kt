@@ -1,31 +1,48 @@
 package chat.donzi.localtavern.ui.components
 
-import androidx.compose.animation.*
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.ScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
-import chat.donzi.localtavern.domain.Character
-import chat.donzi.localtavern.domain.Persona
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.data.network.ChatClient
+import chat.donzi.localtavern.domain.Character
+import chat.donzi.localtavern.domain.Persona
 import androidx.compose.ui.geometry.Offset
 
 enum class ActiveDrawer {
@@ -40,6 +57,11 @@ fun SidePanels(
     drawerWidth: Dp,
     onClose: () -> Unit,
     apiSettingsRepository: ApiSettingsRepository,
+    pricingRepository: chat.donzi.localtavern.data.database.PricingRepository,
+    apiKeyCipher: chat.donzi.localtavern.data.security.ApiKeyCipher,
+    syncService: chat.donzi.localtavern.data.sync.SyncService,
+    syncRepository: chat.donzi.localtavern.data.sync.SyncRepository,
+    syncDiscovery: chat.donzi.localtavern.data.sync.SyncDiscovery,
     chatClient: ChatClient,
     isDarkMode: Boolean,
     onToggleDarkMode: (Boolean, Offset) -> Unit,
@@ -105,6 +127,11 @@ fun SidePanels(
         ) {
             SettingsPanelContent(
                 apiSettingsRepository = apiSettingsRepository,
+                pricingRepository = pricingRepository,
+                apiKeyCipher = apiKeyCipher,
+                syncService = syncService,
+                syncRepository = syncRepository,
+                syncDiscovery = syncDiscovery,
                 chatClient = chatClient,
                 isDarkMode = isDarkMode,
                 onToggleDarkMode = onToggleDarkMode,
@@ -151,176 +178,6 @@ fun SidePanels(
                 onCharactersExpandedChange = { charactersExpanded = it },
                 scrollState = charactersScrollState
             )
-        }
-    }
-}
-
-@Composable
-fun SettingsPanelContent(
-    apiSettingsRepository: ApiSettingsRepository,
-    chatClient: ChatClient,
-    isDarkMode: Boolean,
-    onToggleDarkMode: (Boolean, Offset) -> Unit,
-    onApiChanged: () -> Unit,
-    apiSectionExpanded: Boolean,
-    onApiSectionExpandedChange: (Boolean) -> Unit,
-    scrollState: ScrollState = rememberScrollState()
-) {
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 8.dp
-    ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 64.dp)
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "Settings",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                ThemeToggle(
-                    isDarkMode = isDarkMode,
-                    onToggleDarkMode = onToggleDarkMode
-                )
-            }
-
-            Column(modifier = Modifier.fillMaxSize()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onApiSectionExpandedChange(!apiSectionExpanded) }
-                        .padding(vertical = 12.dp, horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        "API Connection",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Icon(
-                        if (apiSectionExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                        contentDescription = null
-                    )
-                }
-                AnimatedVisibility(
-                    visible = apiSectionExpanded,
-                    modifier = Modifier.weight(1f),
-                    enter = expandVertically() + fadeIn(),
-                    exit = shrinkVertically() + fadeOut()
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(scrollState)
-                    ) {
-                        ApiConnectionSettings(
-                            apiSettingsRepository = apiSettingsRepository,
-                            chatClient = chatClient,
-                            onApiChanged = onApiChanged
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun CharactersPanelContent(
-    personas: List<Persona>,
-    activePersonaId: String?,
-    onPersonaSelect: (String) -> Unit,
-    onPersonaAdd: (String, String?, ByteArray?) -> Unit,
-    onPersonaUpdate: (String, String, String?, ByteArray?) -> Unit,
-    onPersonaDelete: (String) -> Unit,
-    characters: List<Character>,
-    onCharacterSelect: (Character) -> Unit,
-    onCharactersDelete: (Set<String>) -> Unit,
-    onCharacterImport: (SillyTavernCardV2, ByteArray?) -> Unit,
-    onCharacterExport: (Character) -> Unit,
-    onCharacterCreate: (String) -> Unit,
-    onCharacterEdit: (Character) -> Unit,
-    autoEditDefaultPersona: Boolean,
-    onAutoEditConsumed: () -> Unit,
-    autoShowNewCharacterMenu: Boolean,
-    onAutoShowMenuConsumed: () -> Unit,
-    personasExpanded: Boolean,
-    onPersonasExpandedChange: (Boolean) -> Unit,
-    charactersExpanded: Boolean,
-    onCharactersExpandedChange: (Boolean) -> Unit,
-    scrollState: ScrollState = rememberScrollState()
-) {
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 8.dp
-    ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 64.dp)
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "Characters",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(scrollState)
-            ) {
-                CollapsibleSettingsSection(
-                    title = "Personas",
-                    expanded = personasExpanded,
-                    onExpandedChange = onPersonasExpandedChange
-                ) {
-                    PersonaManagementSection(
-                        personas = personas,
-                        activePersonaId = activePersonaId,
-                        onSelect = onPersonaSelect,
-                        onAdd = onPersonaAdd,
-                        onUpdate = onPersonaUpdate,
-                        onDelete = onPersonaDelete,
-                        autoEditDefaultPersona = autoEditDefaultPersona,
-                        onAutoEditConsumed = onAutoEditConsumed
-                    )
-                }
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp).alpha(0.3f))
-
-                CollapsibleSettingsSection(
-                    title = "Characters",
-                    expanded = charactersExpanded,
-                    onExpandedChange = onCharactersExpandedChange
-                ) {
-                    CharacterListSection(
-                        characters = characters,
-                        modifier = Modifier.heightIn(max = 1000.dp),
-                        onSelect = onCharacterSelect,
-                        onDeleteSelected = onCharactersDelete,
-                        onImportCharacter = onCharacterImport,
-                        onCreateCharacter = onCharacterCreate,
-                        onEditCharacter = onCharacterEdit,
-                        onExportCharacter = onCharacterExport,
-                        autoShowNewCharacterMenu = autoShowNewCharacterMenu,
-                        onAutoShowMenuConsumed = onAutoShowMenuConsumed
-                    )
-                }
-            }
         }
     }
 }

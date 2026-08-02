@@ -265,4 +265,35 @@ class ContextManagerTest {
             "The text around {{chat_history}} must not be silently dropped")
         assertEquals("Hello", result[1].content)
     }
+
+    @Test
+    fun buildPayload_lastMessageMacroResolvesAgainstSentHistory() {
+        val result = ContextManager.buildPayload(
+            blocks = listOf(block("You reply to: {{lastMessage}}")),
+            character = character,
+            persona = persona,
+            chatHistory = listOf(ChatMessage(role = "user", content = "Hello there")),
+            contextLimit = 4096,
+            responseLimit = 256
+        )
+
+        assertTrue(result[0].content.contains("Hello there"),
+            "{{lastMessage}} must resolve to the last sent message when it fits the budget")
+    }
+
+    @Test
+    fun buildPayload_lastMessageMacroDoesNotLeakTruncatedMessages() {
+        val longMessage = "Word ".repeat(200) + "SECRET_TAIL"
+        val result = ContextManager.buildPayload(
+            blocks = listOf(block("Last message: {{lastMessage}}")),
+            character = character,
+            persona = persona,
+            chatHistory = listOf(ChatMessage(role = "user", content = longMessage)),
+            contextLimit = 100,
+            responseLimit = 0
+        )
+
+        assertTrue(result.all { !it.content.contains("SECRET_TAIL") },
+            "A message truncated out of the budget must not leak into the prompt through {{lastMessage}}")
+    }
 }

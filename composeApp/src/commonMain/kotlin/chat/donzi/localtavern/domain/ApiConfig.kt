@@ -18,5 +18,7 @@ data class ApiConfig(
     val contextLimit: Long,
     val responseLimit: Long,
     val displayOrder: Long,
-    val timeoutLimit: Long
+    val timeoutLimit: Long,
+    // 0 = auto-detect reasoning models by name, 1 = force on, 2 = force off.
+    val reasoningOverride: Int = 0
 )

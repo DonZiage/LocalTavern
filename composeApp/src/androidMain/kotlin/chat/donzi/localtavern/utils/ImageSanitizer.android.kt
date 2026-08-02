@@ -11,8 +11,20 @@ actual fun downscaleImageForChat(bytes: ByteArray): ByteArray? {
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
-        var sampleSize = 1
         val largestDim = maxOf(bounds.outWidth, bounds.outHeight)
+        val isJpeg = bytes.size >= 3 &&
+                bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte()
+        // BitmapFactory ignores the EXIF orientation tag; rotating the pixels
+        // later bakes the rotation in. When nothing needs to change, keep the
+        // original bytes instead of re-encoding: this preserves PNG
+        // transparency / GIF animation / WebP and avoids a lossy round-trip,
+        // matching the desktop and iOS behavior.
+        val needsExifRotation = isJpeg && readJpegExifOrientation(bytes) != 1
+        if (largestDim <= ImageSanitizer.MAX_DIMENSION_PX && bytes.size <= ImageSanitizer.MAX_BYTES && !needsExifRotation) {
+            return bytes
+        }
+
+        var sampleSize = 1
         while (largestDim / (sampleSize * 2) >= ImageSanitizer.MAX_DIMENSION_PX) {
             sampleSize *= 2
         }
@@ -33,11 +45,11 @@ actual fun downscaleImageForChat(bytes: ByteArray): ByteArray? {
             }
         }
 
-        // BitmapFactory ignores the EXIF orientation tag; rotate the decoded
-        // pixels so portrait photos are not stored sideways. The re-encode
-        // below then bakes the rotation in (and drops the EXIF metadata that
-        // would otherwise rotate the pixels a second time).
-        val orientation = readJpegExifOrientation(bytes)
+        // Apply the EXIF rotation read above (a JPEG that needs rotating was
+        // excluded from the early return). The re-encode below then bakes the
+        // rotation in and drops the EXIF metadata that would otherwise rotate
+        // the pixels a second time.
+        val orientation = if (isJpeg) readJpegExifOrientation(bytes) else 1
         if (orientation != 1) {
             val matrix = Matrix().apply {
                 when (orientation) {
