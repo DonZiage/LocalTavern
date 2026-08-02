@@ -9,7 +9,16 @@ build/
 */build/
 .kotlin/
 bin/
+*.jar
 !gradle-wrapper.jar
+
+# --- Local Databases (defensive; app data lives outside the repo) ---
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+localtavern.db*
 
 # --- Kotlin Multiplatform / Native ---
 .konan/
@@ -69,6 +78,9 @@ yarn-error.log*
 out/
 .navigation/
 # !.idea/runConfigurations/
+
+# --- IDEs: JetBrains Fleet ---
+.fleet/
 
 # --- IDEs: Visual Studio Code ---
 .vscode/
