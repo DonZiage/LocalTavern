@@ -38,16 +38,22 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
     val darkModeFromDb by appState.isDarkMode.collectAsState()
     val isInitialized by appState.isInitialized.collectAsState()
     val initError by appState.initError.collectAsState()
+    // Sync bootstraps in the background (identity load/keygen); the main
+    // screen must not be shown until it is ready, since MainScreen consumes
+    // the sync components directly.
+    val syncReady by container.syncReady.collectAsState()
+    val syncError by container.syncError.collectAsState()
 
     val systemDark = isSystemInDarkTheme()
     var activeDrawer by remember { mutableStateOf(ActiveDrawer.None) }
 
-    if (!isInitialized) {
+    if (!isInitialized || !syncReady) {
         LocalTavernTheme(darkTheme = systemDark) {
             Surface(
                 modifier = Modifier.fillMaxSize(),
                 color = MaterialTheme.colorScheme.background
             ) {
+                val initError = initError ?: syncError
                 if (initError != null) {
                     // Surface initialization failures instead of spinning
                     // forever with no explanation.
@@ -60,11 +66,14 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
                             Text(
-                                text = initError.orEmpty(),
+                                text = initError,
                                 color = MaterialTheme.colorScheme.error,
                                 modifier = Modifier.padding(horizontal = 32.dp)
                             )
-                            Button(onClick = { appState.retry() }) {
+                            Button(onClick = {
+                                appState.retry()
+                                container.retrySyncBootstrap()
+                            }) {
                                 Text("Retry")
                             }
                         }

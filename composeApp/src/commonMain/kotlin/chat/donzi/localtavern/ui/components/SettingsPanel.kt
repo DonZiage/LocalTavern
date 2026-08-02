@@ -112,6 +112,7 @@ fun SettingsPanelContent(
                             apiSettingsRepository = apiSettingsRepository,
                             pricingRepository = pricingRepository,
                             chatClient = chatClient,
+                            apiKeyCipher = apiKeyCipher,
                             onApiChanged = onApiChanged
                         )
                     }

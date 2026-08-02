@@ -64,3 +64,8 @@ LocalTavern is built primarily to satisfy my own specific use-case and workflow.
 
 *Everyone is free to open issues and share feedback to improve the project.* 
 - **PR are no available until further notice**
+
+## Known Limitations
+
+- **Images live in the SQLite database as BLOBs.** Message images and avatars are stored inline in `MessageEntity`/`CharacterEntity` rows and travel inside the encrypted sync envelope. They are bounded at ingest (sanitized to ≤1024px and ≤1.5MB each with a quality ladder), so per-image cost is controlled, but a long image-heavy history grows the database file and produces large (tens of MB) sync exchanges until the cursor drains. A file-based store would require a schema migration, sync file transfer, and platform storage — not implemented.
+- **The hand-rolled markdown renderer is deliberately conservative:** no raw HTML, links render as non-clickable labels, and inline spans are strict-format only, so malformed LLM output degrades to plain text instead of misrendering.

@@ -1,12 +1,14 @@
 package chat.donzi.localtavern.ui.components
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.domain.ApiConfig
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.network.ChatClient
+import chat.donzi.localtavern.data.security.ApiKeyCipher
 import kotlinx.coroutines.launch
 
 @Composable
@@ -14,6 +16,7 @@ fun ApiConnectionSettings(
     apiSettingsRepository: ApiSettingsRepository,
     pricingRepository: chat.donzi.localtavern.data.database.PricingRepository,
     chatClient: ChatClient,
+    apiKeyCipher: ApiKeyCipher,
     onApiChanged: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
@@ -21,6 +24,11 @@ fun ApiConnectionSettings(
     var showAddDialog by remember { mutableStateOf(false) }
     var editingConnection by remember { mutableStateOf<ApiConfig?>(null) }
     var refreshTrigger by remember { mutableStateOf(0) }
+    // One-time nudge on desktop (passphrase backend): the first saved API
+    // key is plaintext unless the user opts in, so offer protection right
+    // when the decision is most relevant.
+    var showPassphraseNudge by remember { mutableStateOf(false) }
+    var showProtectDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(refreshTrigger) {
         connections = apiSettingsRepository.getAllApiConnections()
@@ -118,6 +126,7 @@ fun ApiConnectionSettings(
                     // The repository derives the active flag and display order
                     // from fresh DB state, so a stale UI list cannot wrongly
                     // activate the new connection or collide on ordering.
+                    val isFirstConnection = connections.isEmpty()
                     apiSettingsRepository.insertApiConnection(
                         provider = provider,
                         name = name,
@@ -130,6 +139,12 @@ fun ApiConnectionSettings(
                     showAddDialog = false
                     refreshTrigger++
                     onApiChanged()
+                    if (isFirstConnection &&
+                        apiKeyCipher.backendName.contains("passphrase", ignoreCase = true) &&
+                        !apiKeyCipher.isProtected
+                    ) {
+                        showPassphraseNudge = true
+                    }
                 }
             }
         )
@@ -163,6 +178,56 @@ fun ApiConnectionSettings(
                         timeoutLimit = connectionToEdit.timeoutLimit
                     )
                     editingConnection = null
+                    refreshTrigger++
+                    onApiChanged()
+                }
+            }
+        )
+    }
+
+    if (showPassphraseNudge) {
+        AlertDialog(
+            onDismissRequest = { showPassphraseNudge = false },
+            title = { Text("Protect your API keys?") },
+            text = {
+                Text(
+                    "The desktop build stores API keys as plaintext unless you set a passphrase. " +
+                        "You can do this now, or anytime in Settings → API Key Security."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showPassphraseNudge = false
+                    showProtectDialog = true
+                }) {
+                    Text("Protect…")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPassphraseNudge = false }) {
+                    Text("Not now")
+                }
+            }
+        )
+    }
+
+    if (showProtectDialog) {
+        PassphraseDialog(
+            title = "Protect API Keys",
+            message = "Keys will be encrypted with a passphrase-derived key. Remember the passphrase — without it the keys cannot be recovered.",
+            confirmLabel = "Protect",
+            requireConfirmation = true,
+            onDismiss = { showProtectDialog = false },
+            onConfirm = { passphrase ->
+                scope.launch {
+                    // Failure (e.g. data dir not writable) leaves the keys
+                    // plaintext; the security section below reflects the real
+                    // state on refresh and offers the full flow to retry.
+                    runCatching {
+                        apiKeyCipher.protect(passphrase)
+                        apiSettingsRepository.reencryptAllApiKeys()
+                    }
+                    showProtectDialog = false
                     refreshTrigger++
                     onApiChanged()
                 }

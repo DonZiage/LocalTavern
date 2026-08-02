@@ -23,12 +23,16 @@ import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 
 class AppContainer(driverFactory: DriverFactory) {
@@ -63,51 +67,83 @@ class AppContainer(driverFactory: DriverFactory) {
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     // Device identity for P2P sync: created once, stored platform-privately.
-    // Key generation is a one-shot at startup; blocking the constructor is
-    // acceptable (fast, and the UI waits on app initialization anyway).
+    // Loading it (or generating the X25519 keypair on first run) used to block
+    // the constructor on the main thread at startup; it now runs in the
+    // background and the UI's init gate (App) waits for syncReady before
+    // showing the main screen.
     private val syncIdentityStore: SyncIdentityStore = createSyncIdentityStore()
-    private val syncIdentity: SyncIdentity = runBlocking {
-        loadOrCreateSyncIdentity(syncIdentityStore)
-    }
-    val syncRepository = SyncRepository(database, syncIdentity, apiKeyCipher = apiKeyCipher, clock = logicalClock)
-    val syncService = SyncService(
-        identity = syncIdentity,
-        crypto = SyncCrypto(),
-        repository = syncRepository,
-        identityStore = syncIdentityStore,
-        httpClient = httpClient,
-        scope = appScope,
-        localAddressesProvider = { localIpAddresses() }
-    ).also { it.startServer() }
 
-    // LAN discovery: announces this device and learns the current addresses
-    // of paired devices (so a peer whose IP changed is still reachable).
-    val syncDiscovery = SyncDiscovery(
-        identity = syncIdentity,
-        scope = appScope,
-        syncPort = SYNC_PORT,
-        onPeerSeen = { discovered ->
-            appScope.launch {
-                val peer = syncRepository.getPeer(discovered.deviceId)
-                val newAddress = "${discovered.address}:${discovered.syncPort}"
-                if (peer != null && peer.lastKnownAddress != newAddress) {
-                    syncRepository.updatePeerAddress(discovered.deviceId, newAddress)
+    // Initialized by retrySyncBootstrap() once the identity resolves; the UI
+    // must not touch them before syncReady is true.
+    lateinit var syncRepository: SyncRepository
+    lateinit var syncService: SyncService
+    lateinit var syncDiscovery: SyncDiscovery
+
+    private val _syncReady = MutableStateFlow(false)
+    val syncReady: StateFlow<Boolean> = _syncReady.asStateFlow()
+
+    private val _syncError = MutableStateFlow<String?>(null)
+    val syncError: StateFlow<String?> = _syncError.asStateFlow()
+
+    init {
+        retrySyncBootstrap()
+    }
+
+    // Loads or creates the sync identity off the main thread, then wires up
+    // the sync stack. Failures surface through syncError instead of leaving
+    // the app on a permanent loading spinner; retry() re-runs the sequence.
+    fun retrySyncBootstrap() {
+        _syncError.value = null
+        appScope.launch {
+            try {
+                val identity = withContext(Dispatchers.Default) {
+                    loadOrCreateSyncIdentity(syncIdentityStore)
                 }
+                syncRepository = SyncRepository(database, identity, apiKeyCipher = apiKeyCipher, clock = logicalClock)
+                syncService = SyncService(
+                    identity = identity,
+                    crypto = SyncCrypto(),
+                    repository = syncRepository,
+                    identityStore = syncIdentityStore,
+                    httpClient = httpClient,
+                    scope = appScope,
+                    localAddressesProvider = { localIpAddresses() }
+                ).also { it.startServer() }
+
+                // LAN discovery: announces this device and learns the current
+                // addresses of paired devices (so a peer whose IP changed is
+                // still reachable).
+                syncDiscovery = SyncDiscovery(
+                    identity = identity,
+                    scope = appScope,
+                    syncPort = SYNC_PORT,
+                    onPeerSeen = { discovered ->
+                        appScope.launch {
+                            val peer = syncRepository.getPeer(discovered.deviceId)
+                            val newAddress = "${discovered.address}:${discovered.syncPort}"
+                            if (peer != null && peer.lastKnownAddress != newAddress) {
+                                syncRepository.updatePeerAddress(discovered.deviceId, newAddress)
+                            }
+                        }
+                    }
+                ).also { it.start() }
+
+                _syncReady.value = true
+
+                // Auto-sync with all paired devices when the app starts.
+                if (syncRepository.getPeers().isNotEmpty()) {
+                    syncService.syncAllPeersAsync()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _syncError.value = e.message ?: "Failed to initialize sync."
             }
         }
-    ).also { it.start() }
+    }
 
     val chatController: ChatController = ChatController(sessionRepository, apiSettingsRepository, pricingRepository, chatClient, appScope)
     val appState: AppState = AppState(characterRepository, apiSettingsRepository, sessionRepository, appScope)
-
-    init {
-        // Auto-sync with all paired devices when the app starts.
-        appScope.launch {
-            if (syncRepository.getPeers().isNotEmpty()) {
-                syncService.syncAllPeersAsync()
-            }
-        }
-    }
 
     // Cancels all app-level coroutines (generation, flows, settings writes)
     // and releases the HTTP client. Called when the composition is disposed,
@@ -116,8 +152,8 @@ class AppContainer(driverFactory: DriverFactory) {
     // new UI silently does nothing.
     fun close() {
         appScope.cancel()
-        syncDiscovery.stop()
-        syncService.stopServer()
+        if (::syncDiscovery.isInitialized) syncDiscovery.stop()
+        if (::syncService.isInitialized) syncService.stopServer()
         httpClient.close()
     }
 }
