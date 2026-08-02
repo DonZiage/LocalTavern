@@ -67,23 +67,26 @@ class ChatClient(private val httpClient: HttpClient) {
     }
 
     suspend fun checkStatus(baseUrl: String, apiKey: String, provider: String? = null): Boolean =
-        probeConnection(baseUrl, apiKey, provider) == ConnectionProbe.Ok
+        probeConnection(baseUrl, apiKey, provider).outcome == ConnectionProbe.Ok
 
-    suspend fun probeConnection(baseUrl: String, apiKey: String, provider: String? = null): ConnectionProbe {
+    suspend fun probeConnection(baseUrl: String, apiKey: String, provider: String? = null): ProbeResult {
         val apiStyle = apiStyleForProvider(provider)
         return try {
             val response = httpClient.get("${baseUrl.trimEnd('/')}/models") {
                 putAuthHeaders(apiStyle, apiKey)
             }
             when {
-                response.status.value in 200..299 -> ConnectionProbe.Ok
-                response.status.value == 401 || response.status.value == 403 -> ConnectionProbe.AuthFailed
-                else -> ConnectionProbe.Unreachable
+                response.status.value in 200..299 -> ProbeResult(ConnectionProbe.Ok)
+                response.status.value == 401 || response.status.value == 403 ->
+                    ProbeResult(ConnectionProbe.AuthFailed, detail = "HTTP ${response.status.value} ${response.status.description}")
+                else -> ProbeResult(ConnectionProbe.Unreachable, detail = "HTTP ${response.status.value} ${response.status.description}")
             }
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
-            ConnectionProbe.Unreachable
+        } catch (e: Exception) {
+            // Surface the transport reason (DNS failure, connection refused,
+            // timeout, ...) so a misconfigured URL is diagnosable at a glance.
+            ProbeResult(ConnectionProbe.Unreachable, detail = e.message?.take(160))
         }
     }
 

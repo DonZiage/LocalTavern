@@ -67,4 +67,40 @@ class ApiKeyCipher(private val crypto: SecretCrypto) {
         // marker off so a re-save of an unreadable blob does not double-encrypt.
         return if (decrypted == stored.removePrefix(ENCRYPTED_PREFIX)) stored else decrypted
     }
+
+    /**
+     * Stored form -> portable (plaintext) form for sync envelopes.
+     *
+     * Stored keys are encrypted under THIS device's backend (Keystore,
+     * Keychain or passphrase), so a synced blob would be undecryptable on any
+     * other device. The sync envelope is end-to-end encrypted, so the key can
+     * safely travel as plaintext inside it; the receiving device re-encrypts
+     * it under its own backend.
+     *
+     * Returns null when the key cannot be read here (locked passphrase): the
+     * key is withheld from the sync rather than shipping a blob the peer can
+     * never decrypt.
+     */
+    fun toPortableForm(stored: String?): String? {
+        val portable = decryptFromStorage(stored) ?: return null
+        // Still carries the encrypted marker: this device could not decrypt
+        // it, so no other device can either. Withhold it.
+        if (portable.startsWith(ENCRYPTED_PREFIX)) return null
+        return portable
+    }
+
+    /**
+     * Portable (plaintext) form -> stored form for THIS device.
+     *
+     * The plaintext key is encrypted under the local backend, falling back to
+     * plaintext when the backend is unavailable (same semantics as a local
+     * save). A string that is still marked as encrypted was produced by an
+     * older peer version that shipped its local ciphertext: it is unusable
+     * here, and null is returned so the caller keeps its existing key instead
+     * of storing an undecryptable one.
+     */
+    fun fromPortableForm(portable: String?): String? {
+        if (portable == null || portable.startsWith(ENCRYPTED_PREFIX)) return null
+        return encryptForStorage(portable)
+    }
 }

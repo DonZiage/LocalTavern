@@ -8,6 +8,7 @@ import chat.donzi.localtavern.data.database.MessageEntity
 import chat.donzi.localtavern.data.database.PersonaEntity
 import chat.donzi.localtavern.data.database.PromptBlockEntity
 import chat.donzi.localtavern.data.database.SyncPeer
+import chat.donzi.localtavern.data.security.ApiKeyCipher
 import app.cash.sqldelight.coroutines.asFlow
 import app.cash.sqldelight.coroutines.mapToList
 import kotlinx.coroutines.CoroutineDispatcher
@@ -21,7 +22,12 @@ import kotlinx.coroutines.withContext
 class SyncRepository(
     private val database: LocalTavernDB,
     private val identity: SyncIdentity,
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    // Converts API keys between the device-stored form (encrypted under the
+    // local backend) and the portable plaintext form used inside the
+    // end-to-end-encrypted sync envelope. Null keeps the legacy behavior of
+    // shipping the stored value verbatim (tests, or backends without a cipher).
+    private val apiKeyCipher: ApiKeyCipher? = null
 ) {
     private val queries get() = database.localTavernDBQueries
 
@@ -101,7 +107,7 @@ class SyncRepository(
             personas = queries.selectPersonaDeltas(since).executeAsList().map { it.toSync() },
             sessions = queries.selectSessionDeltas(since).executeAsList().map { it.toSync() },
             messages = queries.selectMessageDeltas(since).executeAsList().map { it.toSync() },
-            apiConnections = queries.selectApiConnectionDeltas(since).executeAsList().map { it.toSync() },
+            apiConnections = queries.selectApiConnectionDeltas(since).executeAsList().map { it.toSync(apiKeyCipher) },
             promptBlocks = queries.selectPromptBlockDeltas(since).executeAsList().map { it.toSync() }
         )
     }
@@ -227,10 +233,15 @@ class SyncRepository(
     private fun apply(row: SyncApiConnection, peerDeviceId: String) {
         val existing = queries.selectApiConnectionByIdAny(row.id).executeAsOneOrNull()
         if (existing != null && !incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        // The active flag is a per-device preference (like activePersonaId);
+        // it never crosses the wire, so a sync cannot silently flip which
+        // profile THIS device uses, and its deactivation cascade cannot
+        // generate sync churn.
+        val storedKey = effectiveApiKey(row.apiKey, existing?.apiKey)
         if (existing == null) {
             queries.insertApiConnectionFull(
                 id = row.id, provider = row.provider, name = row.name, baseUrl = row.baseUrl,
-                apiKey = row.apiKey, model = row.model, isActive = row.isActive,
+                apiKey = storedKey, model = row.model, isActive = 0L,
                 isChatCompletion = row.isChatCompletion, lastUsed = row.lastUsed,
                 temperature = row.temperature, topP = row.topP, topK = row.topK,
                 presencePenalty = row.presencePenalty, frequencyPenalty = row.frequencyPenalty,
@@ -241,8 +252,8 @@ class SyncRepository(
             )
         } else {
             queries.upsertApiConnectionFull(
-                provider = row.provider, name = row.name, baseUrl = row.baseUrl, apiKey = row.apiKey,
-                model = row.model, isActive = row.isActive, isChatCompletion = row.isChatCompletion,
+                provider = row.provider, name = row.name, baseUrl = row.baseUrl, apiKey = storedKey,
+                model = row.model, isActive = 0L, isChatCompletion = row.isChatCompletion,
                 lastUsed = row.lastUsed, temperature = row.temperature, topP = row.topP,
                 topK = row.topK, presencePenalty = row.presencePenalty,
                 frequencyPenalty = row.frequencyPenalty, contextLimit = row.contextLimit,
@@ -251,6 +262,23 @@ class SyncRepository(
                 updatedAt = row.updatedAt, isDeleted = row.isDeleted, id = row.id
             )
         }
+    }
+
+    /**
+     * Maps an incoming wire-form key to this device's stored form.
+     *
+     * - Wire key null/blank (peer has no key, or withheld its undecryptable
+     *   one): keep whatever this device already stored — a withheld key must
+     *   not wipe a working local key, and a null key is never a deliberate
+     *   "clear" (local updates keep the stored key when passed null).
+     * - Wire key is portable plaintext: re-encrypt under the local backend.
+     * - Wire key still marked (foreign encrypted blob from an older peer):
+     *   unusable here; keep the existing key instead of clobbering it.
+     */
+    private fun effectiveApiKey(wireKey: String?, existingStored: String?): String? {
+        val cipher = apiKeyCipher ?: return wireKey
+        if (wireKey.isNullOrBlank()) return existingStored ?: wireKey
+        return cipher.fromPortableForm(wireKey) ?: existingStored
     }
 
     private fun apply(row: SyncPromptBlock, peerDeviceId: String) {
@@ -305,12 +333,17 @@ private fun MessageEntity.toSync() = SyncMessage(
     costEstimate = costEstimate
 )
 
-private fun ApiConnection.toSync() = SyncApiConnection(
-    id = id, provider = provider, name = name, baseUrl = baseUrl, apiKey = apiKey,
-    model = model, isActive = isActive, isChatCompletion = isChatCompletion,
-    lastUsed = lastUsed, temperature = temperature, topP = topP, topK = topK,
-    presencePenalty = presencePenalty, frequencyPenalty = frequencyPenalty,
-    contextLimit = contextLimit, responseLimit = responseLimit, displayOrder = displayOrder,
+private fun ApiConnection.toSync(cipher: ApiKeyCipher?) = SyncApiConnection(
+    id = id, provider = provider, name = name, baseUrl = baseUrl,
+    // The key travels as portable plaintext inside the end-to-end-encrypted
+    // envelope (see ApiKeyCipher.toPortableForm); a key this device cannot
+    // read is withheld (null) so the peer never stores an undecryptable blob.
+    apiKey = if (cipher != null) cipher.toPortableForm(apiKey) else apiKey,
+    model = model, isActive = 0L, isChatCompletion = isChatCompletion,
+    lastUsed = lastUsed, temperature = temperature, topP = topP,
+    topK = topK, presencePenalty = presencePenalty,
+    frequencyPenalty = frequencyPenalty, contextLimit = contextLimit,
+    responseLimit = responseLimit, displayOrder = displayOrder,
     timeoutLimit = timeoutLimit, reasoningOverride = reasoningOverride,
     updatedAt = updatedAt, isDeleted = isDeleted
 )

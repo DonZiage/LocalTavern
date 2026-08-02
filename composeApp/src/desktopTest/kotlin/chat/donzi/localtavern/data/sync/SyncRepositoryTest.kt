@@ -3,6 +3,8 @@ package chat.donzi.localtavern.data.sync
 import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import chat.donzi.localtavern.data.database.LocalTavernDB
 import chat.donzi.localtavern.data.database.SyncPeer
+import chat.donzi.localtavern.data.security.ApiKeyCipher
+import chat.donzi.localtavern.data.security.ReversibleTestSecretCrypto
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -18,9 +20,10 @@ class SyncRepositoryTest {
     private class Device(val repo: SyncRepository, val db: LocalTavernDB) {
         val personas get() = db.localTavernDBQueries.selectAllPersonas().executeAsList()
         val personaAny get() = db.localTavernDBQueries.selectPersonaByIdAny("p1").executeAsOneOrNull()
+        fun connAny(id: String) = db.localTavernDBQueries.selectApiConnectionByIdAny(id).executeAsOneOrNull()
     }
 
-    private fun TestScope.newDevice(deviceId: String): Device {
+    private fun TestScope.newDevice(deviceId: String, apiKeyCipher: ApiKeyCipher? = null): Device {
         val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
         LocalTavernDB.Schema.create(driver)
         val db = LocalTavernDB(driver)
@@ -30,13 +33,34 @@ class SyncRepositoryTest {
             privateKeyBase64 = kotlin.io.encoding.Base64.encode(ByteArray(32) { 1 }),
             publicKeyBase64 = kotlin.io.encoding.Base64.encode(ByteArray(32) { 2 })
         )
-        return Device(SyncRepository(db, identity), db)
+        return Device(SyncRepository(db, identity, apiKeyCipher = apiKeyCipher), db)
     }
 
     private fun syncPersona(id: String, name: String, updatedAt: Long, isDeleted: Long) = SyncPersona(
         id = id, name = name, description = null, avatarData = null,
         updatedAt = updatedAt, isDeleted = isDeleted
     )
+
+    private fun syncApiConnection(id: String, apiKey: String?, isActive: Long = 0L, updatedAt: Long = 1000L) =
+        SyncApiConnection(
+            id = id, provider = "openai", name = "Conn", baseUrl = "http://localhost",
+            apiKey = apiKey, model = "gpt-4o", isActive = isActive, isChatCompletion = 1L,
+            lastUsed = 0L, temperature = 1.0, topP = 1.0, topK = 0L, presencePenalty = 0.0,
+            frequencyPenalty = 0.0, contextLimit = 4096L, responseLimit = 1024L,
+            displayOrder = 0L, timeoutLimit = 60L, reasoningOverride = 0L,
+            updatedAt = updatedAt, isDeleted = 0L
+        )
+
+    private fun Device.insertConnection(id: String, apiKey: String?, isActive: Long, updatedAt: Long) {
+        db.localTavernDBQueries.insertApiConnectionFull(
+            id = id, provider = "openai", name = "Conn", baseUrl = "http://localhost",
+            apiKey = apiKey, model = "gpt-4o", isActive = isActive, isChatCompletion = 1L,
+            lastUsed = 0L, temperature = 1.0, topP = 1.0, topK = 0L, presencePenalty = 0.0,
+            frequencyPenalty = 0.0, contextLimit = 4096L, responseLimit = 1024L,
+            displayOrder = 0L, timeoutLimit = 60L, reasoningOverride = 0L,
+            updatedAt = updatedAt, isDeleted = 0L
+        )
+    }
 
     private suspend fun Device.insert(id: String, name: String, updatedAt: Long, isDeleted: Long = 0L) {
         repo.applyChanges(SyncChanges(personas = listOf(syncPersona(id, name, updatedAt, isDeleted))), peerDeviceId = "seed")
@@ -168,5 +192,85 @@ class SyncRepositoryTest {
         val peer = device.repo.getPeer("peer-1")!!
         assertEquals(123L, peer.receivedCursor)
         assertEquals(456L, peer.peerReceivedCursor)
+    }
+
+    @Test
+    fun apiKeySync_incomingPlaintextIsReencryptedUnderLocalBackend() = runTest {
+        val cipher = ApiKeyCipher(ReversibleTestSecretCrypto())
+        val device = newDevice("device-a", apiKeyCipher = cipher)
+
+        // The peer ships the key as portable plaintext inside the E2E envelope.
+        device.repo.applyChanges(
+            SyncChanges(apiConnections = listOf(syncApiConnection("c1", apiKey = "sk-123", updatedAt = 2000L))),
+            peerDeviceId = "device-b"
+        )
+
+        val stored = device.connAny("c1")
+        assertNotNull(stored)
+        assertEquals("ltv1:X(sk-123)", stored.apiKey, "Incoming plaintext key must be stored encrypted under the LOCAL backend")
+        assertEquals("sk-123", cipher.decryptFromStorage(stored.apiKey), "The locally stored blob must round-trip")
+    }
+
+    @Test
+    fun apiKeySync_sendSideShipsPortablePlaintextAndNoActiveFlag() = runTest {
+        val cipher = ApiKeyCipher(ReversibleTestSecretCrypto())
+        val device = newDevice("device-a", apiKeyCipher = cipher)
+        device.insertConnection(id = "c1", apiKey = "ltv1:X(sk-456)", isActive = 1L, updatedAt = 3000L)
+
+        val delta = device.repo.collectDelta(0L)
+
+        val wired = delta.apiConnections.single()
+        assertEquals("sk-456", wired.apiKey, "The locally decryptable key must travel as portable plaintext")
+        assertEquals(0L, wired.isActive, "The active flag is a per-device preference and must not cross the wire")
+    }
+
+    @Test
+    fun apiKeySync_undecryptableLocalKeyIsWithheld() = runTest {
+        val cipher = ApiKeyCipher(ReversibleTestSecretCrypto())
+        val device = newDevice("device-a", apiKeyCipher = cipher)
+        // A blob the local backend cannot decrypt (unknown format, locked-out
+        // backend) must not be shipped: the peer could never use it.
+        device.insertConnection(id = "c1", apiKey = "ltv1:garbage-not-x(...)", isActive = 0L, updatedAt = 3000L)
+
+        val delta = device.repo.collectDelta(0L)
+
+        assertNull(delta.apiConnections.single().apiKey, "An undecryptable key must be withheld, not shipped")
+    }
+
+    @Test
+    fun apiKeySync_withheldOrForeignKeyKeepsExistingStoredKey() = runTest {
+        val cipher = ApiKeyCipher(ReversibleTestSecretCrypto())
+        val device = newDevice("device-a", apiKeyCipher = cipher)
+        device.insertConnection(id = "c1", apiKey = "ltv1:X(my-key)", isActive = 0L, updatedAt = 1000L)
+
+        // A newer row whose key was withheld (null): keep the working local key.
+        device.repo.applyChanges(
+            SyncChanges(apiConnections = listOf(syncApiConnection("c1", apiKey = null, updatedAt = 2000L))),
+            peerDeviceId = "device-b"
+        )
+        assertEquals("ltv1:X(my-key)", device.connAny("c1")!!.apiKey)
+
+        // A newer row carrying a FOREIGN encrypted blob (older peer version):
+        // unusable here, so the local key must survive the LWW update too.
+        device.repo.applyChanges(
+            SyncChanges(apiConnections = listOf(syncApiConnection("c1", apiKey = "ltv1:foreign-blob", updatedAt = 3000L))),
+            peerDeviceId = "device-b"
+        )
+        assertEquals("ltv1:X(my-key)", device.connAny("c1")!!.apiKey, "A foreign blob must not clobber the local key")
+    }
+
+    @Test
+    fun apiKeySync_incomingActiveFlagIsIgnored() = runTest {
+        val device = newDevice("device-a", apiKeyCipher = ApiKeyCipher(ReversibleTestSecretCrypto()))
+
+        // An old peer may still ship isActive=1; this device must not adopt it.
+        device.repo.applyChanges(
+            SyncChanges(apiConnections = listOf(syncApiConnection("c1", apiKey = "sk-1", isActive = 1L, updatedAt = 2000L))),
+            peerDeviceId = "device-b"
+        )
+
+        val stored = device.connAny("c1")
+        assertNotNull(stored)
+        assertEquals(0L, stored.isActive, "Incoming isActive=1 must be ignored so sync cannot flip the local profile")
     }
 }

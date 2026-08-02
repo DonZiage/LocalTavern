@@ -68,3 +68,11 @@ enum class ApiStyle { OpenAI, Anthropic }
 // (DNS/connection failure, 404, 5xx). The UI distinguishes auth failures from
 // transport failures so an unreachable server is not reported as a bad key.
 enum class ConnectionProbe { Ok, AuthFailed, Unreachable }
+
+// A probe outcome plus the raw reason behind a failure (HTTP status or
+// transport error message), so the UI can tell "404 on the URL" apart from
+// "connection refused" instead of showing a generic message.
+data class ProbeResult(
+    val outcome: ConnectionProbe,
+    val detail: String? = null
+)

@@ -64,7 +64,7 @@ class AppContainer(driverFactory: DriverFactory) {
     private val syncIdentity: SyncIdentity = runBlocking {
         loadOrCreateSyncIdentity(syncIdentityStore)
     }
-    val syncRepository = SyncRepository(database, syncIdentity)
+    val syncRepository = SyncRepository(database, syncIdentity, apiKeyCipher = apiKeyCipher)
     val syncService = SyncService(
         identity = syncIdentity,
         crypto = SyncCrypto(),

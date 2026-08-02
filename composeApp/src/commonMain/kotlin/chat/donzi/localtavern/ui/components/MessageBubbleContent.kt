@@ -1,6 +1,9 @@
 package chat.donzi.localtavern.ui.components
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -49,13 +52,28 @@ internal fun MessageBubbleContent(
                 onSubmit = onSubmitEdit
             )
         } else if (content.isNotBlank()) {
+            val markdownBlocks = rememberMarkdown(text = content, defaultColor = textColor)
             SelectionContainer {
-                Text(
-                    text = parseMarkdownToAnnotatedString(text = content, defaultColor = textColor),
-                    color = textColor,
-                    fontSize = 16.sp,
-                    lineHeight = 22.sp
-                )
+                Column {
+                    markdownBlocks.forEachIndexed { index, block ->
+                        if (block.text.isNotEmpty()) {
+                            if (index > 0) {
+                                Spacer(Modifier.height(6.dp))
+                            }
+                            Text(
+                                text = block.text,
+                                color = textColor,
+                                fontSize = 16.sp,
+                                lineHeight = 22.sp,
+                                modifier = if (block.isCodeBlock) {
+                                    Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+                                } else {
+                                    Modifier
+                                }
+                            )
+                        }
+                    }
+                }
             }
         }
 

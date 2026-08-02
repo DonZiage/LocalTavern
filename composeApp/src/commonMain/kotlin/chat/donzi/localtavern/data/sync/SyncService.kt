@@ -228,18 +228,26 @@ class SyncService(
     // invalidates the static secrets entirely.
     private data class ExchangeKey(val key: ByteArray, val ephemeralPublicKey: ByteArray)
 
-    private suspend fun deriveExchangeKey(peerPublicKey: ByteArray, peerEphemeralPublicKey: ByteArray? = null): ExchangeKey {
+    // Outbound direction: the fresh ephemeral keypair seals THIS exchange, and
+    // its public half is shipped inside the request for the peer to re-derive
+    // the same channel key.
+    private suspend fun outboundChannelKey(peerPublicKey: ByteArray): ExchangeKey {
         val staticShared = crypto.deriveSharedSecret(identity.privateKeyBytes, peerPublicKey)
         val (ephemeralPrivate, ephemeralPublic) = crypto.generateKeyPair()
-        val ephemeralShared = if (peerEphemeralPublicKey != null) {
-            crypto.deriveSharedSecret(identity.privateKeyBytes, peerEphemeralPublicKey)
-        } else {
-            crypto.deriveSharedSecret(ephemeralPrivate, peerPublicKey)
-        }
+        val ephemeralShared = crypto.deriveSharedSecret(ephemeralPrivate, peerPublicKey)
         return ExchangeKey(
             key = crypto.deriveChannelSecret(staticShared, ephemeralShared),
             ephemeralPublicKey = ephemeralPublic
         )
+    }
+
+    // Inbound direction: the peer's ephemeral public key (shipped with the
+    // request/response) replaces our own ephemeral half; the DH result is the
+    // same secret the peer derived with its ephemeral private key.
+    private suspend fun inboundChannelKey(peerPublicKey: ByteArray, peerEphemeralPublicKey: ByteArray): ByteArray {
+        val staticShared = crypto.deriveSharedSecret(identity.privateKeyBytes, peerPublicKey)
+        val ephemeralShared = crypto.deriveSharedSecret(identity.privateKeyBytes, peerEphemeralPublicKey)
+        return crypto.deriveChannelSecret(staticShared, ephemeralShared)
     }
 
     suspend fun syncNow(peerId: String): Result<String> = withContext(Dispatchers.IO) {
@@ -252,7 +260,7 @@ class SyncService(
 
             // Changes I have not yet sent this peer, and my received cursor.
             val myChanges = repository.collectDelta(peer.peerReceivedCursor)
-            val channelKey = deriveExchangeKey(peerPublicKey)
+            val channelKey = outboundChannelKey(peerPublicKey)
             val envelope = SyncEnvelope(
                 fromDeviceId = identity.deviceId,
                 cursor = peer.receivedCursor,
@@ -283,7 +291,7 @@ class SyncService(
             if (peerEphemeral == null || peerEphemeral.size != 32) {
                 error("Invalid ephemeral key from peer.")
             }
-            val responseKey = deriveExchangeKey(peerPublicKey, peerEphemeral).key
+            val responseKey = inboundChannelKey(peerPublicKey, peerEphemeral)
             val responseEnvelope = decodeEnvelope(
                 crypto.decrypt(responseKey, aad(from = peer.deviceId, to = identity.deviceId), decodeBase64(responsePayload))
             )
@@ -311,7 +319,7 @@ class SyncService(
             if (peerEphemeral == null || peerEphemeral.size != 32) {
                 return ExchangeResponse(ok = false, message = "Invalid ephemeral key.")
             }
-            val channelKey = deriveExchangeKey(peerKey, peerEphemeral).key
+            val channelKey = inboundChannelKey(peerKey, peerEphemeral)
             val envelope = decodeEnvelope(
                 crypto.decrypt(channelKey, aad(from = fromDeviceId, to = identity.deviceId), decodeBase64(encryptedPayload))
             )
@@ -333,7 +341,7 @@ class SyncService(
             )
 
             val myChanges = repository.collectDelta(envelope.cursor)
-            val myExchangeKey = deriveExchangeKey(peerKey)
+            val myExchangeKey = outboundChannelKey(peerKey)
             val responseEnvelope = SyncEnvelope(
                 fromDeviceId = identity.deviceId,
                 cursor = newReceivedCursor,

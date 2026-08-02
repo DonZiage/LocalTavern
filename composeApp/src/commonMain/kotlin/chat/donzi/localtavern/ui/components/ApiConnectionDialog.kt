@@ -115,8 +115,8 @@ fun ApiConnectionDialog(
         isLoadingModels = true
         try {
             val probe = chatClient.probeConnection(effectiveBaseUrl, keyToTest, selectedProvider)
-            probeResult = probe
-            if (probe == ConnectionProbe.Ok) {
+            probeResult = probe.outcome
+            if (probe.outcome == ConnectionProbe.Ok) {
                 // The key is confirmed working even if the model list fetch
                 // fails below; that failure must not disable Save for a valid
                 // key (the model can still be typed in manually).
@@ -124,9 +124,10 @@ fun ApiConnectionDialog(
                 allModels = chatClient.fetchModels(effectiveBaseUrl, keyToTest, selectedProvider)
             } else {
                 isKeyValid = false
-                connectionError = when (probe) {
-                    ConnectionProbe.AuthFailed -> "The API key was rejected. Check the key and try again."
-                    else -> "Could not reach the API endpoint. Check the URL and your network connection."
+                val detail = probe.detail?.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
+                connectionError = when (probe.outcome) {
+                    ConnectionProbe.AuthFailed -> "The API key was rejected. Check the key and try again.$detail"
+                    else -> "Could not reach the API endpoint. Check the URL and your network connection.$detail"
                 }
                 allModels = emptyList()
             }
