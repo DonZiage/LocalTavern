@@ -19,6 +19,8 @@ bin/
 *.sqlite
 *.sqlite3
 localtavern.db*
+# LocalTavern app data directory (defensive; normally in $HOME)
+.localtavern/
 
 # --- Kotlin Multiplatform / Native ---
 .konan/
@@ -26,6 +28,7 @@ kotlin-native-macos*/
 kotlin-native-linux*/
 kotlin-native-windows*/
 *.klib
+*.kotlin_module
 # Linked frameworks for iOS
 *.framework/
 
@@ -57,6 +60,8 @@ proguard/
 /iosApp/Pods.txt
 /iosApp/Podfile.lock
 /iosApp/.xcresult/
+/iosApp/*.xccheckout
+.swiftpm/
 
 # --- Web Specific (Compose HTML/Wasm) ---
 node_modules/
@@ -113,3 +118,12 @@ desktop.ini
 *.log
 hs_err_pid*
 replay_pid*
+*.jfr
+
+# --- Editor Backups & Merge Artifacts ---
+*~
+*.swp
+*.swo
+*.orig
+*.rej
+*.bak
