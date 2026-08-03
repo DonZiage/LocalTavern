@@ -120,7 +120,15 @@ fun ApiConnectionItem(
             }
             
             Text(
-                connection.model ?: "None", 
+                buildString {
+                    append(connection.model ?: "None")
+                    if (!connection.inferenceProvider.isNullOrBlank()) {
+                        append("  ·  via ${connection.inferenceProvider}")
+                    }
+                    if (!connection.quantization.isNullOrBlank()) {
+                        append("  ·  ${connection.quantization}")
+                    }
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 fontSize = 14.sp,
                 maxLines = 1, 

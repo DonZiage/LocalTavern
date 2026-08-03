@@ -21,5 +21,12 @@ fun isOpenAIEffortModel(model: String?): Boolean {
     return Regex("(^|[^a-z])o[1-9]([^a-z]|$)", RegexOption.IGNORE_CASE).containsMatchIn(model)
 }
 
-fun apiStyleForProvider(provider: String?): ApiStyle =
-    if (provider?.trim().equals("Anthropic", ignoreCase = true)) ApiStyle.Anthropic else ApiStyle.OpenAI
+// The request format is chosen by the endpoint, not by a user-picked
+// "provider": Anthropic's API speaks its own protocol while everything else
+// is OpenAI-compatible. A stored provider (legacy connections) or an
+// "anthropic" host in the base URL selects the Anthropic style.
+fun apiStyleForProvider(provider: String?, baseUrl: String? = null): ApiStyle {
+    if (provider?.trim().equals("Anthropic", ignoreCase = true)) return ApiStyle.Anthropic
+    if (baseUrl?.contains("anthropic", ignoreCase = true) == true) return ApiStyle.Anthropic
+    return ApiStyle.OpenAI
+}

@@ -21,6 +21,7 @@ import chat.donzi.localtavern.data.sync.createSyncIdentityStore
 import chat.donzi.localtavern.data.sync.localIpAddresses
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.HttpTimeoutConfig
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
@@ -37,16 +38,23 @@ import kotlinx.serialization.json.Json
 
 class AppContainer(driverFactory: DriverFactory) {
     val database: LocalTavernDB = LocalTavernDB(driverFactory.createDriver())
+    // All DB access must go through ONE thread: the JVM driver opens a separate
+    // SQLite connection per thread (JdbcSqliteDriver.ThreadedConnectionManager),
+    // so concurrent transactions on Dispatchers.IO run on different connections
+    // and one of them fails with "SQL is busy" (SQLITE_BUSY) — e.g. switching
+    // characters fast overlaps getOrCreateSession/ensureInitialGreetings writes.
+    // Serializing on a single dispatcher keeps every statement on one connection.
+    private val databaseDispatcher = Dispatchers.IO.limitedParallelism(1)
     val secretCrypto = createSecretCrypto()
     val apiKeyCipher = ApiKeyCipher(secretCrypto)
     // One logical clock shared by every repository: the sync layer advances
     // it with every received timestamp and all local writes stamp from it,
     // keeping LWW immune to wall-clock skew between devices.
     val logicalClock = LogicalClock(database)
-    val characterRepository: CharacterRepository = CharacterRepository(database, clock = logicalClock)
-    val sessionRepository: SessionRepository = SessionRepository(database, clock = logicalClock)
-    val apiSettingsRepository: ApiSettingsRepository = ApiSettingsRepository(database, apiKeyCipher, clock = logicalClock)
-    val pricingRepository: PricingRepository = PricingRepository(database)
+    val characterRepository: CharacterRepository = CharacterRepository(database, clock = logicalClock, ioDispatcher = databaseDispatcher)
+    val sessionRepository: SessionRepository = SessionRepository(database, ioDispatcher = databaseDispatcher, clock = logicalClock)
+    val apiSettingsRepository: ApiSettingsRepository = ApiSettingsRepository(database, apiKeyCipher, databaseDispatcher, clock = logicalClock)
+    val pricingRepository: PricingRepository = PricingRepository(database, databaseDispatcher)
 
     val httpClient: HttpClient = HttpClient {
         install(ContentNegotiation) {
@@ -57,7 +65,7 @@ class AppContainer(driverFactory: DriverFactory) {
         }
         install(HttpTimeout) {
             // Total request timeout is disabled so long-running SSE streams are not killed.
-            requestTimeoutMillis = 0
+            requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
             connectTimeoutMillis = 15_000
             socketTimeoutMillis = 60_000
         }
@@ -90,8 +98,11 @@ class AppContainer(driverFactory: DriverFactory) {
     }
 
     // Loads or creates the sync identity off the main thread, then wires up
-    // the sync stack. Failures surface through syncError instead of leaving
-    // the app on a permanent loading spinner; retry() re-runs the sequence.
+    // the sync stack (repository + service + discovery). Nothing listens or
+    // broadcasts yet: the server and discovery only start on demand via
+    // ensureSyncRunning(). Failures surface through syncError instead of
+    // leaving the app on a permanent loading spinner; retry() re-runs the
+    // sequence.
     fun retrySyncBootstrap() {
         _syncError.value = null
         appScope.launch {
@@ -99,7 +110,7 @@ class AppContainer(driverFactory: DriverFactory) {
                 val identity = withContext(Dispatchers.Default) {
                     loadOrCreateSyncIdentity(syncIdentityStore)
                 }
-                syncRepository = SyncRepository(database, identity, apiKeyCipher = apiKeyCipher, clock = logicalClock)
+                syncRepository = SyncRepository(database, identity, ioDispatcher = databaseDispatcher, apiKeyCipher = apiKeyCipher, clock = logicalClock)
                 syncService = SyncService(
                     identity = identity,
                     crypto = SyncCrypto(),
@@ -108,11 +119,12 @@ class AppContainer(driverFactory: DriverFactory) {
                     httpClient = httpClient,
                     scope = appScope,
                     localAddressesProvider = { localIpAddresses() }
-                ).also { it.startServer() }
+                )
 
                 // LAN discovery: announces this device and learns the current
                 // addresses of paired devices (so a peer whose IP changed is
-                // still reachable).
+                // still reachable). Created here, but only started once the
+                // user actually engages with sync (see ensureSyncRunning).
                 syncDiscovery = SyncDiscovery(
                     identity = identity,
                     scope = appScope,
@@ -126,20 +138,24 @@ class AppContainer(driverFactory: DriverFactory) {
                             }
                         }
                     }
-                ).also { it.start() }
+                )
 
                 _syncReady.value = true
-
-                // Auto-sync with all paired devices when the app starts.
-                if (syncRepository.getPeers().isNotEmpty()) {
-                    syncService.syncAllPeersAsync()
-                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 _syncError.value = e.message ?: "Failed to initialize sync."
             }
         }
+    }
+
+    // The sync server and LAN discovery only run while the user is actually
+    // using sync: an idle app must not listen on the sync port or broadcast
+    // on the LAN. Every sync UI action calls this first (idempotent).
+    fun ensureSyncRunning() {
+        if (!::syncService.isInitialized) return
+        syncService.startServer()
+        if (::syncDiscovery.isInitialized) syncDiscovery.start()
     }
 
     val chatController: ChatController = ChatController(sessionRepository, apiSettingsRepository, pricingRepository, chatClient, appScope)

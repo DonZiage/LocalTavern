@@ -5,6 +5,7 @@ import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Persona
 import app.cash.sqldelight.coroutines.asFlow
 import app.cash.sqldelight.coroutines.mapToList
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.Flow
@@ -26,24 +27,25 @@ private fun encodeTags(tags: List<String>): String? = tags.takeIf { it.isNotEmpt
 
 class CharacterRepository(
     database: LocalTavernDB,
-    clock: LogicalClock = LogicalClock(database)
+    clock: LogicalClock = LogicalClock(database),
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) : BaseRepository(database, clock) {
 
     fun observeCharacters(): Flow<List<Character>> =
-        queries.selectAllCharacters().asFlow().mapToList(Dispatchers.IO).map { list -> list.map { it.toDomain() } }
+        queries.selectAllCharacters().asFlow().mapToList(ioDispatcher).map { list -> list.map { it.toDomain() } }
 
     fun observePersonas(): Flow<List<Persona>> =
-        queries.selectAllPersonas().asFlow().mapToList(Dispatchers.IO).map { list -> list.map { it.toDomain() } }
+        queries.selectAllPersonas().asFlow().mapToList(ioDispatcher).map { list -> list.map { it.toDomain() } }
 
-    suspend fun getAllCharacters(): List<Character> = withContext(Dispatchers.IO) {
+    suspend fun getAllCharacters(): List<Character> = withContext(ioDispatcher) {
         queries.selectAllCharacters().executeAsList().map { it.toDomain() }
     }
 
-    suspend fun getAssistant(): Character? = withContext(Dispatchers.IO) {
+    suspend fun getAssistant(): Character? = withContext(ioDispatcher) {
         queries.selectAssistant().executeAsOneOrNull()?.toDomain()
     }
 
-    suspend fun createAssistant(): String = withContext(Dispatchers.IO) {
+    suspend fun createAssistant(): String = withContext(ioDispatcher) {
         val newId = generateUuid()
         val now = nextTimestamp()
         queries.insertCharacter(
@@ -71,14 +73,14 @@ class CharacterRepository(
         newId
     }
 
-    suspend fun getCharacterById(id: String): Character? = withContext(Dispatchers.IO) {
+    suspend fun getCharacterById(id: String): Character? = withContext(ioDispatcher) {
         queries.selectCharacterById(id).executeAsOneOrNull()?.toDomain()
     }
 
     suspend fun upsertCharacter(
         card: SillyTavernCardV2,
         avatarData: ByteArray? = null
-    ): String = withContext(Dispatchers.IO) {
+    ): String = withContext(ioDispatcher) {
         val newId = generateUuid()
         val now = nextTimestamp()
         queries.insertCharacter(
@@ -106,7 +108,7 @@ class CharacterRepository(
         newId
     }
 
-    suspend fun createCharacter(name: String): String = withContext(Dispatchers.IO) {
+    suspend fun createCharacter(name: String): String = withContext(ioDispatcher) {
         val newId = generateUuid()
         val now = nextTimestamp()
         queries.insertCharacter(
@@ -144,7 +146,7 @@ class CharacterRepository(
         mesExample: List<String> = emptyList(),
         altGreetings: List<String> = emptyList(),
         avatarData: ByteArray? = null
-    ) = withContext(Dispatchers.IO) {
+    ) = withContext(ioDispatcher) {
         // The character editor does not touch the round-trip-only card fields;
         // carry the stored values forward so a save cannot strip them.
         val existing = queries.selectCharacterById(id).executeAsOneOrNull()
@@ -169,7 +171,7 @@ class CharacterRepository(
         )
     }
 
-    suspend fun deleteCharacters(ids: Collection<String>) = withContext(Dispatchers.IO) {
+    suspend fun deleteCharacters(ids: Collection<String>) = withContext(ioDispatcher) {
         if (ids.isEmpty()) return@withContext
         queries.deleteCharactersByIds(
             updatedAt = nextTimestamp(),
@@ -177,7 +179,7 @@ class CharacterRepository(
         )
     }
 
-    suspend fun updateCharacterLorebook(id: String, characterBook: JsonObject?) = withContext(Dispatchers.IO) {
+    suspend fun updateCharacterLorebook(id: String, characterBook: JsonObject?) = withContext(ioDispatcher) {
         val existing = queries.selectCharacterById(id).executeAsOneOrNull() ?: return@withContext
         // Only the round-trip characterBook field changes; carry everything
         // else forward so the lorebook save cannot strip card metadata.
@@ -202,11 +204,11 @@ class CharacterRepository(
         )
     }
 
-    suspend fun getAllPersonas(): List<Persona> = withContext(Dispatchers.IO) {
+    suspend fun getAllPersonas(): List<Persona> = withContext(ioDispatcher) {
         queries.selectAllPersonas().executeAsList().map { it.toDomain() }
     }
 
-    suspend fun insertPersona(name: String, description: String?, avatarData: ByteArray?): String = withContext(Dispatchers.IO) {
+    suspend fun insertPersona(name: String, description: String?, avatarData: ByteArray?): String = withContext(ioDispatcher) {
         val newId = generateUuid()
         queries.insertPersona(
             id = newId,
@@ -219,7 +221,7 @@ class CharacterRepository(
         newId
     }
 
-    suspend fun updatePersona(id: String, name: String, description: String?, avatarData: ByteArray?) = withContext(Dispatchers.IO) {
+    suspend fun updatePersona(id: String, name: String, description: String?, avatarData: ByteArray?) = withContext(ioDispatcher) {
         queries.updatePersona(
             name = name,
             description = description,
@@ -229,7 +231,7 @@ class CharacterRepository(
         )
     }
 
-    suspend fun deletePersona(id: String) = withContext(Dispatchers.IO) {
+    suspend fun deletePersona(id: String) = withContext(ioDispatcher) {
         queries.deletePersona(
             updatedAt = nextTimestamp(),
             id = id

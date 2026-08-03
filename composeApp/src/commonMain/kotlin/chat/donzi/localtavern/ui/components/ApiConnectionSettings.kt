@@ -80,6 +80,8 @@ fun ApiConnectionSettings(
                             apiSettingsRepository.updateApiConnection(
                                 id = connection.id, provider = connection.provider, name = connection.name,
                                 baseUrl = connection.baseUrl, apiKey = connection.apiKey, model = connection.model,
+                                inferenceProvider = connection.inferenceProvider,
+                                quantization = connection.quantization,
                                 isActive = connection.isActive, isChatCompletion = isChat,
                                 temperature = connection.temperature, topP = connection.topP, topK = connection.topK,
                                 presencePenalty = connection.presencePenalty, frequencyPenalty = connection.frequencyPenalty,
@@ -121,18 +123,20 @@ fun ApiConnectionSettings(
         ApiConnectionDialog(
             chatClient = chatClient,
             onDismiss = { showAddDialog = false },
-            onSave = { provider, name, baseUrl, apiKey, model, isChatCompletion ->
+            onSave = { name, baseUrl, apiKey, model, inferenceProvider, quantization, isChatCompletion ->
                 scope.launch {
                     // The repository derives the active flag and display order
                     // from fresh DB state, so a stale UI list cannot wrongly
                     // activate the new connection or collide on ordering.
                     val isFirstConnection = connections.isEmpty()
                     apiSettingsRepository.insertApiConnection(
-                        provider = provider,
+                        provider = ProviderCatalog.detectProviderFromBaseUrl(baseUrl),
                         name = name,
                         baseUrl = baseUrl,
                         apiKey = apiKey,
                         model = model,
+                        inferenceProvider = inferenceProvider,
+                        quantization = quantization,
                         isChatCompletion = isChatCompletion,
                         timeoutLimit = 60L
                     )
@@ -156,15 +160,17 @@ fun ApiConnectionSettings(
             chatClient = chatClient,
             initialConnection = connectionToEdit,
             onDismiss = { editingConnection = null },
-            onSave = { provider, name, baseUrl, apiKey, model, isChatCompletion ->
+            onSave = { name, baseUrl, apiKey, model, inferenceProvider, quantization, isChatCompletion ->
                 scope.launch {
                     apiSettingsRepository.updateApiConnection(
                         id = connectionToEdit.id,
-                        provider = provider,
+                        provider = ProviderCatalog.detectProviderFromBaseUrl(baseUrl),
                         name = name,
                         baseUrl = baseUrl,
                         apiKey = apiKey.ifBlank { connectionToEdit.apiKey ?: "" },
                         model = model,
+                        inferenceProvider = inferenceProvider,
+                        quantization = quantization,
                         isActive = connectionToEdit.isActive,
                         isChatCompletion = isChatCompletion,
                         temperature = connectionToEdit.temperature,

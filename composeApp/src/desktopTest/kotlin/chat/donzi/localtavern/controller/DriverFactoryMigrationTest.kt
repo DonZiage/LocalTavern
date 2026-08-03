@@ -275,7 +275,7 @@ class DriverFactoryMigrationTest {
     }
 
     @Test
-    fun `existing v2 database migrates to v4 and gains working sync tables`() = runTest {
+    fun `existing v2 database migrates to latest and gains working sync tables`() = runTest {
         val tempDir = tempDir()
         try {
             val dbFile = File(tempDir, ".localtavern/local_tavern.db")
@@ -348,7 +348,7 @@ class DriverFactoryMigrationTest {
     }
 
     @Test
-    fun `dev v3 database with legacy xPublicKey column migrates to v4`() = runTest {
+    fun `dev v3 database with legacy xPublicKey column migrates to latest`() = runTest {
         val tempDir = tempDir()
         try {
             val dbFile = File(tempDir, ".localtavern/local_tavern.db")
@@ -425,6 +425,104 @@ class DriverFactoryMigrationTest {
                     )
                     val syncRepository = SyncRepository(database, identity)
                     assertEquals("Old Dev Peer", syncRepository.getPeer("peer-1")?.name)
+                } finally {
+                    driver.close()
+                }
+            } finally {
+                System.setProperty("user.home", oldUserHome)
+            }
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `existing v4 database migrates to v5 and gains the inference provider column`() = runTest {
+        val tempDir = tempDir()
+        try {
+            val dbFile = File(tempDir, ".localtavern/local_tavern.db")
+            dbFile.parentFile.mkdirs()
+
+            // A database written by the previous release: v4 schema (no
+            // inferenceProvider column on ApiConnection) and a stored profile.
+            val v4Driver = JdbcSqliteDriver("jdbc:sqlite:${dbFile.absolutePath}")
+            try {
+                Regex("(?<=;)\\s*").split(v1CharacterDdl.trim())
+                    .filter { it.isNotBlank() }
+                    .forEach { statement -> v4Driver.execute(null, statement, 0) }
+                v4Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN systemPrompt TEXT;", 0)
+                v4Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN postHistoryInstructions TEXT;", 0)
+                v4Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN creator TEXT;", 0)
+                v4Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN characterVersion TEXT;", 0)
+                v4Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN tags TEXT;", 0)
+                v4Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN extensions TEXT;", 0)
+                v4Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN characterBook TEXT;", 0)
+                v4Driver.execute(null, "ALTER TABLE MessageEntity ADD COLUMN reasoningText TEXT;", 0)
+                v4Driver.execute(null, "ALTER TABLE MessageEntity ADD COLUMN costEstimate REAL;", 0)
+                v4Driver.execute(null, "ALTER TABLE ApiConnection ADD COLUMN reasoningOverride INTEGER NOT NULL DEFAULT 0;", 0)
+                v4Driver.execute(
+                    null,
+                    "CREATE TABLE ModelPricing (provider TEXT NOT NULL, modelPattern TEXT NOT NULL, inputPerMillion REAL NOT NULL, outputPerMillion REAL NOT NULL, currency TEXT NOT NULL DEFAULT 'USD', PRIMARY KEY (provider, modelPattern));",
+                    0
+                )
+                v4Driver.execute(
+                    null,
+                    "CREATE TABLE SyncPeer (deviceId TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, publicKey BLOB, lastKnownAddress TEXT, receivedCursor INTEGER NOT NULL DEFAULT 0, peerReceivedCursor INTEGER NOT NULL DEFAULT 0, lastSyncAt INTEGER NOT NULL DEFAULT 0, updatedAt INTEGER NOT NULL DEFAULT 0, isDeleted INTEGER NOT NULL DEFAULT 0);",
+                    0
+                )
+                v4Driver.execute(
+                    null,
+                    "INSERT INTO ApiConnection(id, provider, name, baseUrl, apiKey, model, isActive, isChatCompletion, lastUsed, temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit, displayOrder, timeoutLimit, reasoningOverride, updatedAt, isDeleted) " +
+                        "VALUES ('ac1', 'OpenRouter', 'Router', 'https://openrouter.ai/api/v1', 'key', 'deepseek/deepseek-v4-flash', 1, 1, 0, 1.0, 1.0, 0, 0.0, 0.0, 4096, 0, 0, 60, 0, 1, 0);",
+                    0
+                )
+                v4Driver.execute(null, "PRAGMA user_version = 4;", 0)
+            } finally {
+                v4Driver.close()
+            }
+
+            val oldUserHome = System.getProperty("user.home")
+            System.setProperty("user.home", tempDir.absolutePath)
+            try {
+                val driver = DriverFactory().createDriver()
+                try {
+                    val database = LocalTavernDB(driver)
+
+                    // The new column exists and the stored profile survived.
+                    val columns = driver.executeQuery(
+                        null,
+                        "SELECT name FROM pragma_table_info('ApiConnection');",
+                        { cursor ->
+                            val names = mutableListOf<String>()
+                            while (cursor.next().value == true) names.add(cursor.getString(0)!!)
+                            app.cash.sqldelight.db.QueryResult.Value(names)
+                        },
+                        0
+                    ).value
+                    assertTrue("inferenceProvider" in columns, "inferenceProvider must be added by the migration to the latest schema")
+                    assertTrue("quantization" in columns, "quantization must be added by the migration to the latest schema")
+
+                    val migrated = database.localTavernDBQueries.selectApiConnectionById("ac1").executeAsOneOrNull()
+                    assertNotNull(migrated)
+                    assertEquals("OpenRouter", migrated.provider)
+                    assertEquals("deepseek/deepseek-v4-flash", migrated.model)
+                    assertEquals(null, migrated.inferenceProvider)
+                    assertEquals(null, migrated.quantization)
+
+                    // The new columns exist and are writable through the
+                    // generated queries.
+                    database.localTavernDBQueries.updateApiConnection(
+                        provider = "OpenRouter", name = "Router", baseUrl = "https://openrouter.ai/api/v1",
+                        apiKey = "key", model = "deepseek/deepseek-v4-flash", inferenceProvider = "DeepSeek",
+                        quantization = "int8",
+                        isActive = 1L, isChatCompletion = 1L, temperature = 1.0, topP = 1.0, topK = 0L,
+                        presencePenalty = 0.0, frequencyPenalty = 0.0, contextLimit = 4096L,
+                        responseLimit = 0L, displayOrder = 0L, timeoutLimit = 60L,
+                        reasoningOverride = 0L, updatedAt = 2L, id = "ac1"
+                    )
+                    val updated = database.localTavernDBQueries.selectApiConnectionById("ac1").executeAsOneOrNull()
+                    assertEquals("DeepSeek", updated?.inferenceProvider)
+                    assertEquals("int8", updated?.quantization)
                 } finally {
                     driver.close()
                 }

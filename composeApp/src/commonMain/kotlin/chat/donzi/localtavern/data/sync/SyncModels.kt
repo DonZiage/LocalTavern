@@ -76,6 +76,11 @@ data class SyncApiConnection(
     val baseUrl: String?,
     val apiKey: String?,
     val model: String?,
+    // OpenRouter-style upstream provider routing; null = endpoint default.
+    // Default value keeps envelopes from older peers parseable.
+    val inferenceProvider: String? = null,
+    // OpenRouter quantization preference; null = endpoint default.
+    val quantization: String? = null,
     val isActive: Long,
     val isChatCompletion: Long,
     val lastUsed: Long?,

@@ -98,9 +98,11 @@ class ChatClient(private val httpClient: HttpClient) {
         ignoreImages: Boolean = false,
         params: GenerationParams = GenerationParams(),
         provider: String? = null,
+        inferenceProvider: String? = null,
+        quantization: String? = null,
         timeoutSeconds: Long = 0
     ): ChatResponse {
-        val apiStyle = apiStyleForProvider(provider)
+        val apiStyle = apiStyleForProvider(provider, baseUrl)
         val endpoint = endpointFor(baseUrl, apiStyle, isChatCompletion)
         val hasImages = messages.any { it.images.isNotEmpty() }
         val thinkingEnabled = params.thinkingBudgetTokens != null
@@ -117,13 +119,14 @@ class ChatClient(private val httpClient: HttpClient) {
                 } else {
                     putChatMessages(isChatCompletion, messages, ignoreImages = ignoreImages)
                     putGenerationParams(params)
+                    putInferenceProvider(inferenceProvider, quantization)
                 }
             })
         }
 
         if (response.status != HttpStatusCode.OK) {
             if (hasImages && !ignoreImages && isChatCompletion && apiStyle != ApiStyle.Anthropic) {
-                return sendChatRequest(baseUrl, apiKey, model, messages, isChatCompletion, ignoreImages = true, params = params, provider = provider, timeoutSeconds = timeoutSeconds)
+                return sendChatRequest(baseUrl, apiKey, model, messages, isChatCompletion, ignoreImages = true, params = params, provider = provider, inferenceProvider = inferenceProvider, quantization = quantization, timeoutSeconds = timeoutSeconds)
             }
             throw ApiRequestException(extractErrorMessage(response))
         }
@@ -184,9 +187,11 @@ class ChatClient(private val httpClient: HttpClient) {
         isChatCompletion: Boolean = true,
         params: GenerationParams = GenerationParams(),
         provider: String? = null,
+        inferenceProvider: String? = null,
+        quantization: String? = null,
         timeoutSeconds: Long = 0
     ): Flow<StreamChunk> = flow {
-        val apiStyle = apiStyleForProvider(provider)
+        val apiStyle = apiStyleForProvider(provider, baseUrl)
         val endpoint = endpointFor(baseUrl, apiStyle, isChatCompletion)
         val hasImages = messages.any { it.images.isNotEmpty() }
         val thinkingEnabled = params.thinkingBudgetTokens != null
@@ -211,6 +216,7 @@ class ChatClient(private val httpClient: HttpClient) {
                     } else {
                         putChatMessages(isChatCompletion, messages, ignoreImages = false)
                         putGenerationParams(params)
+                        putInferenceProvider(inferenceProvider, quantization)
                     }
                 })
             }.execute { response ->
@@ -243,6 +249,7 @@ class ChatClient(private val httpClient: HttpClient) {
                         put("stream", true)
                         putChatMessages(isChatCompletion, messages, ignoreImages = true)
                         putGenerationParams(params)
+                        putInferenceProvider(inferenceProvider, quantization)
                     })
                 }.execute { response ->
                     val contentType = response.contentType()
@@ -260,7 +267,7 @@ class ChatClient(private val httpClient: HttpClient) {
                     baseUrl = baseUrl, apiKey = apiKey, model = model,
                     messages = messages, isChatCompletion = isChatCompletion,
                     ignoreImages = lastUsedIgnoreImages, params = params, provider = provider,
-                    timeoutSeconds = timeoutSeconds
+                    inferenceProvider = inferenceProvider, quantization = quantization, timeoutSeconds = timeoutSeconds
                 )
                 emit(StreamChunk(content = nonStreamedResponse.text))
                 if (!nonStreamedResponse.reasoningText.isNullOrBlank()) {
@@ -304,7 +311,7 @@ class ChatClient(private val httpClient: HttpClient) {
                         baseUrl = baseUrl, apiKey = apiKey, model = model,
                         messages = messages, isChatCompletion = isChatCompletion,
                         ignoreImages = lastUsedIgnoreImages, params = params, provider = provider,
-                        timeoutSeconds = timeoutSeconds
+                        inferenceProvider = inferenceProvider, quantization = quantization, timeoutSeconds = timeoutSeconds
                     )
                     emit(StreamChunk(content = nonStreamedResponse.text))
                     if (!nonStreamedResponse.reasoningText.isNullOrBlank()) {

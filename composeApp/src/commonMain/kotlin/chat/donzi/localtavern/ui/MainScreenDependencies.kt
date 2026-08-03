@@ -23,5 +23,6 @@ data class MainScreenDependencies(
     val syncService: SyncService,
     val syncRepository: SyncRepository,
     val syncDiscovery: SyncDiscovery,
-    val chatClient: ChatClient
+    val chatClient: ChatClient,
+    val onEnsureSyncRunning: () -> Unit = {}
 )

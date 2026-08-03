@@ -9,6 +9,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import chat.donzi.localtavern.data.database.CharacterRepository
 import chat.donzi.localtavern.data.database.SessionRepository
@@ -36,6 +37,14 @@ internal fun CharacterEditorOverlay(
 ) {
     val coroutineScope = rememberCoroutineScope()
 
+    // The onSave/onLorebookSave callbacks below are invoked from inside
+    // coroutines launched with the lambda captured at composition time. A
+    // close-time flush (DisposableEffect in the editor) can therefore run a
+    // stale lambda that still sees a non-null editingCharacter; reading the
+    // latest value through rememberUpdatedState keeps the "still editing?"
+    // guard accurate and stops the editor from reopening right after close.
+    val currentEditingCharacter = rememberUpdatedState(editingCharacter)
+
     AnimatedVisibility(visible = editingCharacter != null, enter = slideInVertically(initialOffsetY = { it }), exit = slideOutVertically(targetOffsetY = { it })) {
         lastEditingCharacter?.let { targetCharacter ->
             Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -46,7 +55,7 @@ internal fun CharacterEditorOverlay(
                             coroutineScope.launch {
                                 characterRepository.updateCharacter(targetCharacter.id, name, personality, scenario, desc, firstMes, mesExample, altGreetings, avatarData)
                                 val freshCharacter = characterRepository.getCharacterById(targetCharacter.id)
-                                if (freshCharacter != null && editingCharacter?.id == targetCharacter.id) {
+                                if (freshCharacter != null && currentEditingCharacter.value?.id == targetCharacter.id) {
                                     onSetEditingCharacter(freshCharacter)
                                 }
 
@@ -87,7 +96,7 @@ internal fun CharacterEditorOverlay(
                             coroutineScope.launch {
                                 characterRepository.updateCharacterLorebook(targetCharacter.id, bookJson)
                                 val freshCharacter = characterRepository.getCharacterById(targetCharacter.id)
-                                if (freshCharacter != null && editingCharacter?.id == targetCharacter.id) {
+                                if (freshCharacter != null && currentEditingCharacter.value?.id == targetCharacter.id) {
                                     onSetEditingCharacter(freshCharacter)
                                 }
                                 if (activeCharacter?.id == targetCharacter.id) onSetActiveCharacter(freshCharacter)

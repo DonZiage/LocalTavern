@@ -40,7 +40,8 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
     val initError by appState.initError.collectAsState()
     // Sync bootstraps in the background (identity load/keygen); the main
     // screen must not be shown until it is ready, since MainScreen consumes
-    // the sync components directly.
+    // the sync components directly. The sync server and discovery do NOT
+    // start here — they only run once the user engages with sync.
     val syncReady by container.syncReady.collectAsState()
     val syncError by container.syncError.collectAsState()
 
@@ -111,7 +112,8 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
                     syncService = container.syncService,
                     syncRepository = container.syncRepository,
                     syncDiscovery = container.syncDiscovery,
-                    chatClient = container.chatClient
+                    chatClient = container.chatClient,
+                    onEnsureSyncRunning = container::ensureSyncRunning
                 ),
                 characters = characters,
                 personas = personas,

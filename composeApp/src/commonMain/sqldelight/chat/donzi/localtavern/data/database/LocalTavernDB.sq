@@ -71,6 +71,12 @@ CREATE TABLE ApiConnection (
     baseUrl TEXT,
     apiKey TEXT,
     model TEXT,
+    -- OpenRouter-style routing: which upstream provider should serve the
+    -- model. Null means the endpoint's default provider is used.
+    inferenceProvider TEXT,
+    -- OpenRouter quantization preference (int4, int8, fp8, fp16, bf16).
+    -- Null means the endpoint's default quantization.
+    quantization TEXT,
     isActive INTEGER NOT NULL DEFAULT 0,
     isChatCompletion INTEGER NOT NULL DEFAULT 1,
     lastUsed INTEGER DEFAULT 0,
@@ -280,10 +286,10 @@ UPDATE MessageEntity SET isDeleted = 1, updatedAt = ? WHERE sessionId = ?;
 
 insertApiConnection:
 INSERT INTO ApiConnection(
-    id, provider, name, baseUrl, apiKey, model, isActive, isChatCompletion, lastUsed,
+    id, provider, name, baseUrl, apiKey, model, inferenceProvider, quantization, isActive, isChatCompletion, lastUsed,
     temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit, displayOrder, timeoutLimit, reasoningOverride, updatedAt, isDeleted
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 updateApiConnection:
 UPDATE ApiConnection
@@ -292,6 +298,8 @@ SET provider = ?,
     baseUrl = ?,
     apiKey = ?,
     model = ?,
+    inferenceProvider = ?,
+    quantization = ?,
     isActive = ?,
     isChatCompletion = ?,
     temperature = ?,
@@ -524,6 +532,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 upsertApiConnectionFull:
 UPDATE ApiConnection
 SET provider = ?, name = ?, baseUrl = ?, apiKey = ?, model = ?,
+    inferenceProvider = ?, quantization = ?,
     isActive = ?, isChatCompletion = ?, lastUsed = ?, temperature = ?,
     topP = ?, topK = ?, presencePenalty = ?, frequencyPenalty = ?,
     contextLimit = ?, responseLimit = ?, displayOrder = ?, timeoutLimit = ?,
@@ -532,11 +541,11 @@ WHERE id = ?;
 
 insertApiConnectionFull:
 INSERT INTO ApiConnection(
-    id, provider, name, baseUrl, apiKey, model, isActive, isChatCompletion, lastUsed,
+    id, provider, name, baseUrl, apiKey, model, inferenceProvider, quantization, isActive, isChatCompletion, lastUsed,
     temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit,
     displayOrder, timeoutLimit, reasoningOverride, updatedAt, isDeleted
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 upsertPromptBlockFull:
 UPDATE PromptBlockEntity

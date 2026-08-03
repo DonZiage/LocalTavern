@@ -6,6 +6,7 @@ import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.header
 import io.ktor.http.HttpHeaders
 import kotlinx.serialization.json.JsonObjectBuilder
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -183,4 +184,24 @@ internal fun JsonObjectBuilder.putGenerationParams(params: GenerationParams) {
     put("frequency_penalty", params.frequencyPenalty)
     if (params.maxTokens > 0) put("max_tokens", params.maxTokens)
     params.reasoningEffort?.let { put("reasoning_effort", it) }
+}
+
+// OpenRouter-style routing: pins the request to one upstream inference
+// provider and/or a quantization preference. Only sent when the user picked
+// something (e.g. on aggregators that serve the same model from several
+// backends); strict provider routing fails loudly instead of silently
+// falling back to another provider.
+internal fun JsonObjectBuilder.putInferenceProvider(inferenceProvider: String?, quantization: String?) {
+    val providerName = inferenceProvider?.trim().orEmpty()
+    val quant = quantization?.trim().orEmpty()
+    if (providerName.isBlank() && quant.isBlank()) return
+    put("provider", buildJsonObject {
+        if (providerName.isNotBlank()) {
+            put("order", buildJsonArray { add(JsonPrimitive(providerName)) })
+            put("allow_fallbacks", false)
+        }
+        if (quant.isNotBlank()) {
+            put("quantizations", buildJsonArray { add(JsonPrimitive(quant)) })
+        }
+    })
 }

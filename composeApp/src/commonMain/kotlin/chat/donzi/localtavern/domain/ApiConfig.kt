@@ -7,6 +7,12 @@ data class ApiConfig(
     val baseUrl: String?,
     val apiKey: String?,
     val model: String?,
+    // OpenRouter-style routing: which upstream provider should serve the
+    // model. Null means the endpoint's default provider is used.
+    val inferenceProvider: String? = null,
+    // OpenRouter quantization preference (int4, int8, fp8, fp16, bf16).
+    // Null means the endpoint's default quantization.
+    val quantization: String? = null,
     val isActive: Boolean,
     val isChatCompletion: Boolean,
     val lastUsed: Long?,

@@ -139,7 +139,7 @@ class GenerationRunner(
                 2 -> false
                 else -> isReasoningModel(activeConnection.model)
             }
-            val isAnthropic = apiStyleForProvider(activeConnection.provider) == chat.donzi.localtavern.data.network.ApiStyle.Anthropic
+            val isAnthropic = apiStyleForProvider(activeConnection.provider, activeConnection.baseUrl) == chat.donzi.localtavern.data.network.ApiStyle.Anthropic
             val effectiveResponseLimit = activeConnection.responseLimit.takeIf { it > 0 } ?: 8192L
 
             val generationParams = GenerationParams(
@@ -181,6 +181,8 @@ class GenerationRunner(
                         model = activeConnection.model ?: "", messages = messagesPayload,
                         isChatCompletion = activeConnection.isChatCompletion,
                         params = generationParams, provider = activeConnection.provider,
+                        inferenceProvider = activeConnection.inferenceProvider,
+                        quantization = activeConnection.quantization,
                         timeoutSeconds = activeConnection.timeoutLimit
                     ).collect { chunk -> tokenChannel.send(chunk) }
                 } catch (e: Exception) {
@@ -265,7 +267,9 @@ class GenerationRunner(
                             baseUrl = activeConnection.baseUrl ?: "", apiKey = activeConnection.apiKey ?: "",
                             model = activeConnection.model ?: "", messages = messagesPayload,
                             isChatCompletion = activeConnection.isChatCompletion, params = generationParams,
-                            provider = activeConnection.provider, timeoutSeconds = activeConnection.timeoutLimit
+                            provider = activeConnection.provider, inferenceProvider = activeConnection.inferenceProvider,
+                            quantization = activeConnection.quantization,
+                            timeoutSeconds = activeConnection.timeoutLimit
                         )
                     }
                     if (recovered.text.isBlank()) {

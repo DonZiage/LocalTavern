@@ -1,6 +1,8 @@
 package chat.donzi.localtavern.ui.components
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -17,22 +19,41 @@ import kotlinx.coroutines.delay
 
 private data class ValidationRequest(val baseUrl: String, val apiKey: String, val provider: String)
 
+// OpenRouter quantization options (sent as provider.quantizations).
+private val quantizationOptions = listOf(
+    null to "Default",
+    "int4" to "int4 (fastest, lowest quality)",
+    "int8" to "int8",
+    "fp8" to "fp8",
+    "fp16" to "fp16",
+    "bf16" to "bf16 (highest quality)"
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ApiConnectionDialog(
     chatClient: ChatClient,
     initialConnection: ApiConfig? = null,
     onDismiss: () -> Unit,
-    onSave: (provider: String, name: String, baseUrl: String, apiKey: String, model: String, isChatCompletion: Boolean) -> Unit
+    onSave: (name: String, baseUrl: String, apiKey: String, model: String, inferenceProvider: String?, quantization: String?, isChatCompletion: Boolean) -> Unit
 ) {
-    var selectedProvider by remember { mutableStateOf(initialConnection?.provider ?: "") }
     var apiKey by remember { mutableStateOf("") }
     var name by remember { mutableStateOf(initialConnection?.name ?: "") }
     var baseUrl by remember { mutableStateOf(initialConnection?.baseUrl ?: "") }
 
-    val isCloudInference = remember(selectedProvider) {
-        ProviderCatalog.cloudInferenceProviders.contains(selectedProvider)
+    val isLocal = remember(baseUrl) {
+        ProviderCatalog.isLocalEndpoint(baseUrl)
     }
+    // The API provider is derived from the endpoint URL (pricing and request
+    // format need it); the user never picks it directly anymore.
+    val detectedProvider = remember(baseUrl) {
+        ProviderCatalog.detectProviderFromBaseUrl(baseUrl)
+    }
+    val isOpenRouter = detectedProvider.equals("OpenRouter", ignoreCase = true)
+
+    // Cloud endpoints use a two-step flow (endpoint+key, then model); local
+    // endpoints keep everything on one screen since they need no key.
+    var step by remember { mutableStateOf(0) }
 
     val maskedApiKey = remember(initialConnection?.apiKey) {
         val key = initialConnection?.apiKey ?: ""
@@ -56,38 +77,16 @@ fun ApiConnectionDialog(
 
     var modelSearch by remember { mutableStateOf(initialConnection?.model ?: "") }
     var selectedModelFullId by remember { mutableStateOf(initialConnection?.model ?: "") }
-    var modelProviderFilter by remember { mutableStateOf("") }
+    var modelProviderFilter by remember { mutableStateOf(initialConnection?.inferenceProvider ?: "") }
+    var quantization by remember { mutableStateOf(initialConnection?.quantization ?: "") }
     var validationRequestId by remember { mutableStateOf(0) }
 
-    // Remembers the last provider so switching providers only auto-fills the
-    // default URL when the field was untouched (blank or still the previous
-    // provider's auto-filled default), never over a user-typed custom URL.
-    var lastProvider by remember { mutableStateOf(selectedProvider) }
-
-    LaunchedEffect(selectedProvider) {
-        if (initialConnection == null) {
-            val previousDefault = ProviderCatalog.defaultUrls[lastProvider]
-            if (baseUrl.isBlank() || (previousDefault != null && baseUrl == previousDefault)) {
-                baseUrl = ProviderCatalog.defaultUrls[selectedProvider] ?: ""
-            }
-        }
-        // A model picked for the previous provider must not survive a provider
-        // switch, otherwise Save persists a model id that does not exist for
-        // the newly selected provider.
-        if (selectedProvider != lastProvider) {
-            modelSearch = ""
-            selectedModelFullId = ""
-            modelProviderFilter = ""
-        }
-        lastProvider = selectedProvider
-    }
-
-    LaunchedEffect(apiKey, baseUrl, selectedProvider) {
+    LaunchedEffect(apiKey, baseUrl) {
         val requestId = ++validationRequestId
         val keyToTest = apiKey.ifBlank { initialConnection?.apiKey ?: "" }
-        val effectiveBaseUrl = if (isCloudInference) ProviderCatalog.defaultUrls[selectedProvider] ?: baseUrl else baseUrl
+        val effectiveBaseUrl = baseUrl.trim()
 
-        if (selectedProvider.isEmpty() || (keyToTest.length <= 5 && isCloudInference) || effectiveBaseUrl.isBlank()) {
+        if (effectiveBaseUrl.isBlank() || (keyToTest.length <= 5 && !isLocal)) {
             isKeyValid = false
             probeResult = null
             connectionError = null
@@ -97,14 +96,15 @@ fun ApiConnectionDialog(
             return@LaunchedEffect
         }
 
-        val request = ValidationRequest(effectiveBaseUrl, keyToTest, selectedProvider)
+        val request = ValidationRequest(effectiveBaseUrl, keyToTest, detectedProvider)
         if (request == lastValidatedRequest) {
             isLoadingModels = false
             return@LaunchedEffect
         }
 
-        // A new (possibly edited) key is being validated: the stale result of
-        // the previous request must not keep Save enabled in the meantime.
+        // A new (possibly edited) key or URL is being validated: the stale
+        // result of the previous request must not keep the Next button
+        // enabled in the meantime.
         isKeyValid = false
         probeResult = null
         connectionError = null
@@ -112,14 +112,14 @@ fun ApiConnectionDialog(
         delay(800)
         isLoadingModels = true
         try {
-            val probe = chatClient.probeConnection(effectiveBaseUrl, keyToTest, selectedProvider)
+            val probe = chatClient.probeConnection(effectiveBaseUrl, keyToTest, detectedProvider)
             probeResult = probe.outcome
             if (probe.outcome == ConnectionProbe.Ok) {
                 // The key is confirmed working even if the model list fetch
-                // fails below; that failure must not disable Save for a valid
-                // key (the model can still be typed in manually).
+                // fails below; that failure must not block the flow (the
+                // model can still be typed in manually).
                 isKeyValid = true
-                allModels = chatClient.fetchModels(effectiveBaseUrl, keyToTest, selectedProvider)
+                allModels = chatClient.fetchModels(effectiveBaseUrl, keyToTest, detectedProvider)
             } else {
                 isKeyValid = false
                 val detail = probe.detail?.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
@@ -215,9 +215,7 @@ fun ApiConnectionDialog(
 
     LaunchedEffect(filteredModels, modelSearch) {
         if (modelSearch.isBlank()) {
-            if (isCloudInference) {
-                selectedModelFullId = ""
-            }
+            selectedModelFullId = ""
         } else {
             val exactMatch = filteredModels.firstOrNull { it.id == modelSearch || it.displayName == modelSearch }
             if (exactMatch != null) {
@@ -237,47 +235,54 @@ fun ApiConnectionDialog(
         }
     }
 
+    // Cloud endpoints: step 0 (endpoint + key) before step 1 (model).
+    val showStepOne = !isLocal
+    val onStepOne = showStepOne && step == 1
+
+    val baseTitle = if (initialConnection == null) "Setup API Connection" else "Edit API Connection"
+    val title = when {
+        showStepOne && step == 0 -> "$baseTitle — Step 1 of 2"
+        showStepOne -> "$baseTitle — Step 2 of 2"
+        else -> baseTitle
+    }
+
     AlertDialog(
         onDismissRequest = { },
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
-        title = { Text(if (initialConnection == null) "Setup API Connection" else "Edit API Connection") },
+        title = { Text(title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                ProviderPicker(
-                    selectedProvider = selectedProvider,
-                    onProviderSelected = { selectedProvider = it }
-                )
+                if (showStepOne) {
+                    Text(
+                        text = if (step == 0) "Endpoint & API key" else "Model & profile",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
 
-                if (selectedProvider.isNotEmpty()) {
-                    if (!isCloudInference) {
-                        OutlinedTextField(
-                            value = baseUrl,
-                            onValueChange = { baseUrl = it },
-                            label = { Text("2. Enter Base URL") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            isError = baseUrl.isBlank()
-                        )
-                    }
+                if (!onStepOne) {
+                    BaseUrlPicker(
+                        baseUrl = baseUrl,
+                        onBaseUrlChange = { baseUrl = it }
+                    )
 
-                    val labelStep = if (isCloudInference) "2" else "3"
-                    val optionalText = if (!isCloudInference) " (Optional)" else ""
+                    val optionalText = if (isLocal) " (Optional for local endpoints)" else ""
                     OutlinedTextField(
                         value = apiKey,
                         onValueChange = { apiKey = it },
-                        label = { Text("$labelStep. ${if (initialConnection == null) "Enter API Key$optionalText" else "Update API Key"}") },
+                        label = { Text("2. ${if (initialConnection == null) "Enter API Key$optionalText" else "Update API Key"}") },
                         placeholder = { Text(maskedApiKey) },
                         modifier = Modifier.fillMaxWidth(),
                         visualTransformation = PasswordVisualTransformation(),
-                        isError = isCloudInference && apiKey.isNotEmpty() && probeResult == ConnectionProbe.AuthFailed,
+                        isError = apiKey.isNotEmpty() && probeResult == ConnectionProbe.AuthFailed,
                         trailingIcon = {
                             if (isLoadingModels) CircularProgressIndicator(modifier = Modifier.size(24.dp))
                         },
                         singleLine = true
                     )
 
-                    // Distinguish a rejected key from an unreachable endpoint so
-                    // the user fixes the right thing.
+                    // Distinguish a rejected key from an unreachable endpoint
+                    // so the user fixes the right thing.
                     if (connectionError != null) {
                         Text(
                             text = connectionError.orEmpty(),
@@ -286,51 +291,57 @@ fun ApiConnectionDialog(
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
+                }
 
-                    if (isKeyValid || !isCloudInference || selectedModelFullId.isNotEmpty()) {
+                if (onStepOne || isLocal) {
+                    if (isKeyValid || isLocal || selectedModelFullId.isNotEmpty()) {
                         ModelPicker(
-                            isCloudInference = isCloudInference,
-                            labelStep = if (isCloudInference) "3" else "4",
+                            labelStep = "3",
                             allModels = allModels,
                             providerSuggestions = providerSuggestions,
                             filteredModels = filteredModels,
                             modelProviderFilter = modelProviderFilter,
                             modelSearch = modelSearch,
                             selectedModelFullId = selectedModelFullId,
+                            showInferenceProvider = uniqueModelProviders.size > 1 || modelProviderFilter.isNotBlank(),
                             onProviderFilterChange = { modelProviderFilter = it },
                             onModelSearchChange = { value ->
                                 modelSearch = value
-                                if (!isCloudInference) {
-                                    selectedModelFullId = value
-                                } else {
-                                    // The typed text no longer matches the previously
-                                    // selected model, so the selection must not silently
-                                    // persist (which would save the wrong model).
-                                    val selectedModel = allModels.find { it.id == selectedModelFullId }
-                                    if (selectedModelFullId.isNotEmpty() &&
-                                        value != selectedModelFullId &&
-                                        value != selectedModel?.displayName
-                                    ) {
-                                        selectedModelFullId = ""
-                                    }
+                                // The typed text no longer matches the previously
+                                // selected model, so the selection must not silently
+                                // persist (which would save the wrong model).
+                                val selectedModel = allModels.find { it.id == selectedModelFullId }
+                                if (selectedModelFullId.isNotEmpty() &&
+                                    value != selectedModelFullId &&
+                                    value != selectedModel?.displayName
+                                ) {
+                                    selectedModelFullId = ""
                                 }
                             },
                             onModelSelected = { model ->
                                 selectedModelFullId = model.id
-                                modelSearch = model.displayName
+                                modelSearch = model.id
                                 modelProviderFilter = model.provider
                             }
                         )
                     }
 
+                    if (isOpenRouter || quantization.isNotBlank()) {
+                        QuantizationPicker(
+                            quantization = quantization,
+                            onQuantizationChange = { quantization = it }
+                        )
+                    }
+                }
+
+                if (onStepOne || isLocal) {
                     // The profile name stays editable even when validation
                     // fails (e.g. the endpoint is down): hiding it would make
                     // the dialog a dead end for renaming an existing profile.
-                    val profileNameLabelStep = if (isCloudInference) "4" else "5"
                     OutlinedTextField(
                         value = name,
                         onValueChange = { name = it },
-                        label = { Text("$profileNameLabelStep. Profile Name (Optional)") },
+                        label = { Text("4. Profile Name (Optional)") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -338,21 +349,167 @@ fun ApiConnectionDialog(
             }
         },
         confirmButton = {
-            Button(
-                onClick = {
-                    val effectiveBaseUrl = if (isCloudInference) ProviderCatalog.defaultUrls[selectedProvider] ?: baseUrl else baseUrl
-                    val defaultChatCompletion = isCloudInference
-                    onSave(selectedProvider, name, effectiveBaseUrl, apiKey, selectedModelFullId, initialConnection?.isChatCompletion == true || (initialConnection == null && defaultChatCompletion))
-                },
-                enabled = selectedProvider.isNotEmpty() && (isKeyValid || !isCloudInference) && selectedModelFullId.isNotBlank() && modelSearch.isNotBlank() && (isCloudInference || baseUrl.isNotBlank())
-            ) {
-                Text(if (initialConnection == null) "Complete Setup" else "Save Changes")
+            if (showStepOne && !onStepOne) {
+                // Step 0: proceed to the model step once the endpoint works.
+                Button(
+                    onClick = { step = 1 },
+                    enabled = baseUrl.isNotBlank() && (isKeyValid || selectedModelFullId.isNotBlank())
+                ) {
+                    Text("Next")
+                }
+            } else {
+                Button(
+                    onClick = {
+                        // The stored provider is derived from the endpoint URL
+                        // so pricing and API-format detection keep working.
+                        onSave(
+                            name,
+                            baseUrl.trim(),
+                            apiKey,
+                            selectedModelFullId,
+                            modelProviderFilter.takeIf { it.isNotBlank() },
+                            quantization.takeIf { it.isNotBlank() },
+                            initialConnection?.isChatCompletion == true || (initialConnection == null && !isLocal)
+                        )
+                    },
+                    enabled = baseUrl.isNotBlank() && (isKeyValid || isLocal) && selectedModelFullId.isNotBlank() && modelSearch.isNotBlank()
+                ) {
+                    Text(if (initialConnection == null) "Complete Setup" else "Save Changes")
+                }
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
+            Row {
+                if (onStepOne) {
+                    TextButton(onClick = { step = 0 }) {
+                        Text("Back")
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel")
+                }
             }
         }
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BaseUrlPicker(
+    baseUrl: String,
+    onBaseUrlChange: (String) -> Unit
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(
+        expanded = menuExpanded,
+        onExpandedChange = { menuExpanded = it }
+    ) {
+        OutlinedTextField(
+            value = baseUrl,
+            onValueChange = onBaseUrlChange,
+            label = { Text("1. Endpoint URL (Required)") },
+            placeholder = { Text("https://openrouter.ai/api/v1") },
+            modifier = Modifier
+                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryEditable)
+                .fillMaxWidth(),
+            trailingIcon = {
+                if (baseUrl.isBlank()) {
+                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuExpanded)
+                } else {
+                    IconButton(onClick = { onBaseUrlChange("") }) {
+                        Icon(Icons.Filled.Clear, "Clear URL")
+                    }
+                }
+            },
+            isError = baseUrl.isBlank(),
+            singleLine = true
+        )
+
+        ExposedDropdownMenu(
+            expanded = menuExpanded,
+            onDismissRequest = { menuExpanded = false },
+            modifier = Modifier.exposedDropdownSize().requiredHeightIn(max = 360.dp)
+        ) {
+            ProviderCatalog.providerSections.forEach { (sectionName, providersInSection) ->
+                Text(
+                    text = sectionName,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                )
+                providersInSection.forEach { provider ->
+                    ProviderCatalog.defaultUrls[provider]?.let { url ->
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(provider, style = MaterialTheme.typography.bodyMedium)
+                                    Text(url, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            },
+                            onClick = {
+                                onBaseUrlChange(url)
+                                menuExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun QuantizationPicker(
+    quantization: String,
+    onQuantizationChange: (String) -> Unit
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(
+        expanded = menuExpanded,
+        onExpandedChange = { menuExpanded = it }
+    ) {
+        OutlinedTextField(
+            value = quantization.ifBlank { "Default" },
+            onValueChange = { },
+            readOnly = true,
+            label = { Text("Quantization (OpenRouter)") },
+            placeholder = { Text("Default") },
+            supportingText = {
+                Text(
+                    "Which precision serves the model. int4 is fastest; bf16 has the highest quality.",
+                    style = MaterialTheme.typography.labelSmall
+                )
+            },
+            modifier = Modifier
+                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                .fillMaxWidth(),
+            trailingIcon = {
+                if (quantization.isNotBlank()) {
+                    IconButton(onClick = { onQuantizationChange("") }) {
+                        Icon(Icons.Filled.Clear, "Clear quantization")
+                    }
+                } else {
+                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuExpanded)
+                }
+            },
+            singleLine = true
+        )
+
+        ExposedDropdownMenu(
+            expanded = menuExpanded,
+            onDismissRequest = { menuExpanded = false },
+            modifier = Modifier.exposedDropdownSize().requiredHeightIn(max = 280.dp)
+        ) {
+            quantizationOptions.forEach { (value, label) ->
+                DropdownMenuItem(
+                    text = { Text(label) },
+                    onClick = {
+                        onQuantizationChange(value.orEmpty())
+                        menuExpanded = false
+                    }
+                )
+            }
+        }
+    }
 }

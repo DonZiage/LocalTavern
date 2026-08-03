@@ -46,6 +46,7 @@ fun SettingsPanelContent(
     syncRepository: SyncRepository,
     syncDiscovery: SyncDiscovery,
     chatClient: ChatClient,
+    onEnsureSyncRunning: () -> Unit,
     isDarkMode: Boolean,
     onToggleDarkMode: (Boolean, Offset) -> Unit,
     onApiChanged: () -> Unit,
@@ -127,7 +128,8 @@ fun SettingsPanelContent(
                 SyncSettingsSection(
                     syncService = syncService,
                     syncRepository = syncRepository,
-                    syncDiscovery = syncDiscovery
+                    syncDiscovery = syncDiscovery,
+                    onEnsureSyncRunning = onEnsureSyncRunning
                 )
             }
         }

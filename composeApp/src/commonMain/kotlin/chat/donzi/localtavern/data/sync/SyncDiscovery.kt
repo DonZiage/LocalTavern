@@ -1,6 +1,7 @@
 package chat.donzi.localtavern.data.sync
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -79,14 +80,14 @@ class SyncDiscovery(
         val created = runCatching { socketFactory() }.getOrNull()
         if (created == null) return
         socket = created
-        announceJob = scope.launch {
+        announceJob = scope.launch(Dispatchers.IO) {
             announce()
             while (isActive) {
                 delay(announceIntervalMillis)
                 announce()
             }
         }
-        listenJob = scope.launch {
+        listenJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 val received = runCatching { created.receive(2_000) }.getOrNull()
                 if (received == null) continue

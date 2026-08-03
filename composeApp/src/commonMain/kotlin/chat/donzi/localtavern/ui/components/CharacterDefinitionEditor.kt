@@ -148,7 +148,7 @@ fun CharacterDefinitionEditor(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Edit Character", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                Text("Edit Character", style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
 
                 OutlinedButton(
                     onClick = { exportCharacter() },

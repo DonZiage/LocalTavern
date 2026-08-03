@@ -20,12 +20,14 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.milliseconds
 
 class CircularRevealShape(private val progress: Float, private val center: Offset) : Shape {
@@ -69,23 +71,28 @@ fun ThemeTransition(
     // isCapturing (the newer job is still capturing) nor publish its snapshot.
     var transitionGeneration by remember { mutableStateOf(0) }
 
+    // Syncs an externally changed theme (the async DB read at startup) into
+    // the transition state, but never while a transition is in flight: the DB
+    // write triggered by the toggle itself completes during the reveal and
+    // would otherwise snap the theme back to a stale value.
     LaunchedEffect(initialThemeIsDark) {
-        isDark = initialThemeIsDark
+        if (transitionJob?.isActive != true) {
+            isDark = initialThemeIsDark
+        }
     }
 
     val triggerTransition: (Offset) -> Unit = { center ->
         // A toggle during an in-flight reveal restarts the transition instead
-        // of being silently dropped. Clear the previous snapshot so the OLD
-        // theme image cannot flash on screen while the new one is captured.
+        // of being silently dropped. Only clear the previous snapshot when no
+        // transition is running: a cancelled mid-reveal must not flash the raw
+        // window background while the new frame is captured.
+        val wasTransitionActive = transitionJob?.isActive == true
         transitionJob?.cancel()
         transitionGeneration++
         val generation = transitionGeneration
-        snapshot = null
+        if (!wasTransitionActive) snapshot = null
         animationCenter = center
         val targetDark = !isDark
-        // Flip the theme synchronously: a rapid double-toggle must land on the
-        // opposite theme, not compute "!isDark" twice from the stale flag.
-        isDark = targetDark
         // Persist the new theme immediately so a transition cancelled mid-flight
         // (second toggle, window close) is not silently lost.
         onThemeSaved(targetDark)
@@ -97,18 +104,34 @@ fun ThemeTransition(
                 if (revealProgress.value < 1f) {
                     revealProgress.animateTo(1f, animationSpec = tween(180))
                 }
-                // The freshly enabled recording layer has not drawn anything
-                // yet; wait for the next frame so the capture is not empty
-                // (which silently skips the very first toggle's animation).
+                // Wait until the recording layer has drawn at least one frame of
+                // the CURRENT theme. Frame callbacks resume before the draw of
+                // the same frame, so a single frame is not enough for the
+                // capture to be non-empty.
+                withFrameNanos { }
                 withFrameNanos { }
                 val captured = try {
                     graphicsLayer.toImageBitmap()
                 } catch (_: Exception) {
                     null
                 }
-                if (captured == null || generation != transitionGeneration) return@launch
+                if (generation != transitionGeneration) return@launch
+                if (captured == null) {
+                    // No snapshot: fall back to a plain flip without animation.
+                    isDark = targetDark
+                    return@launch
+                }
+                // Flip the theme only AFTER capturing: the snapshot must show
+                // the PREVIOUS look, so the reveal genuinely animates from it.
+                // Elements inside the growing circle update immediately while
+                // everything else keeps the frozen old-theme image until the
+                // circle reaches it. The clip and the theme flip land in the
+                // same recomposition, so the new theme never flashes
+                // full-screen before the reveal starts.
+                isCapturing = false
                 snapshot = captured
                 revealProgress.snapTo(0f)
+                isDark = targetDark
                 delay(50.milliseconds)
                 revealProgress.animateTo(
                     targetValue = 1f,
@@ -128,7 +151,10 @@ fun ThemeTransition(
     Box(modifier = Modifier.fillMaxSize()) {
         snapshot?.let { bmp ->
             Canvas(modifier = Modifier.fillMaxSize()) {
-                drawImage(bmp)
+                // Scale the capture to the canvas: drawImage's default renders
+                // the bitmap at its pixel size, which overshoots the canvas on
+                // HiDPI screens and leaves the snapshot misaligned.
+                drawImage(bmp, dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()))
             }
         }
 

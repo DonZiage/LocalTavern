@@ -1,0 +1,5 @@
+-- v5 -> v6: OpenRouter-style inference provider routing. The API screen no
+-- longer asks for a provider; the chosen upstream provider (e.g. which
+-- backend serves deepseek/deepseek-v4-flash on an aggregator) is stored here
+-- and sent as the OpenRouter "provider" field with each request.
+ALTER TABLE ApiConnection ADD COLUMN inferenceProvider TEXT;

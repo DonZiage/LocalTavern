@@ -85,6 +85,8 @@ fun ApiConnection.toDomain(): ApiConfig = ApiConfig(
     baseUrl = baseUrl,
     apiKey = apiKey,
     model = model,
+    inferenceProvider = inferenceProvider,
+    quantization = quantization,
     isActive = isActive == 1L,
     isChatCompletion = isChatCompletion == 1L,
     lastUsed = lastUsed,

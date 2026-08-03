@@ -16,7 +16,12 @@ actual class DriverFactory {
         }
         val databaseFile = File(tavernDir, "local_tavern.db")
 
-        val driver: SqlDriver = JdbcSqliteDriver("jdbc:sqlite:${databaseFile.absolutePath}")
+        // busy_timeout must be part of the URL: the SQLDelight JDBC driver opens
+        // a separate connection per thread (ThreadedConnectionManager), and a
+        // PRAGMA executed here would only apply to this thread's connection.
+        // Without a timeout on every connection, a concurrent write on another
+        // thread fails immediately with "SQL is busy" (SQLITE_BUSY).
+        val driver: SqlDriver = JdbcSqliteDriver("jdbc:sqlite:${databaseFile.absolutePath}?busy_timeout=5000")
 
         // The JDBC driver has no built-in schema versioning, so create/migrate
         // against PRAGMA user_version manually. (Android and iOS drivers manage
@@ -34,7 +39,14 @@ actual class DriverFactory {
                 // Re-running the v1 migration on a v2 schema would crash every
                 // launch with "duplicate column name". Detect the real schema
                 // from the columns instead of trusting the version number.
-                val actualOldVersion = currentVersion.coerceAtLeast(if (hasColumn(driver, "CharacterEntity", "systemPrompt")) 2L else 1L)
+                val actualOldVersion = currentVersion.coerceAtLeast(
+                    when {
+                        hasColumn(driver, "ApiConnection", "quantization") -> 6L
+                        hasColumn(driver, "ApiConnection", "inferenceProvider") -> 5L
+                        hasColumn(driver, "CharacterEntity", "systemPrompt") -> 2L
+                        else -> 1L
+                    }
+                )
                 if (actualOldVersion < LocalTavernDB.Schema.version) {
                     LocalTavernDB.Schema.migrate(
                         driver,
@@ -47,8 +59,6 @@ actual class DriverFactory {
         }
 
         driver.execute(null, "PRAGMA journal_mode=WAL;", 0)
-
-        driver.execute(null, "PRAGMA busy_timeout=5000;", 0)
 
         return driver
     }

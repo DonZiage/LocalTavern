@@ -253,7 +253,9 @@ class SyncRepository(
         if (existing == null) {
             queries.insertApiConnectionFull(
                 id = row.id, provider = row.provider, name = row.name, baseUrl = row.baseUrl,
-                apiKey = storedKey, model = row.model, isActive = 0L,
+                apiKey = storedKey, model = row.model, inferenceProvider = row.inferenceProvider,
+                quantization = row.quantization,
+                isActive = 0L,
                 isChatCompletion = row.isChatCompletion, lastUsed = row.lastUsed,
                 temperature = row.temperature, topP = row.topP, topK = row.topK,
                 presencePenalty = row.presencePenalty, frequencyPenalty = row.frequencyPenalty,
@@ -265,7 +267,9 @@ class SyncRepository(
         } else {
             queries.upsertApiConnectionFull(
                 provider = row.provider, name = row.name, baseUrl = row.baseUrl, apiKey = storedKey,
-                model = row.model, isActive = 0L, isChatCompletion = row.isChatCompletion,
+                model = row.model, inferenceProvider = row.inferenceProvider,
+                quantization = row.quantization,
+                isActive = 0L, isChatCompletion = row.isChatCompletion,
                 lastUsed = row.lastUsed, temperature = row.temperature, topP = row.topP,
                 topK = row.topK, presencePenalty = row.presencePenalty,
                 frequencyPenalty = row.frequencyPenalty, contextLimit = row.contextLimit,
@@ -351,7 +355,8 @@ private fun ApiConnection.toSync(cipher: ApiKeyCipher?) = SyncApiConnection(
     // envelope (see ApiKeyCipher.toPortableForm); a key this device cannot
     // read is withheld (null) so the peer never stores an undecryptable blob.
     apiKey = if (cipher != null) cipher.toPortableForm(apiKey) else apiKey,
-    model = model, isActive = 0L, isChatCompletion = isChatCompletion,
+    model = model, inferenceProvider = inferenceProvider, quantization = quantization,
+    isActive = 0L, isChatCompletion = isChatCompletion,
     lastUsed = lastUsed, temperature = temperature, topP = topP,
     topK = topK, presencePenalty = presencePenalty,
     frequencyPenalty = frequencyPenalty, contextLimit = contextLimit,

@@ -67,7 +67,7 @@ class SyncRepositoryTest {
     private fun Device.insertConnection(id: String, apiKey: String?, isActive: Long, updatedAt: Long) {
         db.localTavernDBQueries.insertApiConnectionFull(
             id = id, provider = "openai", name = "Conn", baseUrl = "http://localhost",
-            apiKey = apiKey, model = "gpt-4o", isActive = isActive, isChatCompletion = 1L,
+            apiKey = apiKey, model = "gpt-4o", inferenceProvider = null, quantization = null, isActive = isActive, isChatCompletion = 1L,
             lastUsed = 0L, temperature = 1.0, topP = 1.0, topK = 0L, presencePenalty = 0.0,
             frequencyPenalty = 0.0, contextLimit = 4096L, responseLimit = 1024L,
             displayOrder = 0L, timeoutLimit = 60L, reasoningOverride = 0L,

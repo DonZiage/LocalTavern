@@ -33,7 +33,6 @@ import chat.donzi.localtavern.data.network.ModelInfo
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ModelPicker(
-    isCloudInference: Boolean,
     labelStep: String,
     allModels: List<ModelInfo>,
     providerSuggestions: List<String>,
@@ -41,6 +40,7 @@ fun ModelPicker(
     modelProviderFilter: String,
     modelSearch: String,
     selectedModelFullId: String,
+    showInferenceProvider: Boolean,
     onProviderFilterChange: (String) -> Unit,
     onModelSearchChange: (String) -> Unit,
     onModelSelected: (ModelInfo) -> Unit
@@ -52,7 +52,7 @@ fun ModelPicker(
             color = if (selectedModelFullId.isEmpty() || modelSearch.isBlank()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
         )
 
-        if (allModels.isNotEmpty()) {
+        if (showInferenceProvider && allModels.isNotEmpty()) {
             var providerDropdownExpanded by remember { mutableStateOf(false) }
             ExposedDropdownMenuBox(
                 expanded = providerDropdownExpanded,
@@ -64,8 +64,14 @@ fun ModelPicker(
                         onProviderFilterChange(it)
                         providerDropdownExpanded = true
                     },
-                    label = { Text("Model Provider") },
-                    placeholder = { Text("All Providers") },
+                    label = { Text("Inference Endpoint Provider") },
+                    placeholder = { Text("Endpoint default") },
+                    supportingText = {
+                        Text(
+                            "Which backend serves the model (e.g. OpenRouter routes one model to many providers).",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    },
                     modifier = Modifier
                         .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryEditable)
                         .fillMaxWidth()
@@ -97,7 +103,7 @@ fun ModelPicker(
                     modifier = Modifier.exposedDropdownSize().requiredHeightIn(max = 240.dp)
                 ) {
                     DropdownMenuItem(
-                        text = { Text("All Providers") },
+                        text = { Text("Endpoint default") },
                         onClick = {
                             onProviderFilterChange("")
                             providerDropdownExpanded = false

@@ -26,7 +26,8 @@ import kotlin.time.Clock
 fun SyncSettingsSection(
     syncService: SyncService,
     syncRepository: SyncRepository,
-    syncDiscovery: SyncDiscovery
+    syncDiscovery: SyncDiscovery,
+    onEnsureSyncRunning: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val syncState by syncService.state.collectAsState()
@@ -73,10 +74,16 @@ fun SyncSettingsSection(
         Spacer(modifier = Modifier.height(10.dp))
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { showHostDialog = true }) {
+            OutlinedButton(onClick = {
+                onEnsureSyncRunning()
+                showHostDialog = true
+            }) {
                 Text("Host Pairing…")
             }
-            OutlinedButton(onClick = { showConnectDialog = true }) {
+            OutlinedButton(onClick = {
+                onEnsureSyncRunning()
+                showConnectDialog = true
+            }) {
                 Text("Connect…")
             }
         }
@@ -91,14 +98,20 @@ fun SyncSettingsSection(
                     PeerRow(
                         peer = peer,
                         isSyncing = syncState.isSyncing,
-                        onSync = { syncService.syncNowAsync(peer.deviceId) },
+                        onSync = {
+                            onEnsureSyncRunning()
+                            syncService.syncNowAsync(peer.deviceId)
+                        },
                         onRemove = { scope.launch { syncRepository.deletePeer(peer.deviceId) } }
                     )
                 }
             }
             Spacer(modifier = Modifier.height(6.dp))
             OutlinedButton(
-                onClick = { syncService.syncAllPeersAsync() },
+                onClick = {
+                    onEnsureSyncRunning()
+                    syncService.syncAllPeersAsync()
+                },
                 enabled = !syncState.isSyncing,
                 modifier = Modifier.fillMaxWidth()
             ) {
