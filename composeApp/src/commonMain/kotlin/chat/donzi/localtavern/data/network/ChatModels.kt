@@ -15,6 +15,35 @@ data class ModelData(
     val ownedBy: String? = null
 )
 
+// OpenRouter per-model endpoint details (GET /models/{id}/endpoints). The
+// catalog lists the model publisher (the id prefix); only this endpoint lists
+// the cloud providers that actually serve the model.
+@Serializable
+data class ModelEndpointsResponse(
+    val data: ModelEndpointsData
+)
+
+@Serializable
+data class ModelEndpointsData(
+    @SerialName("endpoints")
+    val endpoints: List<ModelEndpointInfo> = emptyList()
+)
+
+// OpenRouter ZDR registry (GET /endpoints/zdr): the data field is a plain
+// array of endpoints whose provider retains no data.
+@Serializable
+data class ZdrEndpointsResponse(
+    val data: List<ModelEndpointInfo> = emptyList()
+)
+
+@Serializable
+data class ModelEndpointInfo(
+    @SerialName("provider_name")
+    val providerName: String? = null,
+    @SerialName("model_id")
+    val modelId: String? = null
+)
+
 data class ModelInfo(
     val id: String,
     val displayName: String,

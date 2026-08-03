@@ -1,11 +1,18 @@
 package chat.donzi.localtavern.ui.components
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeightIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuAnchorType
@@ -15,18 +22,22 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.data.network.ModelInfo
 
@@ -35,95 +46,18 @@ import chat.donzi.localtavern.data.network.ModelInfo
 fun ModelPicker(
     labelStep: String,
     allModels: List<ModelInfo>,
-    providerSuggestions: List<String>,
     filteredModels: List<ModelInfo>,
-    modelProviderFilter: String,
     modelSearch: String,
     selectedModelFullId: String,
-    showInferenceProvider: Boolean,
-    onProviderFilterChange: (String) -> Unit,
     onModelSearchChange: (String) -> Unit,
     onModelSelected: (ModelInfo) -> Unit
 ) {
-    Column(verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             if (selectedModelFullId.isEmpty() || modelSearch.isBlank()) "$labelStep. Select Model (Required)" else "$labelStep. Model Selected",
             style = MaterialTheme.typography.labelMedium,
             color = if (selectedModelFullId.isEmpty() || modelSearch.isBlank()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
         )
-
-        if (showInferenceProvider && allModels.isNotEmpty()) {
-            var providerDropdownExpanded by remember { mutableStateOf(false) }
-            ExposedDropdownMenuBox(
-                expanded = providerDropdownExpanded,
-                onExpandedChange = { providerDropdownExpanded = it }
-            ) {
-                OutlinedTextField(
-                    value = modelProviderFilter,
-                    onValueChange = {
-                        onProviderFilterChange(it)
-                        providerDropdownExpanded = true
-                    },
-                    label = { Text("Inference Endpoint Provider") },
-                    placeholder = { Text("Endpoint default") },
-                    supportingText = {
-                        Text(
-                            "Which backend serves the model (e.g. OpenRouter routes one model to many providers).",
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    },
-                    modifier = Modifier
-                        .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryEditable)
-                        .fillMaxWidth()
-                        .onPreviewKeyEvent { event ->
-                            if (event.type == KeyEventType.KeyUp && (event.key == Key.Enter || event.key == Key.Tab)) {
-                                if (providerDropdownExpanded && providerSuggestions.isNotEmpty()) {
-                                    onProviderFilterChange(providerSuggestions.first())
-                                    providerDropdownExpanded = false
-                                    return@onPreviewKeyEvent true
-                                }
-                            }
-                            false
-                        },
-                    trailingIcon = {
-                        if (modelProviderFilter.isNotEmpty()) {
-                            IconButton(onClick = { onProviderFilterChange("") }) {
-                                Icon(Icons.Default.Clear, "Clear filter")
-                            }
-                        } else {
-                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerDropdownExpanded)
-                        }
-                    },
-                    singleLine = true
-                )
-
-                ExposedDropdownMenu(
-                    expanded = providerDropdownExpanded,
-                    onDismissRequest = { providerDropdownExpanded = false },
-                    modifier = Modifier.exposedDropdownSize().requiredHeightIn(max = 240.dp)
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Endpoint default") },
-                        onClick = {
-                            onProviderFilterChange("")
-                            providerDropdownExpanded = false
-                        }
-                    )
-                    // Cap the composed items defensively: a provider returning
-                    // thousands of models must not lay out every one of them,
-                    // whatever the caller passed in.
-                    providerSuggestions.take(50).forEach { provider ->
-                        DropdownMenuItem(
-                            text = { Text(provider) },
-                            onClick = {
-                                onProviderFilterChange(provider)
-                                providerDropdownExpanded = false
-                            }
-                        )
-                    }
-                }
-            }
-        }
 
         var modelDropdownExpanded by remember { mutableStateOf(false) }
         ExposedDropdownMenuBox(
@@ -184,3 +118,142 @@ fun ModelPicker(
         }
     }
 }
+
+// Multi-select of the cloud backends that may serve the selected model. The
+// selection is kept as-is even when it includes a provider that does not
+// serve this model; the warning explains the consequence instead of the app
+// silently rewriting the config.
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HostProvidersPicker(
+    labelStep: String,
+    providers: List<String>,
+    selectedProviders: Set<String>,
+    zdrKnown: Boolean,
+    zdrProviders: Set<String>,
+    isLoading: Boolean,
+    unservedProviders: Set<String>,
+    onToggleProvider: (String) -> Unit,
+    onClearAll: () -> Unit
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            if (selectedProviders.isEmpty()) "$labelStep. Select Host Providers (Optional)" else "$labelStep. Host Providers Selected",
+            style = MaterialTheme.typography.labelMedium,
+            color = if (selectedProviders.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary
+        )
+
+        ExposedDropdownMenuBox(
+            expanded = menuExpanded,
+            onExpandedChange = { menuExpanded = it }
+        ) {
+            OutlinedTextField(
+                value = if (selectedProviders.isEmpty()) "Endpoint default" else selectedProviders.sorted().joinToString(" + "),
+                onValueChange = { },
+                readOnly = true,
+                label = { Text("Host Providers") },
+                placeholder = { Text("Endpoint default") },
+                supportingText = {
+                    Text(
+                        "Which backends may serve this model. Selecting several lets OpenRouter route between them. ZDR = prompts are not stored or trained on; No ZDR = prompts may be retained or shared.",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                },
+                modifier = Modifier
+                    .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                    .fillMaxWidth(),
+                trailingIcon = {
+                    if (selectedProviders.isNotEmpty()) {
+                        IconButton(onClick = onClearAll) {
+                            Icon(Icons.Default.Clear, "Clear host providers")
+                        }
+                    } else {
+                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuExpanded)
+                    }
+                },
+                singleLine = true
+            )
+
+            ExposedDropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false },
+                modifier = Modifier.exposedDropdownSize().requiredHeightIn(max = 280.dp)
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Endpoint default (auto-route)") },
+                    onClick = {
+                        onClearAll()
+                        menuExpanded = false
+                    }
+                )
+                if (isLoading) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                "Loading providers…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        onClick = {}
+                    )
+                }
+                // Cap the composed items defensively: a provider returning
+                // thousands of models must not lay out every one of them,
+                // whatever the caller passed in.
+                providers.take(50).forEach { provider ->
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(
+                                    checked = provider in selectedProviders,
+                                    onCheckedChange = null
+                                )
+                                Text(provider, style = MaterialTheme.typography.bodyMedium)
+                                if (zdrKnown) {
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    ZdrLabel(isZdr = provider in zdrProviders)
+                                }
+                            }
+                        },
+                        onClick = {
+                            onToggleProvider(provider)
+                        }
+                    )
+                }
+            }
+        }
+
+        if (unservedProviders.isNotEmpty()) {
+            Text(
+                "${unservedProviders.joinToString(" + ")} does not serve this model — requests will not be routed to it. Prompts may end up with another provider (possibly sharing your data).",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
+// Pill badge showing the privacy status of a provider.
+@Composable
+private fun ZdrLabel(isZdr: Boolean) {
+    val color = if (isZdr) ZdrGreen else MaterialTheme.colorScheme.error
+    Surface(
+        color = color,
+        contentColor = androidx.compose.ui.graphics.Color.White,
+        shape = RoundedCornerShape(50),
+        modifier = Modifier.padding(start = 4.dp)
+    ) {
+        Text(
+            if (isZdr) "ZDR" else "No ZDR",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+        )
+    }
+}
+
+// Shared "privacy-safe" color used for the [ZDR] label.
+internal val ZdrGreen = Color(0xFF43A047)

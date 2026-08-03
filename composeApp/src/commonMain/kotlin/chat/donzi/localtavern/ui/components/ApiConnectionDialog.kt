@@ -11,6 +11,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.data.network.ConnectionProbe
+import chat.donzi.localtavern.data.network.ModelEndpointInfo
 import chat.donzi.localtavern.data.network.ModelInfo
 import chat.donzi.localtavern.domain.ApiConfig
 import chat.donzi.localtavern.utils.fuzzyScore
@@ -77,9 +78,31 @@ fun ApiConnectionDialog(
 
     var modelSearch by remember { mutableStateOf(initialConnection?.model ?: "") }
     var selectedModelFullId by remember { mutableStateOf(initialConnection?.model ?: "") }
-    var modelProviderFilter by remember { mutableStateOf(initialConnection?.inferenceProvider ?: "") }
+    // Multi-select of host providers, stored comma-separated on the profile
+    // (OpenRouter routes among all selected providers).
+    var selectedHostProviders by remember {
+        mutableStateOf(
+            initialConnection?.inferenceProvider
+                ?.split(',')
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                ?.toSet()
+                .orEmpty()
+        )
+    }
     var quantization by remember { mutableStateOf(initialConnection?.quantization ?: "") }
     var validationRequestId by remember { mutableStateOf(0) }
+    // OpenRouter only: the cloud providers actually serving the selected model
+    // (from GET /models/{id}/endpoints). The catalog's id prefix is the model
+    // publisher, which cannot be used as a routing provider.
+    var modelEndpoints by remember { mutableStateOf(emptyList<ModelEndpointInfo>()) }
+    var isLoadingProviders by remember { mutableStateOf(false) }
+    // OpenRouter ZDR registry (GET /endpoints/zdr): which (model, provider)
+    // pairs keep no prompt data. zdrLoaded distinguishes "fetched and empty"
+    // from "registry unreachable", so unknown providers are never labeled as
+    // non-ZDR.
+    var zdrEndpoints by remember { mutableStateOf(emptyList<ModelEndpointInfo>()) }
+    var zdrLoaded by remember { mutableStateOf(false) }
 
     LaunchedEffect(apiKey, baseUrl) {
         val requestId = ++validationRequestId
@@ -149,58 +172,89 @@ fun ApiConnectionDialog(
         }
     }
 
-    LaunchedEffect(allModels) {
-        if (initialConnection != null && modelProviderFilter.isEmpty() && selectedModelFullId.isNotEmpty()) {
-            val currentModel = allModels.find { it.id == selectedModelFullId }
-            if (currentModel != null) {
-                modelProviderFilter = currentModel.provider
-            }
+    // The serving providers depend on the selected model, so fetch them once a
+    // model is picked (OpenRouter only; other endpoints have a single backend).
+    LaunchedEffect(selectedModelFullId, baseUrl, apiKey) {
+        if (selectedModelFullId.isEmpty() || !isOpenRouter) {
+            modelEndpoints = emptyList()
+            isLoadingProviders = false
+            return@LaunchedEffect
+        }
+        isLoadingProviders = true
+        modelEndpoints = chatClient.fetchModelEndpoints(
+            baseUrl.trim(),
+            apiKey.ifBlank { initialConnection?.apiKey ?: "" },
+            selectedModelFullId,
+            detectedProvider
+        )
+        isLoadingProviders = false
+    }
+
+    // The ZDR registry is model-independent; fetch it once per dialog so the
+    // provider list can be labeled with which backends keep prompts private.
+    LaunchedEffect(isOpenRouter, baseUrl, apiKey) {
+        if (!isOpenRouter) {
+            zdrEndpoints = emptyList()
+            zdrLoaded = false
+            return@LaunchedEffect
+        }
+        val result = chatClient.fetchZdrEndpoints(
+            baseUrl.trim(),
+            apiKey.ifBlank { initialConnection?.apiKey ?: "" },
+            detectedProvider
+        )
+        if (result != null) {
+            zdrEndpoints = result
+            zdrLoaded = true
         }
     }
 
-    LaunchedEffect(modelProviderFilter) {
-        if (selectedModelFullId.isNotEmpty()) {
-            val currentModel = allModels.find { it.id == selectedModelFullId }
-            if (currentModel != null) {
-                if (modelProviderFilter.isNotEmpty() && modelProviderFilter != currentModel.provider) {
-                    selectedModelFullId = ""
-                    modelSearch = ""
-                }
-            }
-        }
+    val providerSuggestions = remember(modelEndpoints) {
+        modelEndpoints.mapNotNull { it.providerName }.distinct().sorted()
     }
 
-    val uniqueModelProviders = remember(allModels) {
-        allModels.map { it.provider }.distinct().sorted()
-    }
-
-    val providerSuggestions = remember(uniqueModelProviders, modelProviderFilter) {
-        if (modelProviderFilter.isEmpty()) {
-            uniqueModelProviders
+    // ZDR providers among those serving the selected model. An endpoint is
+    // ZDR only when both APIs agree on the same (model, provider) pair; both
+    // report the canonical model id, so dated catalog ids still match.
+    val zdrProviders = remember(modelEndpoints, zdrEndpoints, zdrLoaded) {
+        if (!zdrLoaded) {
+            emptySet()
         } else {
-            uniqueModelProviders
-                .map { it to it.fuzzyScore(modelProviderFilter) }
-                .filter { it.second > 0 }
-                .sortedByDescending { it.second }
-                .map { it.first }
+            val zdrKeys = zdrEndpoints.mapNotNull { endpoint ->
+                val modelId = endpoint.modelId?.lowercase() ?: return@mapNotNull null
+                val provider = endpoint.providerName?.lowercase() ?: return@mapNotNull null
+                "$modelId|$provider"
+            }.toSet()
+            modelEndpoints.mapNotNull { endpoint ->
+                val modelId = endpoint.modelId?.lowercase() ?: return@mapNotNull null
+                val provider = endpoint.providerName ?: return@mapNotNull null
+                if ("$modelId|${provider.lowercase()}" in zdrKeys) provider else null
+            }.toSet()
         }
     }
 
-    val filteredModels = remember(allModels, modelSearch, modelProviderFilter) {
+    // The user's provider choices are kept as-is even when a selected provider
+    // does not serve the selected model: the app informs instead of silently
+    // rewriting the config. OpenRouter then routes (or fails) based on the
+    // saved preference. Only reported when the endpoint list actually loaded.
+    val servingProviders = remember(modelEndpoints) {
+        modelEndpoints.mapNotNull { it.providerName }.toSet()
+    }
+    val unservedProviders = remember(selectedHostProviders, servingProviders) {
+        if (servingProviders.isEmpty()) emptySet()
+        else selectedHostProviders.filterNot { it in servingProviders }.toSet()
+    }
+
+    val showHostProviders = (providerSuggestions.size > 1 || selectedHostProviders.isNotEmpty()) && selectedModelFullId.isNotEmpty()
+
+    val filteredModels = remember(allModels, modelSearch) {
         allModels.asSequence()
             .map { model ->
                 val idScore = model.id.fuzzyScore(modelSearch)
                 val nameScore = model.displayName.fuzzyScore(modelSearch)
                 var finalScore = maxOf(idScore, nameScore)
 
-                val matchesFilter = modelProviderFilter.isEmpty() || model.provider == modelProviderFilter
-
-                // The provider filter must be enforced regardless of the
-                // search text; otherwise a model from another provider could
-                // be selected and saved.
-                if (!matchesFilter) {
-                    finalScore = 0
-                } else if (modelSearch.isNotEmpty()) {
+                if (modelSearch.isNotEmpty()) {
                     finalScore += 50
                 }
 
@@ -254,7 +308,7 @@ fun ApiConnectionDialog(
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (showStepOne) {
                     Text(
-                        text = if (step == 0) "Endpoint & API key" else "Model & profile",
+                        text = if (step == 0) "Provider & API key" else "Model, providers & profile",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -298,13 +352,9 @@ fun ApiConnectionDialog(
                         ModelPicker(
                             labelStep = "3",
                             allModels = allModels,
-                            providerSuggestions = providerSuggestions,
                             filteredModels = filteredModels,
-                            modelProviderFilter = modelProviderFilter,
                             modelSearch = modelSearch,
                             selectedModelFullId = selectedModelFullId,
-                            showInferenceProvider = uniqueModelProviders.size > 1 || modelProviderFilter.isNotBlank(),
-                            onProviderFilterChange = { modelProviderFilter = it },
                             onModelSearchChange = { value ->
                                 modelSearch = value
                                 // The typed text no longer matches the previously
@@ -321,8 +371,25 @@ fun ApiConnectionDialog(
                             onModelSelected = { model ->
                                 selectedModelFullId = model.id
                                 modelSearch = model.id
-                                modelProviderFilter = model.provider
                             }
+                        )
+                    }
+
+                    if (showHostProviders) {
+                        HostProvidersPicker(
+                            labelStep = "4",
+                            providers = providerSuggestions,
+                            selectedProviders = selectedHostProviders,
+                            zdrKnown = zdrLoaded,
+                            zdrProviders = zdrProviders,
+                            isLoading = isLoadingProviders,
+                            unservedProviders = unservedProviders,
+                            onToggleProvider = { provider ->
+                                selectedHostProviders =
+                                    if (provider in selectedHostProviders) selectedHostProviders - provider
+                                    else selectedHostProviders + provider
+                            },
+                            onClearAll = { selectedHostProviders = emptySet() }
                         )
                     }
 
@@ -341,7 +408,7 @@ fun ApiConnectionDialog(
                     OutlinedTextField(
                         value = name,
                         onValueChange = { name = it },
-                        label = { Text("4. Profile Name (Optional)") },
+                        label = { Text("6. Profile Name (Optional)") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -367,7 +434,7 @@ fun ApiConnectionDialog(
                             baseUrl.trim(),
                             apiKey,
                             selectedModelFullId,
-                            modelProviderFilter.takeIf { it.isNotBlank() },
+                            selectedHostProviders.sorted().joinToString(",").takeIf { it.isNotEmpty() },
                             quantization.takeIf { it.isNotBlank() },
                             initialConnection?.isChatCompletion == true || (initialConnection == null && !isLocal)
                         )
@@ -440,12 +507,7 @@ private fun BaseUrlPicker(
                 providersInSection.forEach { provider ->
                     ProviderCatalog.defaultUrls[provider]?.let { url ->
                         DropdownMenuItem(
-                            text = {
-                                Column {
-                                    Text(provider, style = MaterialTheme.typography.bodyMedium)
-                                    Text(url, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                            },
+                            text = { Text(provider, style = MaterialTheme.typography.bodyMedium) },
                             onClick = {
                                 onBaseUrlChange(url)
                                 menuExpanded = false
@@ -473,7 +535,7 @@ private fun QuantizationPicker(
             value = quantization.ifBlank { "Default" },
             onValueChange = { },
             readOnly = true,
-            label = { Text("Quantization (OpenRouter)") },
+            label = { Text("5. Quantization (OpenRouter)") },
             placeholder = { Text("Default") },
             supportingText = {
                 Text(

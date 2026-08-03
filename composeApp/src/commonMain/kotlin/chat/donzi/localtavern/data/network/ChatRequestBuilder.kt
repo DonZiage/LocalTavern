@@ -186,18 +186,22 @@ internal fun JsonObjectBuilder.putGenerationParams(params: GenerationParams) {
     params.reasoningEffort?.let { put("reasoning_effort", it) }
 }
 
-// OpenRouter-style routing: pins the request to one upstream inference
-// provider and/or a quantization preference. Only sent when the user picked
-// something (e.g. on aggregators that serve the same model from several
-// backends); strict provider routing fails loudly instead of silently
-// falling back to another provider.
+// OpenRouter-style routing: pins the request to one or more upstream
+// inference providers (comma-separated) and/or a quantization preference.
+// Only sent when the user picked something (e.g. on aggregators that serve
+// the same model from several backends); strict provider routing fails loudly
+// instead of silently falling back to another provider.
 internal fun JsonObjectBuilder.putInferenceProvider(inferenceProvider: String?, quantization: String?) {
-    val providerName = inferenceProvider?.trim().orEmpty()
+    val providers = inferenceProvider
+        ?.split(',')
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        .orEmpty()
     val quant = quantization?.trim().orEmpty()
-    if (providerName.isBlank() && quant.isBlank()) return
+    if (providers.isEmpty() && quant.isBlank()) return
     put("provider", buildJsonObject {
-        if (providerName.isNotBlank()) {
-            put("order", buildJsonArray { add(JsonPrimitive(providerName)) })
+        if (providers.isNotEmpty()) {
+            put("order", buildJsonArray { providers.forEach { add(JsonPrimitive(it)) } })
             put("allow_fallbacks", false)
         }
         if (quant.isNotBlank()) {

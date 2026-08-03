@@ -123,7 +123,12 @@ fun ApiConnectionItem(
                 buildString {
                     append(connection.model ?: "None")
                     if (!connection.inferenceProvider.isNullOrBlank()) {
-                        append("  ·  via ${connection.inferenceProvider}")
+                        val via = connection.inferenceProvider
+                            .split(',')
+                            .map { it.trim() }
+                            .filter { it.isNotEmpty() }
+                            .joinToString(" + ")
+                        append("  ·  via $via")
                     }
                     if (!connection.quantization.isNullOrBlank()) {
                         append("  ·  ${connection.quantization}")

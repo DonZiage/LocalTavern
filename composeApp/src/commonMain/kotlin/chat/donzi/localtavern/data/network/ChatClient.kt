@@ -65,6 +65,57 @@ class ChatClient(private val httpClient: HttpClient) {
         }
     }
 
+    // OpenRouter exposes which cloud providers actually serve a given model
+    // only on the per-model endpoint details API (GET /models/{id}/endpoints);
+    // the catalog's id prefix is the publisher, not the serving provider.
+    suspend fun fetchModelEndpoints(baseUrl: String, apiKey: String, modelId: String, provider: String? = null): List<ModelEndpointInfo> {
+        val apiStyle = apiStyleForProvider(provider)
+        return try {
+            val response = httpClient.get("${baseUrl.trimEnd('/')}/models/${modelId.trimStart('/')}/endpoints") {
+                putAuthHeaders(apiStyle, apiKey)
+            }
+            if (response.status == HttpStatusCode.OK) {
+                val body: ModelEndpointsResponse = response.body()
+                body.data.endpoints.mapNotNull { endpoint ->
+                    val name = endpoint.providerName?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    ModelEndpointInfo(providerName = name, modelId = endpoint.modelId)
+                }
+            } else {
+                emptyList()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    // OpenRouter's Zero Data Retention registry (GET /endpoints/zdr): which
+    // (model, provider) endpoints store no prompt data at all. Returns null
+    // when the registry could not be fetched, so an offline registry is never
+    // mistaken for "no provider is ZDR".
+    suspend fun fetchZdrEndpoints(baseUrl: String, apiKey: String, provider: String? = null): List<ModelEndpointInfo>? {
+        val apiStyle = apiStyleForProvider(provider)
+        return try {
+            val response = httpClient.get("${baseUrl.trimEnd('/')}/endpoints/zdr") {
+                putAuthHeaders(apiStyle, apiKey)
+            }
+            if (response.status == HttpStatusCode.OK) {
+                val body: ZdrEndpointsResponse = response.body()
+                body.data.mapNotNull { endpoint ->
+                    val name = endpoint.providerName?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    ModelEndpointInfo(providerName = name, modelId = endpoint.modelId)
+                }
+            } else {
+                emptyList()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     suspend fun checkStatus(baseUrl: String, apiKey: String, provider: String? = null): Boolean =
         probeConnection(baseUrl, apiKey, provider).outcome == ConnectionProbe.Ok
 
