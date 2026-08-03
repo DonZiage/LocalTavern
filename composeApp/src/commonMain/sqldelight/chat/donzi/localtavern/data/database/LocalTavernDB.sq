@@ -129,7 +129,14 @@ CREATE TABLE AppSettings (
     -- updatedAt on every synced row: max(wallClock, lastHlc + 1), advanced
     -- by every local write and by every timestamp received from a peer.
     -- Persisting it makes clock-skew-resilient LWW survive app restarts.
-    lastHlc INTEGER NOT NULL DEFAULT 0
+    lastHlc INTEGER NOT NULL DEFAULT 0,
+    -- Per-device preferences (never synced). sendWithCtrlEnter: Enter inserts
+    -- a newline and Ctrl+Enter sends; when off (default) Enter sends.
+    sendWithCtrlEnter INTEGER NOT NULL DEFAULT 0,
+    -- Auto-sync with paired devices when the app starts.
+    autoSyncOnLaunch INTEGER NOT NULL DEFAULT 0,
+    -- Ask for confirmation before deleting characters/personas.
+    confirmBeforeDelete INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE PromptBlockEntity (
@@ -336,6 +343,15 @@ UPDATE AppSettings SET isDarkMode = ? WHERE id = 1;
 updateActivePersonaId:
 UPDATE AppSettings SET activePersonaId = ? WHERE id = 1;
 
+updateSendWithCtrlEnter:
+UPDATE AppSettings SET sendWithCtrlEnter = ? WHERE id = 1;
+
+updateAutoSyncOnLaunch:
+UPDATE AppSettings SET autoSyncOnLaunch = ? WHERE id = 1;
+
+updateConfirmBeforeDelete:
+UPDATE AppSettings SET confirmBeforeDelete = ? WHERE id = 1;
+
 insertDefaultSettings:
 INSERT OR IGNORE INTO AppSettings(id, isDarkMode, activePersonaId) VALUES (1, 1, NULL);
 
@@ -433,6 +449,11 @@ UPDATE SyncPeer SET receivedCursor = ?, peerReceivedCursor = ?, lastSyncAt = ?, 
 
 updateSyncPeerAddress:
 UPDATE SyncPeer SET lastKnownAddress = ?, updatedAt = ? WHERE deviceId = ?;
+
+-- Display-name updates arrive only through authenticated sync exchanges;
+-- they never affect cursors or deltas.
+updateSyncPeerName:
+UPDATE SyncPeer SET name = ?, updatedAt = ? WHERE deviceId = ?;
 
 deleteSyncPeer:
 UPDATE SyncPeer SET isDeleted = 1, updatedAt = ? WHERE deviceId = ?;

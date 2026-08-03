@@ -30,7 +30,8 @@ fun ChatInputArea(
     activeCharacter: Character?,
     isSelectMode: Boolean,
     actions: ChatActions,
-    onEnterSelectMode: () -> Unit
+    onEnterSelectMode: () -> Unit,
+    sendWithCtrlEnter: Boolean = false
 ) {
     var draftText by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(""))
@@ -70,7 +71,8 @@ fun ChatInputArea(
             onStopGeneration = actions.onStopGeneration,
             onManageChats = actions.onManageChats,
             canManageChats = activeCharacter != null,
-            onGoToParent = actions.onGoToParentChat
+            onGoToParent = actions.onGoToParentChat,
+            sendWithCtrlEnter = sendWithCtrlEnter
         )
     }
 }

@@ -41,6 +41,7 @@ actual class DriverFactory {
                 // from the columns instead of trusting the version number.
                 val actualOldVersion = currentVersion.coerceAtLeast(
                     when {
+                        hasColumn(driver, "AppSettings", "sendWithCtrlEnter") -> 7L
                         hasColumn(driver, "ApiConnection", "quantization") -> 6L
                         hasColumn(driver, "ApiConnection", "inferenceProvider") -> 5L
                         hasColumn(driver, "CharacterEntity", "systemPrompt") -> 2L

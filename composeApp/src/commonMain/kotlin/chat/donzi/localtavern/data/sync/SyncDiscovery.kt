@@ -61,6 +61,10 @@ class SyncDiscovery(
     private val announceIntervalMillis: Long = 15_000,
     private val peerTtlMillis: Long = 60_000,
     private val socketFactory: () -> DiscoverySocket = { createDiscoverySocket() },
+    // Resolved per announcement so a display-name rename is reflected on the
+    // LAN without recreating discovery (the container wires it to the live
+    // identity; the default keeps the constructed one for tests).
+    private val deviceNameProvider: () -> String = { identity.deviceName },
     private val onPeerSeen: suspend (DiscoveredPeer) -> Unit = {}
 ) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -126,7 +130,10 @@ class SyncDiscovery(
     private suspend fun announce() {
         val socket = socket ?: return
         val data = json
-            .encodeToString(DiscoveryAnnouncement.serializer(), DiscoveryAnnouncement(identity.deviceId, identity.deviceName, syncPort))
+            .encodeToString(
+                DiscoveryAnnouncement.serializer(),
+                DiscoveryAnnouncement(identity.deviceId, deviceNameProvider(), syncPort)
+            )
             .encodeToByteArray()
         runCatching { socket.send(data, BROADCAST_ADDRESS, discoveryPort) }
     }

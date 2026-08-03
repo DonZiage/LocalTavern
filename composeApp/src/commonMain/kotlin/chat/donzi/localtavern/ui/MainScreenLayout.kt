@@ -18,7 +18,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.Dp
 import chat.donzi.localtavern.controller.ChatUiState
-import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Persona
 import chat.donzi.localtavern.isDesktop
@@ -32,6 +31,7 @@ import chat.donzi.localtavern.ui.components.ExportNotificationBubble
 import chat.donzi.localtavern.ui.components.MessageSelectTopBar
 import chat.donzi.localtavern.ui.components.SettingsPanelContent
 import chat.donzi.localtavern.ui.components.SidePanels
+import chat.donzi.localtavern.utils.BatchImportResult
 
 // Layout pieces of MainScreen, extracted so the orchestrator only wires
 // state and data. The desktop panels keep their own collapse/expansion
@@ -44,10 +44,19 @@ internal fun DesktopSettingsPanel(
     state: MainScreenState,
     isDarkMode: Boolean,
     onToggleDarkMode: (Boolean, Offset) -> Unit,
+    autoSyncOnLaunch: Boolean,
+    onAutoSyncOnLaunchChange: (Boolean) -> Unit,
+    sendWithCtrlEnter: Boolean,
+    onSendWithCtrlEnterChange: (Boolean) -> Unit,
+    confirmBeforeDelete: Boolean,
+    onConfirmBeforeDeleteChange: (Boolean) -> Unit,
     drawerWidth: Dp,
     modifier: Modifier = Modifier
 ) {
     var settingsApiExpanded by remember { mutableStateOf(false) }
+    var settingsSyncExpanded by remember { mutableStateOf(false) }
+    var settingsAppExpanded by remember { mutableStateOf(false) }
+    var settingsSecurityExpanded by remember { mutableStateOf(false) }
     Box(modifier.width(drawerWidth).fillMaxHeight()) {
         SettingsPanelContent(
             apiSettingsRepository = deps.apiSettingsRepository,
@@ -61,8 +70,20 @@ internal fun DesktopSettingsPanel(
             isDarkMode = isDarkMode,
             onToggleDarkMode = onToggleDarkMode,
             onApiChanged = { state.refreshApiProfile() },
+            autoSyncOnLaunch = autoSyncOnLaunch,
+            onAutoSyncOnLaunchChange = onAutoSyncOnLaunchChange,
+            sendWithCtrlEnter = sendWithCtrlEnter,
+            onSendWithCtrlEnterChange = onSendWithCtrlEnterChange,
+            confirmBeforeDelete = confirmBeforeDelete,
+            onConfirmBeforeDeleteChange = onConfirmBeforeDeleteChange,
             apiSectionExpanded = settingsApiExpanded,
-            onApiSectionExpandedChange = { settingsApiExpanded = it }
+            onApiSectionExpandedChange = { settingsApiExpanded = it },
+            syncSectionExpanded = settingsSyncExpanded,
+            onSyncSectionExpandedChange = { settingsSyncExpanded = it },
+            appSettingsSectionExpanded = settingsAppExpanded,
+            onAppSettingsSectionExpandedChange = { settingsAppExpanded = it },
+            securitySectionExpanded = settingsSecurityExpanded,
+            onSecuritySectionExpandedChange = { settingsSecurityExpanded = it }
         )
     }
 }
@@ -79,9 +100,11 @@ internal fun DesktopCharactersPanel(
     onPersonaUpdate: (String, String, String?, ByteArray?) -> Unit,
     onPersonaDelete: (String) -> Unit,
     onCharactersDelete: (Set<String>) -> Unit,
-    onCharacterImport: (SillyTavernCardV2, ByteArray?) -> Unit,
+    onImportCharacters: (BatchImportResult) -> Unit,
+    onExportSelected: (Set<String>) -> Unit,
     onCharacterCreate: (String) -> Unit,
     exportCharacterFromList: (Character) -> Unit,
+    confirmBeforeDelete: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     var personasExpanded by remember { mutableStateOf(true) }
@@ -97,7 +120,8 @@ internal fun DesktopCharactersPanel(
             characters = characters,
             onCharacterSelect = { character -> state.activeCharacter = character },
             onCharactersDelete = { ids -> if (state.activeCharacter?.id in ids) state.activeCharacter = null; onCharactersDelete(ids) },
-            onCharacterImport = onCharacterImport,
+            onImportCharacters = onImportCharacters,
+            onExportSelected = onExportSelected,
             onCharacterCreate = { name -> state.pendingCreationName = name; onCharacterCreate(name) },
             onCharacterEdit = { character -> state.openEditor(character) },
             onCharacterExport = exportCharacterFromList,
@@ -108,7 +132,8 @@ internal fun DesktopCharactersPanel(
             personasExpanded = personasExpanded,
             onPersonasExpandedChange = { personasExpanded = it },
             charactersExpanded = charactersExpanded,
-            onCharactersExpandedChange = { charactersExpanded = it }
+            onCharactersExpandedChange = { charactersExpanded = it },
+            confirmBeforeDelete = confirmBeforeDelete
         )
     }
 }
@@ -124,6 +149,7 @@ internal fun ChatScaffold(
     hasCharacter: Boolean,
     onSendMessage: (String, List<ByteArray>) -> Boolean,
     onActiveDrawerChange: (ActiveDrawer) -> Unit,
+    sendWithCtrlEnter: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val messages = chatState.messages
@@ -180,6 +206,7 @@ internal fun ChatScaffold(
                     }
                 },
                 onEnterSelectMode = { state.enterSelectMode() },
+                sendWithCtrlEnter = sendWithCtrlEnter,
                 actions = buildChatActions(
                     chatController = deps.chatController,
                     activeSessionId = state.activeSessionId,
@@ -214,13 +241,20 @@ internal fun MobilePanels(
     characters: List<Character>,
     isDarkMode: Boolean,
     onToggleDarkMode: (Boolean, Offset) -> Unit,
+    autoSyncOnLaunch: Boolean,
+    onAutoSyncOnLaunchChange: (Boolean) -> Unit,
+    sendWithCtrlEnter: Boolean,
+    onSendWithCtrlEnterChange: (Boolean) -> Unit,
+    confirmBeforeDelete: Boolean,
+    onConfirmBeforeDeleteChange: (Boolean) -> Unit,
     onActiveDrawerChange: (ActiveDrawer) -> Unit,
     onPersonaSelect: (String) -> Unit,
     onPersonaAdd: (String, String?, ByteArray?) -> Unit,
     onPersonaUpdate: (String, String, String?, ByteArray?) -> Unit,
     onPersonaDelete: (String) -> Unit,
     onCharactersDelete: (Set<String>) -> Unit,
-    onCharacterImport: (SillyTavernCardV2, ByteArray?) -> Unit,
+    onImportCharacters: (BatchImportResult) -> Unit,
+    onExportSelected: (Set<String>) -> Unit,
     onCharacterCreate: (String) -> Unit,
     exportCharacterFromList: (Character) -> Unit
 ) {
@@ -238,6 +272,12 @@ internal fun MobilePanels(
         onEnsureSyncRunning = deps.onEnsureSyncRunning,
         isDarkMode = isDarkMode,
         onToggleDarkMode = onToggleDarkMode,
+        autoSyncOnLaunch = autoSyncOnLaunch,
+        onAutoSyncOnLaunchChange = onAutoSyncOnLaunchChange,
+        sendWithCtrlEnter = sendWithCtrlEnter,
+        onSendWithCtrlEnterChange = onSendWithCtrlEnterChange,
+        confirmBeforeDelete = confirmBeforeDelete,
+        onConfirmBeforeDeleteChange = onConfirmBeforeDeleteChange,
         personas = personas,
         activePersonaId = activePersonaId,
         onPersonaSelect = onPersonaSelect,
@@ -247,7 +287,8 @@ internal fun MobilePanels(
         characters = characters,
         onCharacterSelect = { character -> state.activeCharacter = character; onActiveDrawerChange(ActiveDrawer.None) },
         onCharactersDelete = { ids -> if (state.activeCharacter?.id in ids) state.activeCharacter = null; onCharactersDelete(ids) },
-        onCharacterImport = onCharacterImport,
+        onImportCharacters = onImportCharacters,
+        onExportSelected = onExportSelected,
         onCharacterCreate = { name -> state.pendingCreationName = name; onCharacterCreate(name); onActiveDrawerChange(ActiveDrawer.None) },
         onCharacterEdit = { character -> state.openEditor(character); onActiveDrawerChange(ActiveDrawer.None) },
         onCharacterExport = exportCharacterFromList,
@@ -300,6 +341,7 @@ internal fun MainScreenOverlays(
         ExportNotificationBubble(
             visible = state.showExportNotification,
             exportedDir = state.exportedDir,
+            exportedCount = state.exportedCount,
             onDismiss = { state.showExportNotification = false },
             modifier = Modifier.align(Alignment.TopCenter)
         )

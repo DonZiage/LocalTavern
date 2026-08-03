@@ -179,3 +179,35 @@ internal fun buildExportHandler(
         }
     }
 }
+
+// Mass export: every selected character is prepared (PNG embed or JSON
+// fallback) and packed into a single stored ZIP archive, then saved through
+// the same save-file path as a single export.
+internal fun buildBatchExportHandler(
+    isDesktop: Boolean,
+    onCloseDrawer: () -> Unit,
+    scope: CoroutineScope,
+    onExported: (count: Int, parentDir: String) -> Unit,
+    onExportFailed: (message: String) -> Unit
+): (List<Character>) -> Unit = { characters ->
+    if (!isDesktop) onCloseDrawer()
+    scope.launch {
+        try {
+            val count = characters.size
+            val bytes = withContext(Dispatchers.Default) {
+                CharacterManager.prepareBatchExportBytes(characters)
+            }
+            val parentDir = CharacterManager.saveExportedFile(
+                CharacterManager.batchExportFileName(),
+                bytes
+            )
+            if (parentDir != null) {
+                onExported(count, parentDir)
+            } else {
+                onExportFailed("Failed to export: Could not save file")
+            }
+        } catch (e: Exception) {
+            onExportFailed("Failed to export: ${e.message}")
+        }
+    }
+}

@@ -39,10 +39,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
-import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Persona
+import chat.donzi.localtavern.utils.BatchImportResult
 import androidx.compose.ui.geometry.Offset
 
 enum class ActiveDrawer {
@@ -66,6 +66,12 @@ fun SidePanels(
     onEnsureSyncRunning: () -> Unit = {},
     isDarkMode: Boolean,
     onToggleDarkMode: (Boolean, Offset) -> Unit,
+    autoSyncOnLaunch: Boolean = false,
+    onAutoSyncOnLaunchChange: (Boolean) -> Unit = {},
+    sendWithCtrlEnter: Boolean = false,
+    onSendWithCtrlEnterChange: (Boolean) -> Unit = {},
+    confirmBeforeDelete: Boolean = true,
+    onConfirmBeforeDeleteChange: (Boolean) -> Unit = {},
     personas: List<Persona>,
     activePersonaId: String?,
     onPersonaSelect: (String) -> Unit,
@@ -75,7 +81,8 @@ fun SidePanels(
     characters: List<Character>,
     onCharacterSelect: (Character) -> Unit,
     onCharactersDelete: (Set<String>) -> Unit,
-    onCharacterImport: (SillyTavernCardV2, ByteArray?) -> Unit,
+    onImportCharacters: (BatchImportResult) -> Unit,
+    onExportSelected: (Set<String>) -> Unit,
     onCharacterExport: (Character) -> Unit,
     onCharacterCreate: (String) -> Unit,
     onCharacterEdit: (Character) -> Unit,
@@ -86,6 +93,9 @@ fun SidePanels(
     onApiChanged: () -> Unit = {}
 ) {
     var settingsApiExpanded by remember { mutableStateOf(false) }
+    var settingsSyncExpanded by remember { mutableStateOf(false) }
+    var settingsAppExpanded by remember { mutableStateOf(false) }
+    var settingsSecurityExpanded by remember { mutableStateOf(false) }
     var personasExpanded by remember { mutableStateOf(true) }
     var charactersExpanded by remember { mutableStateOf(true) }
 
@@ -138,8 +148,20 @@ fun SidePanels(
                 isDarkMode = isDarkMode,
                 onToggleDarkMode = onToggleDarkMode,
                 onApiChanged = onApiChanged,
+                autoSyncOnLaunch = autoSyncOnLaunch,
+                onAutoSyncOnLaunchChange = onAutoSyncOnLaunchChange,
+                sendWithCtrlEnter = sendWithCtrlEnter,
+                onSendWithCtrlEnterChange = onSendWithCtrlEnterChange,
+                confirmBeforeDelete = confirmBeforeDelete,
+                onConfirmBeforeDeleteChange = onConfirmBeforeDeleteChange,
                 apiSectionExpanded = settingsApiExpanded,
                 onApiSectionExpandedChange = { settingsApiExpanded = it },
+                syncSectionExpanded = settingsSyncExpanded,
+                onSyncSectionExpandedChange = { settingsSyncExpanded = it },
+                appSettingsSectionExpanded = settingsAppExpanded,
+                onAppSettingsSectionExpandedChange = { settingsAppExpanded = it },
+                securitySectionExpanded = settingsSecurityExpanded,
+                onSecuritySectionExpandedChange = { settingsSecurityExpanded = it },
                 scrollState = settingsScrollState
             )
         }
@@ -166,7 +188,8 @@ fun SidePanels(
                 characters = characters,
                 onCharacterSelect = onCharacterSelect,
                 onCharactersDelete = onCharactersDelete,
-                onCharacterImport = onCharacterImport,
+                onImportCharacters = onImportCharacters,
+                onExportSelected = onExportSelected,
                 onCharacterExport = onCharacterExport,
                 onCharacterCreate = onCharacterCreate,
                 onCharacterEdit = onCharacterEdit,
@@ -178,6 +201,7 @@ fun SidePanels(
                 onPersonasExpandedChange = { personasExpanded = it },
                 charactersExpanded = charactersExpanded,
                 onCharactersExpandedChange = { charactersExpanded = it },
+                confirmBeforeDelete = confirmBeforeDelete,
                 scrollState = charactersScrollState
             )
         }

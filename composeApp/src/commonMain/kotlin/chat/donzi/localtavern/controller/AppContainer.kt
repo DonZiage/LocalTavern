@@ -11,6 +11,7 @@ import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.data.security.ApiKeyCipher
 import chat.donzi.localtavern.data.security.createSecretCrypto
 import chat.donzi.localtavern.data.sync.SyncCrypto
+import chat.donzi.localtavern.data.sync.DeviceName
 import chat.donzi.localtavern.data.sync.SyncDiscovery
 import chat.donzi.localtavern.data.sync.SyncIdentity
 import chat.donzi.localtavern.data.sync.SyncIdentityStore
@@ -118,7 +119,10 @@ class AppContainer(driverFactory: DriverFactory) {
                     identityStore = syncIdentityStore,
                     httpClient = httpClient,
                     scope = appScope,
-                    localAddressesProvider = { localIpAddresses() }
+                    localAddressesProvider = { localIpAddresses() },
+                    // Stop LAN discovery in lockstep with the server: an idle
+                    // server must not keep announcing a dead port on the LAN.
+                    onServerStopped = { if (::syncDiscovery.isInitialized) syncDiscovery.stop() }
                 )
 
                 // LAN discovery: announces this device and learns the current
@@ -129,6 +133,9 @@ class AppContainer(driverFactory: DriverFactory) {
                     identity = identity,
                     scope = appScope,
                     syncPort = SYNC_PORT,
+                    // Read the name live so a rename is reflected in LAN
+                    // announcements without recreating discovery.
+                    deviceNameProvider = { syncService.identity.deviceName },
                     onPeerSeen = { discovered ->
                         appScope.launch {
                             val peer = syncRepository.getPeer(discovered.deviceId)
@@ -141,6 +148,14 @@ class AppContainer(driverFactory: DriverFactory) {
                 )
 
                 _syncReady.value = true
+
+                // Auto-sync (opt-out in App Settings): engage the sync stack
+                // and exchange changes with every paired device right away.
+                if (apiSettingsRepository.getAppSettings().autoSyncOnLaunch != 0L) {
+                    syncService.startServer()
+                    if (::syncDiscovery.isInitialized) syncDiscovery.start()
+                    syncService.syncAllPeersAsync()
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -151,7 +166,9 @@ class AppContainer(driverFactory: DriverFactory) {
 
     // The sync server and LAN discovery only run while the user is actually
     // using sync: an idle app must not listen on the sync port or broadcast
-    // on the LAN. Every sync UI action calls this first (idempotent).
+    // on the LAN, and SyncService's idle watchdog shuts both down after five
+    // minutes without sync activity. Every sync UI action calls this first
+    // (idempotent) to bring them back up.
     fun ensureSyncRunning() {
         if (!::syncService.isInitialized) return
         syncService.startServer()
@@ -176,8 +193,17 @@ class AppContainer(driverFactory: DriverFactory) {
 
 private suspend fun loadOrCreateSyncIdentity(store: SyncIdentityStore): SyncIdentity {
     val existing = store.load()?.let { SyncIdentity.deserialize(it) }
-    if (existing != null) return existing
-    val created = SyncIdentity.create("Device", SyncCrypto())
+    if (existing != null) {
+        // Migrate legacy installs whose name was hardcoded (or never set):
+        // give them a friendly generated name instead. The id and keypair
+        // are untouched, so pairings stay valid.
+        val usable = SyncIdentity.migratedName(existing.deviceName)
+        if (usable != null) return existing
+        val renamed = existing.withName(DeviceName.generate())
+        store.save(SyncIdentity.serialize(renamed))
+        return renamed
+    }
+    val created = SyncIdentity.createDefault(SyncCrypto())
     store.save(SyncIdentity.serialize(created))
     return created
 }

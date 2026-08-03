@@ -139,7 +139,13 @@ data class SyncChanges(
 data class SyncEnvelope(
     val fromDeviceId: String,
     val cursor: Long,
-    val changes: SyncChanges
+    val changes: SyncChanges,
+    // Display-only name of the sending device. It rides INSIDE the
+    // authenticated ciphertext, so only the device holding the paired
+    // private key can rename itself on a peer; recipients update their peer
+    // row but never the cursor machinery. Default keeps envelopes from
+    // older peers parseable.
+    val fromDeviceName: String? = null
 )
 
 // Pairing handshake. The PIN is never transmitted: [nonce] is a fresh random

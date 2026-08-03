@@ -3,6 +3,7 @@ package chat.donzi.localtavern.data.database
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Persona
+import chat.donzi.localtavern.utils.ImportedCharacter
 import app.cash.sqldelight.coroutines.asFlow
 import app.cash.sqldelight.coroutines.mapToList
 import kotlinx.coroutines.CoroutineDispatcher
@@ -106,6 +107,44 @@ class CharacterRepository(
             characterBook = encodeJsonObject(card.character_book)
         )
         newId
+    }
+
+    // Bulk import entry point for the mass-import flow: every card is
+    // inserted inside one transaction so a large batch commits atomically
+    // and sync sees a single change batch. Duplicate display names are kept
+    // (each row gets its own UUID, matching single-character imports).
+    suspend fun importCharacters(characters: List<ImportedCharacter>): Int = withContext(ioDispatcher) {
+        if (characters.isEmpty()) return@withContext 0
+        var count = 0
+        database.transaction {
+            characters.forEach { imported ->
+                val card = imported.card
+                queries.insertCharacter(
+                    id = generateUuid(),
+                    name = card.name,
+                    description = card.description,
+                    personality = card.personality,
+                    scenario = card.scenario,
+                    firstMes = card.first_mes,
+                    mesExample = card.mes_example,
+                    creatorNotes = card.creator_notes,
+                    altGreetings = card.alternate_greetings.joinToString("|||").ifBlank { null },
+                    avatarData = imported.avatarData,
+                    isAssistant = 0L,
+                    updatedAt = nextTimestamp(),
+                    isDeleted = 0L,
+                    systemPrompt = card.system_prompt,
+                    postHistoryInstructions = card.post_history_instructions,
+                    creator = card.creator,
+                    characterVersion = card.character_version,
+                    tags = encodeTags(card.tags),
+                    extensions = encodeJsonObject(card.extensions),
+                    characterBook = encodeJsonObject(card.character_book)
+                )
+                count++
+            }
+        }
+        count
     }
 
     suspend fun createCharacter(name: String): String = withContext(ioDispatcher) {

@@ -1,8 +1,6 @@
 package chat.donzi.localtavern.ui.components
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Key
@@ -11,7 +9,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.data.database.SyncPeer
@@ -32,30 +29,16 @@ fun SyncSettingsSection(
     val scope = rememberCoroutineScope()
     val syncState by syncService.state.collectAsState()
     val peers by syncService.observePeers().collectAsState(initial = emptyList())
+    val deviceName by syncService.deviceName.collectAsState()
 
-    var showHostDialog by remember { mutableStateOf(false) }
-    var showConnectDialog by remember { mutableStateOf(false) }
+    var showSyncDialog by remember { mutableStateOf(false) }
     var showRotateDialog by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-        Spacer(modifier = Modifier.height(16.dp))
-        HorizontalDivider(modifier = Modifier.alpha(0.3f))
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = Icons.Default.Sync,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Device Sync", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        }
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "This device: ${syncService.identity.deviceName}",
+            text = "This device: $deviceName",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -73,19 +56,24 @@ fun SyncSettingsSection(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = {
+        Text(
+            text = "Pairing is two devices and a PIN: the host shows a QR code, the receiver scans it and types the PIN from the host's screen.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Button(
+            onClick = {
                 onEnsureSyncRunning()
-                showHostDialog = true
-            }) {
-                Text("Host Pairing…")
-            }
-            OutlinedButton(onClick = {
-                onEnsureSyncRunning()
-                showConnectDialog = true
-            }) {
-                Text("Connect…")
-            }
+                showSyncDialog = true
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Sync")
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -93,8 +81,8 @@ fun SyncSettingsSection(
         if (peers.isNotEmpty()) {
             Text("Paired Devices", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(modifier = Modifier.height(6.dp))
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(peers, key = { it.deviceId }) { peer ->
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                peers.forEach { peer ->
                     PeerRow(
                         peer = peer,
                         isSyncing = syncState.isSyncing,
@@ -158,19 +146,11 @@ fun SyncSettingsSection(
         }
     }
 
-    if (showHostDialog) {
-        HostPairingDialog(
-            syncService = syncService,
-            syncState = syncState,
-            onDismiss = { showHostDialog = false }
-        )
-    }
-
-    if (showConnectDialog) {
-        ConnectDialog(
+    if (showSyncDialog) {
+        SyncFlowDialog(
             syncService = syncService,
             syncDiscovery = syncDiscovery,
-            onDismiss = { showConnectDialog = false }
+            onDismiss = { showSyncDialog = false }
         )
     }
 

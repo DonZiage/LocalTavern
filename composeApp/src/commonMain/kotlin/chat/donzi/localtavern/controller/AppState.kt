@@ -3,9 +3,9 @@ package chat.donzi.localtavern.controller
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.database.CharacterRepository
 import chat.donzi.localtavern.data.database.SessionRepository
-import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Persona
+import chat.donzi.localtavern.utils.BatchImportResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,6 +32,15 @@ class AppState(
 
     private val _isDarkMode = MutableStateFlow(false)
     val isDarkMode: StateFlow<Boolean> = _isDarkMode.asStateFlow()
+
+    private val _sendWithCtrlEnter = MutableStateFlow(false)
+    val sendWithCtrlEnter: StateFlow<Boolean> = _sendWithCtrlEnter.asStateFlow()
+
+    private val _autoSyncOnLaunch = MutableStateFlow(false)
+    val autoSyncOnLaunch: StateFlow<Boolean> = _autoSyncOnLaunch.asStateFlow()
+
+    private val _confirmBeforeDelete = MutableStateFlow(true)
+    val confirmBeforeDelete: StateFlow<Boolean> = _confirmBeforeDelete.asStateFlow()
 
     private val _isInitialized = MutableStateFlow(false)
     val isInitialized: StateFlow<Boolean> = _isInitialized.asStateFlow()
@@ -64,6 +73,9 @@ class AppState(
                 }
                 _activePersonaId.value = pId
                 _isDarkMode.value = settings.isDarkMode != 0L
+                _sendWithCtrlEnter.value = settings.sendWithCtrlEnter != 0L
+                _autoSyncOnLaunch.value = settings.autoSyncOnLaunch != 0L
+                _confirmBeforeDelete.value = settings.confirmBeforeDelete != 0L
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -111,8 +123,8 @@ class AppState(
         }
     }
 
-    fun importCharacter(card: SillyTavernCardV2, avatarData: ByteArray?) {
-        scope.launch { characterRepository.upsertCharacter(card, avatarData) }
+    fun importCharacters(result: BatchImportResult) {
+        scope.launch { characterRepository.importCharacters(result.imports) }
     }
 
     fun createCharacter(name: String) {
@@ -122,5 +134,20 @@ class AppState(
     fun setDarkMode(isDark: Boolean) {
         _isDarkMode.value = isDark
         scope.launch { apiSettingsRepository.updateDarkMode(isDark) }
+    }
+
+    fun setSendWithCtrlEnter(enabled: Boolean) {
+        _sendWithCtrlEnter.value = enabled
+        scope.launch { apiSettingsRepository.updateSendWithCtrlEnter(enabled) }
+    }
+
+    fun setAutoSyncOnLaunch(enabled: Boolean) {
+        _autoSyncOnLaunch.value = enabled
+        scope.launch { apiSettingsRepository.updateAutoSyncOnLaunch(enabled) }
+    }
+
+    fun setConfirmBeforeDelete(enabled: Boolean) {
+        _confirmBeforeDelete.value = enabled
+        scope.launch { apiSettingsRepository.updateConfirmBeforeDelete(enabled) }
     }
 }

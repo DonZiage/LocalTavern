@@ -4,6 +4,9 @@ import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.data.models.SillyTavernWrapper
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.saveFile
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
+import kotlin.time.Clock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -34,6 +37,18 @@ data class ImportedCharacter(
         return result
     }
 }
+
+// A card source picked from the file system: a .png/.json card or a .zip
+// archive of cards.
+data class PickedFile(
+    val name: String,
+    val bytes: ByteArray
+)
+
+data class BatchImportResult(
+    val imports: List<ImportedCharacter>,
+    val failed: List<String>
+)
 
 object CharacterManager {
     private val json = Json {
@@ -233,6 +248,80 @@ object CharacterManager {
         return saveExportedFile(fileName, exportedBytes)
     }
 
+    // Expands .zip sources and parses every card file inside. Non-card
+    // entries inside a zip (readmes, folders) are ignored rather than
+    // reported as failures; only card-extension files that yield no card
+    // count as failed.
+    fun processImportBatch(files: List<PickedFile>): BatchImportResult {
+        val imports = mutableListOf<ImportedCharacter>()
+        val failed = mutableListOf<String>()
+
+        files.forEach { file ->
+            val cardFiles = if (file.name.endsWith(".zip", ignoreCase = true)) {
+                val entries = runCatching { Zip.readArchive(file.bytes) }.getOrDefault(emptyList())
+                entries
+                    .filter { isCardFileName(it.name) }
+                    .map { PickedFile(it.name.substringAfterLast('/'), it.data) }
+            } else {
+                listOf(file)
+            }
+
+            if (cardFiles.isEmpty()) {
+                failed.add(file.name)
+                return@forEach
+            }
+
+            cardFiles.forEach { cardFile ->
+                val imported = processImport(cardFile.bytes, cardFile.name)
+                if (imported != null) {
+                    imports.add(imported)
+                } else {
+                    failed.add(cardFile.name)
+                }
+            }
+        }
+
+        return BatchImportResult(imports, failed)
+    }
+
+    private fun isCardFileName(name: String): Boolean =
+        name.endsWith(".png", ignoreCase = true) ||
+            name.endsWith(".json", ignoreCase = true)
+
+    // One ZIP archive per export; each character becomes its PNG card (or
+    // JSON when it has no convertible avatar). Names that collide inside the
+    // archive get a " (2)", " (3)"… suffix so no card overwrites another —
+    // the displayed character name is never changed.
+    fun prepareBatchExportBytes(characters: List<Character>): ByteArray {
+        val usedNames = mutableSetOf<String>()
+        val entries = characters.mapNotNull { character ->
+            val (fileName, bytes) = prepareExportBytes(character)
+            val uniqueName = uniqueFileName(fileName, usedNames)
+            usedNames.add(uniqueName)
+            ZipEntry(uniqueName, bytes)
+        }
+        return Zip.createArchive(entries)
+    }
+
+    private fun uniqueFileName(fileName: String, used: MutableSet<String>): String {
+        if (fileName !in used) return fileName
+        val dot = fileName.lastIndexOf('.')
+        val base = if (dot > 0) fileName.substring(0, dot) else fileName
+        val extension = if (dot > 0) fileName.substring(dot) else ""
+        var counter = 2
+        var candidate = "$base ($counter)$extension"
+        while (candidate in used) {
+            counter++
+            candidate = "$base ($counter)$extension"
+        }
+        return candidate
+    }
+
+    fun batchExportFileName(): String {
+        val today = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
+        return "LocalTavern characters $today.zip"
+    }
+
     private fun insertMetadataChunk(pngBytes: ByteArray, data: ByteArray): ByteArray {
         if (pngBytes.size < 33) return pngBytes
 
@@ -281,7 +370,7 @@ object CharacterManager {
     }
 }
 
-private class CommonCRC32 {
+internal class CommonCRC32 {
     private var crc = -1
     fun update(bytes: ByteArray) {
         for (b in bytes) {

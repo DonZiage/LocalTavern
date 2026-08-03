@@ -84,6 +84,16 @@ class SyncRepository(
         queries.updateSyncPeerAddress(lastKnownAddress = address, updatedAt = currentTimeMillis(), deviceId = deviceId)
     }
 
+    /**
+     * Updates a peer's DISPLAY name (user reference only). Only called with
+     * names received through an authenticated sync exchange, so a device
+     * cannot rename itself to anything but the holder of its own key.
+     * Cursors and delta state are never touched.
+     */
+    suspend fun updatePeerName(deviceId: String, name: String) = withContext(ioDispatcher) {
+        queries.updateSyncPeerName(name = name, updatedAt = currentTimeMillis(), deviceId = deviceId)
+    }
+
     suspend fun updatePeerCursors(deviceId: String, receivedCursor: Long, peerReceivedCursor: Long) = withContext(ioDispatcher) {
         val now = currentTimeMillis()
         queries.updateSyncPeerCursors(

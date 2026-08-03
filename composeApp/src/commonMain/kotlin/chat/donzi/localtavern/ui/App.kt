@@ -36,6 +36,9 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
     val personas by appState.personas.collectAsState()
     val activePersonaId by appState.activePersonaId.collectAsState()
     val darkModeFromDb by appState.isDarkMode.collectAsState()
+    val sendWithCtrlEnter by appState.sendWithCtrlEnter.collectAsState()
+    val autoSyncOnLaunch by appState.autoSyncOnLaunch.collectAsState()
+    val confirmBeforeDelete by appState.confirmBeforeDelete.collectAsState()
     val isInitialized by appState.isInitialized.collectAsState()
     val initError by appState.initError.collectAsState()
     // Sync bootstraps in the background (identity load/keygen); the main
@@ -122,6 +125,12 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
                 onToggleDarkMode = { _, centerOffset ->
                     triggerTransition(centerOffset)
                 },
+                autoSyncOnLaunch = autoSyncOnLaunch,
+                onAutoSyncOnLaunchChange = { appState.setAutoSyncOnLaunch(it) },
+                sendWithCtrlEnter = sendWithCtrlEnter,
+                onSendWithCtrlEnterChange = { appState.setSendWithCtrlEnter(it) },
+                confirmBeforeDelete = confirmBeforeDelete,
+                onConfirmBeforeDeleteChange = { appState.setConfirmBeforeDelete(it) },
                 activeDrawer = activeDrawer,
                 onActiveDrawerChange = { activeDrawer = it },
                 onPersonaSelect = { personaId ->
@@ -139,8 +148,8 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
                 onCharactersDelete = { ids ->
                     appState.deleteCharacters(ids)
                 },
-                onCharacterImport = { card, avatar ->
-                    appState.importCharacter(card, avatar)
+                onCharacterImport = { result ->
+                    appState.importCharacters(result)
                 },
                 onCharacterCreate = { name ->
                     appState.createCharacter(name)

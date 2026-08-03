@@ -45,6 +45,7 @@ class MainScreenState(
 
     var showExportNotification by mutableStateOf(false)
     var exportedDir by mutableStateOf("")
+    var exportedCount by mutableStateOf(1)
 
     // Name of a character created through the panel while the list reloads;
     // consumed by the characters LaunchedEffect in MainScreen to open the

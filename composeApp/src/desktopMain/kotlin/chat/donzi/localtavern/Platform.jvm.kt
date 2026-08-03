@@ -54,3 +54,15 @@ actual fun convertToPng(bytes: ByteArray): ByteArray {
 }
 
 actual val isDesktop: Boolean = true
+
+// The packaged desktop jar carries the version in its manifest
+// (packageVersion); dev runs from the IDE have no manifest version.
+private object AppInfo
+
+actual fun appVersionName(): String =
+    AppInfo::class.java.getPackage()?.implementationVersion ?: "dev build"
+
+actual fun appDatabasePath(): String {
+    val userHome = System.getProperty("user.home") ?: System.getProperty("user.dir")
+    return File(userHome, ".localtavern").resolve("local_tavern.db").absolutePath
+}

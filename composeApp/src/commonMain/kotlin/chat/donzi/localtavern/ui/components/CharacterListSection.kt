@@ -7,15 +7,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.domain.Character
+import chat.donzi.localtavern.utils.BatchImportResult
 import chat.donzi.localtavern.utils.CharacterManager
-import chat.donzi.localtavern.utils.rememberImagePickerLauncher
+import chat.donzi.localtavern.utils.rememberCharacterCardPickerLauncher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -26,13 +27,15 @@ fun CharacterListSection(
     modifier: Modifier = Modifier,
     onSelect: (Character) -> Unit,
     onDeleteSelected: (Set<String>) -> Unit,
-    onImportCharacter: (SillyTavernCardV2, ByteArray?) -> Unit,
+    onImportCharacters: (BatchImportResult) -> Unit,
+    onExportSelected: (Set<String>) -> Unit,
     onCreateCharacter: (String) -> Unit,
     onEditCharacter: (Character) -> Unit,
     onExportCharacter: (Character) -> Unit,
     actions: @Composable RowScope.() -> Unit = {},
     autoShowNewCharacterMenu: Boolean = false,
-    onAutoShowMenuConsumed: () -> Unit = {}
+    onAutoShowMenuConsumed: () -> Unit = {},
+    confirmBeforeDelete: Boolean = true
 ) {
     var query by remember { mutableStateOf("") }
     var selectionMode by remember { mutableStateOf(false) }
@@ -41,26 +44,25 @@ fun CharacterListSection(
     var showCharacterMenu by remember { mutableStateOf(false) }
     var showCreateDialog by remember { mutableStateOf(false) }
     var newCharacterName by remember { mutableStateOf("") }
+    var importResult by remember { mutableStateOf<BatchImportResult?>(null) }
     val scope = rememberCoroutineScope()
 
     var characterToDelete by remember { mutableStateOf<Character?>(null) }
     var showMultiDeleteConfirm by remember { mutableStateOf(false) }
 
-    // PNG cards must keep their original bytes so the embedded metadata and
-    // avatar survive unchanged; the picker default (downscaled re-encode) is
-    // only for chat attachments and avatars.
-    val pickImage = rememberImagePickerLauncher({ imagesList ->
-        imagesList.firstOrNull()?.let { bytes ->
-            scope.launch {
-                val imported = withContext(Dispatchers.Default) {
-                    CharacterManager.processImport(bytes)
-                }
-                imported?.let {
-                    onImportCharacter(it.card, it.avatarData)
-                }
+    // The picker accepts multiple PNG/JSON cards and ZIP archives; the app
+    // expands and imports whatever it contains on its own.
+    val pickCards = rememberCharacterCardPickerLauncher { pickedFiles ->
+        scope.launch {
+            val result = withContext(Dispatchers.Default) {
+                CharacterManager.processImportBatch(pickedFiles)
+            }
+            if (result.imports.isNotEmpty() || result.failed.isNotEmpty()) {
+                onImportCharacters(result)
+                importResult = result
             }
         }
-    }, preserveOriginal = true)
+    }
 
     LaunchedEffect(autoShowNewCharacterMenu) {
         if (autoShowNewCharacterMenu) {
@@ -101,7 +103,7 @@ fun CharacterListSection(
                 onExpandedChange = { showCharacterMenu = it },
                 onImport = {
                     showCharacterMenu = false
-                    pickImage()
+                    pickCards()
                 },
                 onCreate = {
                     showCharacterMenu = false
@@ -116,11 +118,32 @@ fun CharacterListSection(
         if (selectionMode) {
             CharacterSelectionBar(
                 selectedCount = selectedIds.size,
+                allSelected = filtered.isNotEmpty() && selectedIds.size == filtered.size,
+                onToggleSelectAll = {
+                    if (selectedIds.size == filtered.size) {
+                        selectedIds.clear()
+                        selectionMode = false
+                    } else {
+                        selectedIds.clear()
+                        filtered.forEach { selectedIds.add(it.id) }
+                    }
+                },
                 onCancel = {
                     selectedIds.clear()
                     selectionMode = false
                 },
-                onDelete = { showMultiDeleteConfirm = true }
+                onExport = {
+                    onExportSelected(selectedIds.toSet())
+                },
+                onDelete = {
+                    if (confirmBeforeDelete) {
+                        showMultiDeleteConfirm = true
+                    } else {
+                        onDeleteSelected(selectedIds.toSet())
+                        selectedIds.clear()
+                        selectionMode = false
+                    }
+                }
             )
         }
 
@@ -150,7 +173,13 @@ fun CharacterListSection(
                     },
                     onEditClick = { onEditCharacter(char) },
                     onExportClick = { onExportCharacter(char) },
-                    onDeleteClick = { characterToDelete = char }
+                    onDeleteClick = {
+                        if (confirmBeforeDelete) {
+                            characterToDelete = char
+                        } else {
+                            onDeleteSelected(setOf(char.id))
+                        }
+                    }
                 )
             }
         }
@@ -192,6 +221,14 @@ fun CharacterListSection(
             onDismiss = { showMultiDeleteConfirm = false }
         )
     }
+
+    importResult?.let { result ->
+        ImportResultDialog(
+            imported = result.imports.size,
+            failed = result.failed,
+            onDismiss = { importResult = null }
+        )
+    }
 }
 
 @Composable
@@ -217,7 +254,7 @@ private fun NewCharacterMenu(
         ) {
             DropdownMenuItem(
                 text = { Text("Import") },
-                leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
+                leadingIcon = { Icon(Icons.Default.FileOpen, contentDescription = null) },
                 onClick = onImport
             )
             DropdownMenuItem(
@@ -232,7 +269,10 @@ private fun NewCharacterMenu(
 @Composable
 private fun CharacterSelectionBar(
     selectedCount: Int,
+    allSelected: Boolean,
+    onToggleSelectAll: () -> Unit,
     onCancel: () -> Unit,
+    onExport: () -> Unit,
     onDelete: () -> Unit
 ) {
     Row(
@@ -248,6 +288,18 @@ private fun CharacterSelectionBar(
         )
         Row {
             TextButton(onClick = onCancel) { Text("Cancel") }
+            TextButton(onClick = onToggleSelectAll) {
+                Text(if (allSelected) "Clear all" else "Select all")
+            }
+
+            TextButton(
+                enabled = selectedCount > 0,
+                onClick = onExport
+            ) {
+                Icon(Icons.Default.FileOpen, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("Export")
+            }
 
             TextButton(
                 enabled = selectedCount > 0,

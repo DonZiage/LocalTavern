@@ -55,7 +55,8 @@ fun ChatInputBar(
     onStopGeneration: () -> Unit = {},
     onManageChats: () -> Unit,
     canManageChats: Boolean,
-    onGoToParent: (() -> Unit)? = null
+    onGoToParent: (() -> Unit)? = null,
+    sendWithCtrlEnter: Boolean = false
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
@@ -158,13 +159,13 @@ fun ChatInputBar(
                     .onPreviewKeyEvent { event ->
                         if (!isGenerating && event.type == KeyEventType.KeyDown &&
                             (event.key == Key.Enter || event.key == Key.NumPadEnter)) {
-                            if (event.isShiftPressed) {
-                                onTextValueChange(textValue.localTavernInsertNewline())
-                                true
-                            } else {
+                            val send = if (sendWithCtrlEnter) event.isCtrlPressed else !event.isShiftPressed
+                            if (send) {
                                 handleSend()
-                                true
+                            } else {
+                                onTextValueChange(textValue.localTavernInsertNewline())
                             }
+                            true
                         } else {
                             false
                         }

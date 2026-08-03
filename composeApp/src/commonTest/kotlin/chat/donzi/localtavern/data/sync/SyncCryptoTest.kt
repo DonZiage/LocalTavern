@@ -6,6 +6,8 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SyncCryptoTest {
@@ -214,5 +216,35 @@ class SyncIdentityTest {
     @Test
     fun deserialize_garbage_returnsNull() {
         assertFalse(SyncIdentity.deserialize("not json".encodeToByteArray()) != null)
+    }
+
+    @Test
+    fun withName_preservesIdAndKeys() = runTest {
+        val crypto = SyncCrypto()
+        val original = SyncIdentity.create("Old Name", crypto)
+        val renamed = original.withName("New Name")
+
+        assertEquals(original.deviceId, renamed.deviceId)
+        assertEquals(original.privateKeyBase64, renamed.privateKeyBase64)
+        assertEquals(original.publicKeyBase64, renamed.publicKeyBase64)
+        assertEquals("New Name", renamed.deviceName)
+    }
+
+    @Test
+    fun createDefault_usesFriendlyName() = runTest {
+        val crypto = SyncCrypto()
+        val identity = SyncIdentity.createDefault(crypto)
+        assertNotNull(DeviceName.sanitize(identity.deviceName))
+        assertTrue(identity.deviceName != SyncIdentity.LEGACY_DEFAULT_NAME)
+        assertEquals(32, identity.privateKeyBytes.size)
+    }
+
+    @Test
+    fun migratedName_keepsUsableNamesAndRejectsLegacyDefaults() {
+        assertEquals("My Tablet", SyncIdentity.migratedName("My Tablet"))
+        assertEquals("My Tablet", SyncIdentity.migratedName("  My Tablet  "))
+        assertNull(SyncIdentity.migratedName(SyncIdentity.LEGACY_DEFAULT_NAME))
+        assertNull(SyncIdentity.migratedName("   "))
+        assertNull(SyncIdentity.migratedName("\u200B\u2060"))
     }
 }

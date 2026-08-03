@@ -80,3 +80,16 @@ actual fun convertToPng(bytes: ByteArray): ByteArray {
 }
 
 actual val isDesktop: Boolean = false
+
+actual fun appVersionName(): String {
+    val info = NSBundle.mainBundle.infoDictionary
+    return (info?.objectForKey("CFBundleShortVersionString") as? String) ?: "dev build"
+}
+
+actual fun appDatabasePath(): String {
+    // The NativeSqliteDriver places the file in the app sandbox Documents
+    // directory ("Documents/localtavern.db").
+    val fileManager = NSFileManager.defaultManager
+    val documentsDir = fileManager.URLsForDirectory(NSDocumentDirectory, NSUserDomainMask).first() as? NSURL
+    return documentsDir?.URLByAppendingPathComponent("localtavern.db")?.path ?: ""
+}

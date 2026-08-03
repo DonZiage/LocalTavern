@@ -12,11 +12,14 @@ import io.ktor.http.contentType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -41,6 +44,13 @@ const val SYNC_PORT = 47324
 const val SYNC_DISCOVERY_PORT = 47325
 private const val PAIRING_TTL_MS = 5 * 60 * 1000L
 
+// The sync server winds down when it goes quiet: after this long without any
+// sync traffic, pairing attempt or explicit engagement it stops listening
+// (and the app stops broadcasting on the LAN). A stopped server is invisible
+// to the user — every sync UI action restarts it via ensureSyncRunning().
+private const val SYNC_IDLE_TIMEOUT_MS = 5 * 60 * 1000L
+private const val IDLE_WATCHDOG_INTERVAL_MS = 30_000L
+
 // Online PIN guessing is throttled per pairing session; the PIN (6 digits)
 // is still the last line of defense, so an attacker who can repeatedly probe
 // the pairing endpoint must fail before the lockout and restart the session.
@@ -54,16 +64,27 @@ class SyncService(
     private val httpClient: HttpClient,
     private val scope: CoroutineScope,
     private val port: Int = SYNC_PORT,
-    private val localAddressesProvider: () -> List<String> = { emptyList() }
+    private val localAddressesProvider: () -> List<String> = { emptyList() },
+    private val onServerStopped: () -> Unit = {}
 ) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     private val _state = MutableStateFlow(SyncUiState())
     val state: StateFlow<SyncUiState> = _state.asStateFlow()
 
+    // Live display name of this device: renamed via renameDevice(), read by
+    // the UI (settings + pairing) so it recomposes on change.
+    private val _deviceName = MutableStateFlow(identity.deviceName)
+    val deviceName: StateFlow<String> = _deviceName.asStateFlow()
+
     private var activePin: String? = null
     private var pinExpiresAt: Long = 0L
     private var pairingFailures = 0
+
+    // High-water mark of the most recent sync/pairing activity; the idle
+    // watchdog stops the server when this goes quiet for SYNC_IDLE_TIMEOUT_MS.
+    private var lastActivityAt = 0L
+    private var idleWatchdog: Job? = null
 
     val server = SyncServer(
         port = port,
@@ -73,14 +94,46 @@ class SyncService(
     )
 
     fun startServer() {
+        lastActivityAt = Clock.System.now().toEpochMilliseconds()
         server.start()
         _state.update { it.copy(isServerRunning = true, localAddresses = localAddressesProvider()) }
+        startIdleWatchdog()
     }
 
     fun stopServer() {
+        idleWatchdog?.cancel()
+        idleWatchdog = null
         server.stop()
         activePin = null
+        pairingFailures = 0
         _state.update { it.copy(isServerRunning = false, pairingPin = null) }
+        onServerStopped()
+    }
+
+    // Marks sync activity so the idle watchdog keeps the server alive.
+    private fun noteActivity() {
+        lastActivityAt = Clock.System.now().toEpochMilliseconds()
+    }
+
+    // While the server runs, periodically checks whether it has been idle
+    // (and no pairing PIN is still valid — a host showing its QR/PIN is
+    // actively waiting for a receiver). When both are quiet, the server
+    // stops; the container's onServerStopped callback drops LAN discovery.
+    private fun startIdleWatchdog() {
+        if (idleWatchdog != null) return
+        idleWatchdog = scope.launch(Dispatchers.Default) {
+            while (isActive) {
+                delay(IDLE_WATCHDOG_INTERVAL_MS)
+                val now = Clock.System.now().toEpochMilliseconds()
+                val pinStillValid = activePin != null && now <= pinExpiresAt
+                if (!pinStillValid && server.isRunning && now - lastActivityAt >= SYNC_IDLE_TIMEOUT_MS) {
+                    _state.update {
+                        it.copy(statusMessage = "Sync server stopped after being idle — it restarts automatically when you sync.")
+                    }
+                    stopServer()
+                }
+            }
+        }
     }
 
     fun observePeers(): Flow<List<SyncPeer>> = repository.observePeers()
@@ -89,6 +142,7 @@ class SyncService(
 
     fun startPairing() {
         if (!server.isRunning) startServer()
+        noteActivity()
         activePin = (Random.nextInt(0, 1_000_000)).toString().padStart(6, '0')
         pinExpiresAt = Clock.System.now().toEpochMilliseconds() + PAIRING_TTL_MS
         pairingFailures = 0
@@ -103,12 +157,45 @@ class SyncService(
         _state.update { it.copy(pairingPin = null, pairingExpiresAt = null, pendingPeerFingerprint = null, pendingPeerName = null) }
     }
 
+    /**
+     * The text to encode in the pairing QR code: this device's address, id and
+     * name. Null when no LAN address is known (no QR can be shown then).
+     */
+    fun pairingQrPayload(): String? {
+        val address = pickPairingAddress() ?: return null
+        return PairPayload(
+            host = address,
+            port = port,
+            deviceId = identity.deviceId,
+            deviceName = identity.deviceName
+        ).toQrText()
+    }
+
+    // The peer must reach us over the LAN, so prefer private-range IPv4
+    // addresses (WiFi/LAN) over VPN, tunnel or cellular IPs.
+    private fun pickPairingAddress(): String? {
+        val addresses = localAddressesProvider()
+        return addresses.firstOrNull { isPrivateLanAddress(it) } ?: addresses.firstOrNull()
+    }
+
+    private fun isPrivateLanAddress(address: String): Boolean {
+        val prefix = address.substringBefore('.').toIntOrNull() ?: return false
+        val second = address.split('.').getOrNull(1)?.toIntOrNull() ?: return false
+        return when {
+            prefix == 10 -> true
+            prefix == 172 -> second in 16..31
+            prefix == 192 && second == 168 -> true
+            else -> false
+        }
+    }
+
     /** Acknowledges the out-of-band fingerprint comparison after pairing. */
     fun confirmFingerprint() {
         _state.update { it.copy(pendingPeerFingerprint = null, pendingPeerName = null) }
     }
 
     private suspend fun handlePairRequest(request: PairRequest, remoteHost: String?): PairResponse {
+        noteActivity()
         val now = Clock.System.now().toEpochMilliseconds()
         val pin = activePin
         if (pin == null || now > pinExpiresAt) {
@@ -252,6 +339,7 @@ class SyncService(
 
     suspend fun syncNow(peerId: String): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
+            noteActivity()
             val peer = repository.getPeer(peerId) ?: error("Peer not found.")
             val address = peer.lastKnownAddress ?: error("Peer has no address; reconnect or re-pair.")
             val host = address.substringBeforeLast(':')
@@ -264,7 +352,8 @@ class SyncService(
             val envelope = SyncEnvelope(
                 fromDeviceId = identity.deviceId,
                 cursor = peer.receivedCursor,
-                changes = myChanges
+                changes = myChanges,
+                fromDeviceName = identity.deviceName
             )
             val aad = aad(from = identity.deviceId, to = peer.deviceId)
             val payload = encodeBase64(crypto.encrypt(channelKey.key, aad, encodeEnvelope(envelope)))
@@ -299,6 +388,12 @@ class SyncService(
             if (!responseEnvelope.changes.isEmpty) {
                 repository.applyChanges(responseEnvelope.changes, peerDeviceId = peer.deviceId)
             }
+            // The peer's new display name (if any), authenticated by the
+            // exchange: only the device holding the paired key can have
+            // produced this envelope. Display-only — cursors are untouched.
+            DeviceName.sanitize(responseEnvelope.fromDeviceName.orEmpty())?.let { name ->
+                repository.updatePeerName(peer.deviceId, name)
+            }
             val newReceivedCursor = maxOf(responseEnvelope.changes.maxUpdatedAt, peer.receivedCursor)
             repository.updatePeerCursors(
                 deviceId = peer.deviceId,
@@ -310,6 +405,7 @@ class SyncService(
     }
 
     private suspend fun handleExchange(fromDeviceId: String, encryptedPayload: String, requestEphemeralKey: String): ExchangeResponse {
+        noteActivity()
         return runCatching {
             val peer = repository.getPeer(fromDeviceId)
                 ?: return ExchangeResponse(ok = false, message = "Not paired.")
@@ -325,6 +421,11 @@ class SyncService(
             )
             if (envelope.fromDeviceId != fromDeviceId) {
                 return ExchangeResponse(ok = false, message = "Sender mismatch.")
+            }
+            // Authenticated display-name update (see syncNow): never touches
+            // cursors or deltas, so renaming cannot disturb sync state.
+            DeviceName.sanitize(envelope.fromDeviceName.orEmpty())?.let { name ->
+                repository.updatePeerName(fromDeviceId, name)
             }
 
             val applyResult = runCatching {
@@ -345,7 +446,8 @@ class SyncService(
             val responseEnvelope = SyncEnvelope(
                 fromDeviceId = identity.deviceId,
                 cursor = newReceivedCursor,
-                changes = myChanges
+                changes = myChanges,
+                fromDeviceName = identity.deviceName
             )
             val responsePayload = encodeBase64(
                 crypto.encrypt(myExchangeKey.key, aad(from = identity.deviceId, to = fromDeviceId), encodeEnvelope(responseEnvelope))
@@ -357,6 +459,30 @@ class SyncService(
             )
         }.getOrElse { error ->
             ExchangeResponse(ok = false, message = error.message ?: "Sync failed.")
+        }
+    }
+
+    // ---------- Display name ----------
+
+    /**
+     * Renames THIS device (display-only). The device id and X25519 keypair
+     * are untouched, so pairings, shared secrets and sync cursors stay
+     * valid. The name is persisted locally and propagates to paired devices
+     * inside the authenticated envelope of the next sync (see SyncEnvelope
+     * fromDeviceName); plaintext surfaces like /hello, the discovery
+     * announcement and the pairing QR always reflect it immediately.
+     */
+    suspend fun renameDevice(newName: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val sanitized = DeviceName.sanitize(newName) ?: error("Name must not be empty.")
+            val renamed = identity.withName(sanitized)
+            identityStore.save(SyncIdentity.serialize(renamed))
+            identity = renamed
+            _deviceName.value = sanitized
+            _state.update { it.copy(statusMessage = "Device renamed to \"$sanitized\".", syncError = null) }
+            sanitized
+        }.onFailure { error ->
+            _state.update { it.copy(syncError = error.message, statusMessage = null) }
         }
     }
 

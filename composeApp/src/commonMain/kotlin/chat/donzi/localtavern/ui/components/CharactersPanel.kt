@@ -19,9 +19,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Persona
+import chat.donzi.localtavern.utils.BatchImportResult
 
 @Composable
 fun CharactersPanelContent(
@@ -34,7 +34,8 @@ fun CharactersPanelContent(
     characters: List<Character>,
     onCharacterSelect: (Character) -> Unit,
     onCharactersDelete: (Set<String>) -> Unit,
-    onCharacterImport: (SillyTavernCardV2, ByteArray?) -> Unit,
+    onImportCharacters: (BatchImportResult) -> Unit,
+    onExportSelected: (Set<String>) -> Unit,
     onCharacterExport: (Character) -> Unit,
     onCharacterCreate: (String) -> Unit,
     onCharacterEdit: (Character) -> Unit,
@@ -46,6 +47,7 @@ fun CharactersPanelContent(
     onPersonasExpandedChange: (Boolean) -> Unit,
     charactersExpanded: Boolean,
     onCharactersExpandedChange: (Boolean) -> Unit,
+    confirmBeforeDelete: Boolean = true,
     scrollState: ScrollState = rememberScrollState()
 ) {
     Surface(
@@ -86,7 +88,8 @@ fun CharactersPanelContent(
                         onUpdate = onPersonaUpdate,
                         onDelete = onPersonaDelete,
                         autoEditDefaultPersona = autoEditDefaultPersona,
-                        onAutoEditConsumed = onAutoEditConsumed
+                        onAutoEditConsumed = onAutoEditConsumed,
+                        confirmBeforeDelete = confirmBeforeDelete
                     )
                 }
 
@@ -102,12 +105,14 @@ fun CharactersPanelContent(
                         modifier = Modifier.heightIn(max = 1000.dp),
                         onSelect = onCharacterSelect,
                         onDeleteSelected = onCharactersDelete,
-                        onImportCharacter = onCharacterImport,
+                        onImportCharacters = onImportCharacters,
+                        onExportSelected = onExportSelected,
                         onCreateCharacter = onCharacterCreate,
                         onEditCharacter = onCharacterEdit,
                         onExportCharacter = onCharacterExport,
                         autoShowNewCharacterMenu = autoShowNewCharacterMenu,
-                        onAutoShowMenuConsumed = onAutoShowMenuConsumed
+                        onAutoShowMenuConsumed = onAutoShowMenuConsumed,
+                        confirmBeforeDelete = confirmBeforeDelete
                     )
                 }
             }

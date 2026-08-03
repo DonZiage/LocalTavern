@@ -45,8 +45,7 @@ actual fun saveFile(fileName: String, bytes: ByteArray): String? {
             val resolver = context.contentResolver
             val contentValues = android.content.ContentValues().apply {
                 put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                val mimeType = if (fileName.endsWith(".json", ignoreCase = true)) "application/json" else "image/png"
-                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mimeTypeFor(fileName))
                 put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/LocalTavern/ExportedCharacters")
             }
             val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues) ?: return null
@@ -93,14 +92,19 @@ actual fun saveFile(fileName: String, bytes: ByteArray): String? {
 
 private const val REQUEST_CODE_WRITE_EXTERNAL_STORAGE = 101
 
+private fun mimeTypeFor(fileName: String): String = when {
+    fileName.endsWith(".json", ignoreCase = true) -> "application/json"
+    fileName.endsWith(".zip", ignoreCase = true) -> "application/zip"
+    else -> "image/png"
+}
+
 actual fun openDirectory(path: String) {
     val context = AndroidAppContext.getContext() ?: return
 
     val mimeType = when {
         path.startsWith("content://") ->
-            context.contentResolver.getType(path.toUri()) ?: "image/png"
-        path.endsWith(".json", ignoreCase = true) -> "application/json"
-        else -> "image/png"
+            context.contentResolver.getType(path.toUri()) ?: mimeTypeFor(path)
+        else -> mimeTypeFor(path)
     }
 
     if (path.startsWith("content://")) {
@@ -175,3 +179,16 @@ actual fun convertToPng(bytes: ByteArray): ByteArray {
 }
 
 actual val isDesktop: Boolean = false
+
+actual fun appVersionName(): String {
+    val context = AndroidAppContext.getContext() ?: return "dev build"
+    return runCatching {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName
+    }.getOrNull() ?: "dev build"
+}
+
+actual fun appDatabasePath(): String {
+    val context = AndroidAppContext.getContext() ?: return ""
+    return runCatching { context.getDatabasePath("localtavern.db").absolutePath }
+        .getOrNull() ?: ""
+}

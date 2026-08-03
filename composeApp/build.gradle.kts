@@ -63,6 +63,10 @@ kotlin {
         getByName("desktopTest") {
             dependencies {
                 implementation("io.ktor:ktor-client-mock:$ktorVersion")
+                // Decodes our generated QR codes with an independent reader to
+                // prove they scan correctly (real scanner round-trip test).
+                implementation("com.google.zxing:core:3.5.3")
+                implementation("com.google.zxing:javase:3.5.3")
             }
         }
 
@@ -73,6 +77,12 @@ kotlin {
             // BouncyCastle-backed provider: X25519/ChaCha20-Poly1305 are not in
             // the Android JCA below API 28, BC works on every supported API.
             implementation(libs.cryptography.provider.jdk.bc)
+            // QR pairing scanner: CameraX preview + ML Kit barcode detection.
+            implementation(libs.camerax.core)
+            implementation(libs.camerax.camera2)
+            implementation(libs.camerax.lifecycle)
+            implementation(libs.camerax.view)
+            implementation(libs.mlkit.barcode.scanning)
         }
 
         getByName("desktopMain") {
@@ -136,7 +146,7 @@ sqldelight {
     databases {
         create("LocalTavernDB") {
             packageName.set("chat.donzi.localtavern.data.database")
-            version = 5
+            version = 8
         }
     }
 }

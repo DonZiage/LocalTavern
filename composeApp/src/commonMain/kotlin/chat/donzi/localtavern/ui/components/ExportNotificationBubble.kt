@@ -30,6 +30,7 @@ import kotlin.math.roundToInt
 fun ExportNotificationBubble(
     visible: Boolean,
     exportedDir: String,
+    exportedCount: Int = 1,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -96,7 +97,11 @@ fun ExportNotificationBubble(
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Character exported. Press here to locate",
+                        text = if (exportedCount > 1) {
+                            "$exportedCount characters exported. Press here to locate"
+                        } else {
+                            "Character exported. Press here to locate"
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.inverseOnSurface,
                         fontWeight = FontWeight.Bold

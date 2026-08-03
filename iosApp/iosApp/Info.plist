@@ -8,5 +8,14 @@
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>LocalTavern syncs with your other devices over the local network (QR pairing, device discovery and encrypted data exchange).</string>
+	<key>NSCameraUsageDescription</key>
+	<string>LocalTavern uses the camera to scan the QR code shown by the host device during pairing.</string>
 </dict>
 </plist>

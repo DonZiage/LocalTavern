@@ -1,0 +1,5 @@
+-- v7 -> v8: per-device app preferences (never synced): send with Ctrl+Enter,
+-- auto-sync on launch, and confirm-before-delete.
+ALTER TABLE AppSettings ADD COLUMN sendWithCtrlEnter INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE AppSettings ADD COLUMN autoSyncOnLaunch INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE AppSettings ADD COLUMN confirmBeforeDelete INTEGER NOT NULL DEFAULT 1;

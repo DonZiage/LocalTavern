@@ -335,6 +335,70 @@ class SyncProtocolTest {
         }
     }
 
+    @Test
+    fun renamedDevice_propagatesNewNameOverAuthenticatedExchange() = runTest {
+        val hostPort = freePort()
+        val host = Device("host-device", "Host", hostPort)
+        val guest = Device("guest-device", "Guest", hostPort + 1)
+        try {
+            host.start()
+            guest.start()
+
+            host.service.startPairing()
+            val pin = host.service.state.value.pairingPin!!
+            guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+
+            // At pairing time the host records the name the guest sent.
+            assertEquals("Guest", host.repository.getPeer("guest-device")!!.name)
+
+            // Guest renames: its id and keypair are untouched, so the
+            // pairing stays valid.
+            val before = guest.service.identity
+            val rename = guest.service.renameDevice("  Tablet   Zero  ")
+            assertTrue(rename.isSuccess, "Rename must succeed: ${rename.exceptionOrNull()}")
+            assertEquals("Tablet Zero", rename.getOrThrow())
+            assertEquals(before.deviceId, guest.service.identity.deviceId)
+            assertEquals(before.privateKeyBase64, guest.service.identity.privateKeyBase64)
+            assertEquals("Tablet Zero", guest.service.deviceName.value)
+
+            // The new name rides inside the encrypted, AAD-bound envelope:
+            // the host only trusts it because the exchange authenticated the
+            // sender as the holder of the paired key.
+            val syncResult = guest.service.syncNow("host-device")
+            assertTrue(syncResult.isSuccess, "Sync after rename must succeed: ${syncResult.exceptionOrNull()}")
+
+            val stored = host.repository.getPeer("guest-device")
+            assertEquals("Tablet Zero", stored!!.name, "Host must adopt the authenticated new name")
+            // Renaming must not disturb sync state: cursors still advance.
+            val syncAgain = guest.service.syncNow("host-device")
+            assertTrue(syncAgain.isSuccess, "Second sync must succeed: ${syncAgain.exceptionOrNull()}")
+        } finally {
+            host.stop()
+            guest.stop()
+        }
+    }
+
+    @Test
+    fun pairing_storesBothPeerNames() = runTest {
+        val hostPort = freePort()
+        val host = Device("host-device", "Host", hostPort)
+        val guest = Device("guest-device", "Guest", hostPort + 1)
+        try {
+            host.start()
+            guest.start()
+
+            host.service.startPairing()
+            val pin = host.service.state.value.pairingPin!!
+            guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+
+            assertEquals("Host", guest.repository.getPeer("host-device")!!.name)
+            assertEquals("Guest", host.repository.getPeer("guest-device")!!.name)
+        } finally {
+            host.stop()
+            guest.stop()
+        }
+    }
+
     private fun seedPersona(device: Device, id: String, name: String, updatedAt: Long) {
         device.db.localTavernDBQueries.insertPersonaFull(
             id = id, name = name, description = null, avatarData = null,

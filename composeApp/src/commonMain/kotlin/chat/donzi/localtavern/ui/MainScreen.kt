@@ -9,11 +9,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.dp
-import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Persona
 import chat.donzi.localtavern.isDesktop
 import chat.donzi.localtavern.ui.components.ActiveDrawer
+import chat.donzi.localtavern.utils.BatchImportResult
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.milliseconds
@@ -26,6 +26,12 @@ fun MainScreen(
     activePersonaId: String?,
     isDarkMode: Boolean,
     onToggleDarkMode: (Boolean, Offset) -> Unit,
+    autoSyncOnLaunch: Boolean,
+    onAutoSyncOnLaunchChange: (Boolean) -> Unit,
+    sendWithCtrlEnter: Boolean,
+    onSendWithCtrlEnterChange: (Boolean) -> Unit,
+    confirmBeforeDelete: Boolean,
+    onConfirmBeforeDeleteChange: (Boolean) -> Unit,
     activeDrawer: ActiveDrawer,
     onActiveDrawerChange: (ActiveDrawer) -> Unit,
     onPersonaSelect: (String) -> Unit,
@@ -33,7 +39,7 @@ fun MainScreen(
     onPersonaUpdate: (String, String, String?, ByteArray?) -> Unit,
     onPersonaDelete: (String) -> Unit,
     onCharactersDelete: (Set<String>) -> Unit,
-    onCharacterImport: (SillyTavernCardV2, ByteArray?) -> Unit,
+    onCharacterImport: (BatchImportResult) -> Unit,
     onCharacterCreate: (String) -> Unit
 ) {
     val drawerWidth = 300.dp
@@ -72,7 +78,19 @@ fun MainScreen(
         isDesktop = isDesktop,
         onCloseDrawer = { onActiveDrawerChange(ActiveDrawer.None) },
         scope = coroutineScope,
-        onExported = { dir -> state.exportedDir = dir; state.showExportNotification = true },
+        onExported = { dir -> state.exportedDir = dir; state.exportedCount = 1; state.showExportNotification = true },
+        onExportFailed = { message -> coroutineScope.launch { snackbarHostState.showSnackbar(message) } }
+    )
+
+    val exportCharactersFromList = buildBatchExportHandler(
+        isDesktop = isDesktop,
+        onCloseDrawer = { onActiveDrawerChange(ActiveDrawer.None) },
+        scope = coroutineScope,
+        onExported = { count, dir ->
+            state.exportedCount = count
+            state.exportedDir = dir
+            state.showExportNotification = true
+        },
         onExportFailed = { message -> coroutineScope.launch { snackbarHostState.showSnackbar(message) } }
     )
 
@@ -127,6 +145,12 @@ fun MainScreen(
                     state = state,
                     isDarkMode = isDarkMode,
                     onToggleDarkMode = onToggleDarkMode,
+                    autoSyncOnLaunch = autoSyncOnLaunch,
+                    onAutoSyncOnLaunchChange = onAutoSyncOnLaunchChange,
+                    sendWithCtrlEnter = sendWithCtrlEnter,
+                    onSendWithCtrlEnterChange = onSendWithCtrlEnterChange,
+                    confirmBeforeDelete = confirmBeforeDelete,
+                    onConfirmBeforeDeleteChange = onConfirmBeforeDeleteChange,
                     drawerWidth = drawerWidth
                 )
             }
@@ -141,6 +165,7 @@ fun MainScreen(
                 hasCharacter = hasCharacter,
                 onSendMessage = onSendMessage,
                 onActiveDrawerChange = onActiveDrawerChange,
+                sendWithCtrlEnter = sendWithCtrlEnter,
                 modifier = Modifier.weight(1f).fillMaxHeight()
             )
 
@@ -156,9 +181,11 @@ fun MainScreen(
                     onPersonaUpdate = onPersonaUpdate,
                     onPersonaDelete = onPersonaDelete,
                     onCharactersDelete = onCharactersDelete,
-                    onCharacterImport = onCharacterImport,
+                    onImportCharacters = onCharacterImport,
+                    onExportSelected = { ids -> exportCharactersFromList(characters.filter { it.id in ids }) },
                     onCharacterCreate = onCharacterCreate,
-                    exportCharacterFromList = exportCharacterFromList
+                    exportCharacterFromList = exportCharacterFromList,
+                    confirmBeforeDelete = confirmBeforeDelete
                 )
             }
         }
@@ -174,13 +201,20 @@ fun MainScreen(
                 characters = characters,
                 isDarkMode = isDarkMode,
                 onToggleDarkMode = onToggleDarkMode,
+                autoSyncOnLaunch = autoSyncOnLaunch,
+                onAutoSyncOnLaunchChange = onAutoSyncOnLaunchChange,
+                sendWithCtrlEnter = sendWithCtrlEnter,
+                onSendWithCtrlEnterChange = onSendWithCtrlEnterChange,
+                confirmBeforeDelete = confirmBeforeDelete,
+                onConfirmBeforeDeleteChange = onConfirmBeforeDeleteChange,
                 onActiveDrawerChange = onActiveDrawerChange,
                 onPersonaSelect = onPersonaSelect,
                 onPersonaAdd = onPersonaAdd,
                 onPersonaUpdate = onPersonaUpdate,
                 onPersonaDelete = onPersonaDelete,
                 onCharactersDelete = onCharactersDelete,
-                onCharacterImport = onCharacterImport,
+                onImportCharacters = onCharacterImport,
+                onExportSelected = { ids -> exportCharactersFromList(characters.filter { it.id in ids }) },
                 onCharacterCreate = onCharacterCreate,
                 exportCharacterFromList = exportCharacterFromList
             )

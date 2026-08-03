@@ -230,6 +230,27 @@ class ApiSettingsRepository(
         }
     }
 
+    suspend fun updateSendWithCtrlEnter(enabled: Boolean) = withContext(ioDispatcher) {
+        database.transaction {
+            queries.insertDefaultSettings()
+            queries.updateSendWithCtrlEnter(if (enabled) 1L else 0L)
+        }
+    }
+
+    suspend fun updateAutoSyncOnLaunch(enabled: Boolean) = withContext(ioDispatcher) {
+        database.transaction {
+            queries.insertDefaultSettings()
+            queries.updateAutoSyncOnLaunch(if (enabled) 1L else 0L)
+        }
+    }
+
+    suspend fun updateConfirmBeforeDelete(enabled: Boolean) = withContext(ioDispatcher) {
+        database.transaction {
+            queries.insertDefaultSettings()
+            queries.updateConfirmBeforeDelete(if (enabled) 1L else 0L)
+        }
+    }
+
     suspend fun getAllPromptBlocks(): List<PromptBlock> = withContext(ioDispatcher) {
         // The emptiness check and the seeding run inside one transaction: two
         // concurrent cold starts (settings screen + prompt editor) would both

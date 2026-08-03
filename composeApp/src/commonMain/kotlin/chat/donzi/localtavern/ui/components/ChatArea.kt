@@ -29,7 +29,8 @@ fun ChatArea(
     selectedMessageIds: Set<String> = emptySet(),
     onSelectMessageToggle: (String) -> Unit = {},
     onEnterSelectMode: () -> Unit = {},
-    actions: ChatActions
+    actions: ChatActions,
+    sendWithCtrlEnter: Boolean = false
 ) {
     var messageToDelete by remember { mutableStateOf<Message?>(null) }
     var imageTargetMessageId by remember { mutableStateOf<String?>(null) }
@@ -85,7 +86,8 @@ fun ChatArea(
             activeCharacter = activeCharacter,
             isSelectMode = isSelectMode,
             actions = actions,
-            onEnterSelectMode = onEnterSelectMode
+            onEnterSelectMode = onEnterSelectMode,
+            sendWithCtrlEnter = sendWithCtrlEnter
         )
     }
 
