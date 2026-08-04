@@ -67,6 +67,11 @@ kotlin {
                 // prove they scan correctly (real scanner round-trip test).
                 implementation("com.google.zxing:core:3.5.3")
                 implementation("com.google.zxing:javase:3.5.3")
+                // Compose UI tests (desktop, skiko): state holders are tested
+                // as plain classes; these cover a few critical components.
+                @OptIn(org.jetbrains.compose.ExperimentalComposeLibrary::class)
+                implementation(compose.uiTest)
+                implementation(compose.desktop.currentOs)
             }
         }
 
