@@ -47,6 +47,7 @@ fun MainScreen(
         MainScreenState(
             characterRepository = deps.characterRepository,
             sessionRepository = deps.sessionRepository,
+            messageRepository = deps.messageRepository,
             apiSettingsRepository = deps.apiSettingsRepository,
             chatController = deps.chatController,
             scope = coroutineScope

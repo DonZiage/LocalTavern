@@ -321,6 +321,7 @@ internal fun MainScreenOverlays(
             messages = chatState.messages,
             characterRepository = deps.characterRepository,
             sessionRepository = deps.sessionRepository,
+            messageRepository = deps.messageRepository,
             onSetEditingCharacter = { state.openEditor(it) },
             onSetActiveCharacter = { state.activeCharacter = it },
             onExportCharacter = exportCharacterFromList,

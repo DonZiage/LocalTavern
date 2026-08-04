@@ -3,6 +3,7 @@ import chat.donzi.localtavern.ui.chat.ChatActions
 
 import chat.donzi.localtavern.controller.ChatController
 import chat.donzi.localtavern.data.database.CharacterRepository
+import chat.donzi.localtavern.data.database.MessageRepository
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Message
@@ -94,6 +95,7 @@ internal fun buildChatActions(
 internal suspend fun commitUserMessage(
     characterRepository: CharacterRepository,
     sessionRepository: SessionRepository,
+    messageRepository: MessageRepository,
     chatController: ChatController,
     initialActiveCharacter: Character?,
     activePersonaId: String,
@@ -130,10 +132,10 @@ internal suspend fun commitUserMessage(
     val sessionId = sessionRepository.getOrCreateSession(currentActiveCharacter.id, activePersonaId)
     onSetActiveSession(sessionId)
 
-    sessionRepository.ensureInitialGreetings(sessionId, currentActiveCharacter)
+    messageRepository.ensureInitialGreetings(sessionId, currentActiveCharacter)
 
     val updatedSession = sessionRepository.getSessionById(sessionId)
-    sessionRepository.insertMessage(sessionId, "user", userMessage, updatedSession?.currentMessageId, imageList)
+    messageRepository.insertMessage(sessionId, "user", userMessage, updatedSession?.currentMessageId, imageList)
     onRefresh()
 
     val updatedSession2 = sessionRepository.getSessionById(sessionId)

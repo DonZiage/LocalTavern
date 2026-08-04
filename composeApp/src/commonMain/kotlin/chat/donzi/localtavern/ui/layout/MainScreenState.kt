@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import chat.donzi.localtavern.controller.ChatController
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.database.CharacterRepository
+import chat.donzi.localtavern.data.database.MessageRepository
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.domain.ApiConfig
 import chat.donzi.localtavern.domain.Character
@@ -24,6 +25,7 @@ import kotlinx.coroutines.launch
 class MainScreenState(
     private val characterRepository: CharacterRepository,
     private val sessionRepository: SessionRepository,
+    private val messageRepository: MessageRepository,
     private val apiSettingsRepository: ApiSettingsRepository,
     private val chatController: ChatController,
     private val scope: CoroutineScope
@@ -99,7 +101,7 @@ class MainScreenState(
                 activeSessionId = sessionId
             }
 
-            sessionRepository.ensureInitialGreetings(sessionId, character)
+            messageRepository.ensureInitialGreetings(sessionId, character)
             chatController.refresh(sessionId)
         } else {
             activeSessionId = null
@@ -134,6 +136,7 @@ class MainScreenState(
                     commitUserMessage(
                         characterRepository = characterRepository,
                         sessionRepository = sessionRepository,
+                        messageRepository = messageRepository,
                         chatController = chatController,
                         initialActiveCharacter = activeCharacter,
                         activePersonaId = activePersonaId,

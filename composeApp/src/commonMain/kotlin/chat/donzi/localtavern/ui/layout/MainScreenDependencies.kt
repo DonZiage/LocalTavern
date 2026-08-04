@@ -3,6 +3,7 @@ package chat.donzi.localtavern.ui.layout
 import chat.donzi.localtavern.controller.ChatController
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.database.CharacterRepository
+import chat.donzi.localtavern.data.database.MessageRepository
 import chat.donzi.localtavern.data.database.PricingRepository
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.data.network.ChatClient
@@ -17,6 +18,7 @@ data class MainScreenDependencies(
     val chatController: ChatController,
     val characterRepository: CharacterRepository,
     val sessionRepository: SessionRepository,
+    val messageRepository: MessageRepository,
     val apiSettingsRepository: ApiSettingsRepository,
     val pricingRepository: PricingRepository,
     val apiKeyCipher: ApiKeyCipher,

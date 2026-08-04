@@ -1,6 +1,7 @@
 package chat.donzi.localtavern.controller
 
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
+import chat.donzi.localtavern.data.database.MessageRepository
 import chat.donzi.localtavern.data.database.PricingRepository
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.data.network.ChatClient
@@ -32,6 +33,7 @@ data class ChatUiState(
 
 class ChatController(
     private val sessionRepository: SessionRepository,
+    private val messageRepository: MessageRepository,
     private val apiSettingsRepository: ApiSettingsRepository,
     private val pricingRepository: PricingRepository,
     private val chatClient: ChatClient,
@@ -42,7 +44,7 @@ class ChatController(
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     private val generationRunner = GenerationRunner(
-        sessionRepository = sessionRepository,
+        messageRepository = messageRepository,
         apiSettingsRepository = apiSettingsRepository,
         pricingRepository = pricingRepository,
         chatClient = chatClient,
@@ -92,8 +94,8 @@ class ChatController(
             return
         }
         val sessionDetails = sessionRepository.getSessionById(sessionId)
-        val activeTimeline = sessionRepository.getMessagesForSession(sessionId)
-        val allMessages = sessionRepository.getAllMessagesForSession(sessionId)
+        val activeTimeline = messageRepository.getMessagesForSession(sessionId)
+        val allMessages = messageRepository.getAllMessagesForSession(sessionId)
 
         val siblingsByParent = allMessages.groupBy { it.parentId }
         val updatedSiblings = mutableMapOf<String, List<Message>>()
@@ -165,9 +167,9 @@ class ChatController(
             cancelGenerationIfActive()
             // Read from the DB, not the possibly-stale UI snapshot: the
             // cancelled job may have just removed or updated the last message.
-            val lastMsg = sessionRepository.getMessagesForSession(sessionId).lastOrNull() ?: return@launch
+            val lastMsg = messageRepository.getMessagesForSession(sessionId).lastOrNull() ?: return@launch
             val parentId = if (lastMsg.role == "assistant") {
-                sessionRepository.deleteMessage(lastMsg.id)
+                messageRepository.deleteMessage(lastMsg.id)
                 lastMsg.parentId
             } else {
                 lastMsg.id
@@ -183,7 +185,7 @@ class ChatController(
     fun selectVariation(sessionId: String, messageId: String, parentId: String?) {
         scope.launch {
             cancelGenerationIfActive()
-            sessionRepository.selectVariation(sessionId, messageId, parentId)
+            messageRepository.selectVariation(sessionId, messageId, parentId)
             refresh(sessionId)
         }
     }
@@ -193,19 +195,19 @@ class ChatController(
             // Deleting while streaming would cascade into the in-flight
             // placeholder (or the stream into a deactivated row): stop first.
             cancelGenerationIfActive()
-            val activeTimeline = sessionRepository.getMessagesForSession(sessionId)
+            val activeTimeline = messageRepository.getMessagesForSession(sessionId)
             if (activeTimeline.any { it.id == id }) {
                 val msg = activeTimeline.find { it.id == id }
                 val parentId = msg?.parentId
-                val siblings = sessionRepository.getMessageSiblings(sessionId, parentId)
+                val siblings = messageRepository.getMessageSiblings(sessionId, parentId)
                 val otherSibling = siblings.firstOrNull { it.id != id }
                 if (otherSibling != null) {
-                    sessionRepository.selectVariation(sessionId, otherSibling.id, parentId)
+                    messageRepository.selectVariation(sessionId, otherSibling.id, parentId)
                 } else if (parentId != null) {
                     sessionRepository.updateSessionCurrentMessage(sessionId, parentId)
                 }
             }
-            sessionRepository.deleteMessage(id)
+            messageRepository.deleteMessage(id)
             refresh(sessionId)
         }
     }
@@ -213,16 +215,16 @@ class ChatController(
     fun deleteMessages(sessionId: String, ids: List<String>) {
         scope.launch {
             cancelGenerationIfActive()
-            val activeTimeline = sessionRepository.getMessagesForSession(sessionId)
+            val activeTimeline = messageRepository.getMessagesForSession(sessionId)
             val activeDeleted = activeTimeline.find { it.id in ids }
             if (activeDeleted != null) {
                 val parentId = activeDeleted.parentId
                 if (parentId != null) {
-                    val parentMsg = sessionRepository.getMessagesForSession(sessionId).find { it.id == parentId }
-                    sessionRepository.selectVariation(sessionId, parentId, parentMsg?.parentId)
+                    val parentMsg = messageRepository.getMessagesForSession(sessionId).find { it.id == parentId }
+                    messageRepository.selectVariation(sessionId, parentId, parentMsg?.parentId)
                 }
             }
-            ids.forEach { sessionRepository.deleteMessage(it) }
+            ids.forEach { messageRepository.deleteMessage(it) }
             refresh(sessionId)
         }
     }
@@ -230,7 +232,7 @@ class ChatController(
     fun deleteMessagesRaw(sessionId: String, ids: List<String>) {
         scope.launch {
             cancelGenerationIfActive()
-            ids.forEach { sessionRepository.deleteMessage(it) }
+            ids.forEach { messageRepository.deleteMessage(it) }
             // The bulk delete has no per-message sibling/parent fix-up; repoint
             // a dangling currentMessageId at the last surviving message (or
             // clear it) so the next user message is not parented to a deleted
@@ -238,7 +240,7 @@ class ChatController(
             val session = sessionRepository.getSessionById(sessionId)
             val currentId = session?.currentMessageId
             if (currentId != null && currentId in ids) {
-                val remaining = sessionRepository.getMessagesForSession(sessionId)
+                val remaining = messageRepository.getMessagesForSession(sessionId)
                 sessionRepository.updateSessionCurrentMessage(sessionId, remaining.lastOrNull()?.id)
             }
             refresh(sessionId)
@@ -250,8 +252,8 @@ class ChatController(
             // Editing the in-flight message would be overwritten by the next
             // stream tick; stop the generation so the edit sticks.
             cancelGenerationIfActive()
-            sessionRepository.updateMessageContent(id, content)
-            sessionRepository.updateMessageImage(id, updatedImages)
+            messageRepository.updateMessageContent(id, content)
+            messageRepository.updateMessageImage(id, updatedImages)
             refresh(sessionId)
         }
     }
@@ -260,7 +262,7 @@ class ChatController(
         scope.launch {
             // Read-modify-write runs inside one DB transaction (the UI
             // snapshot could be stale and would lose a concurrent add).
-            sessionRepository.appendImagesToMessage(sessionId, targetMessageId, pickedBytesList)
+            messageRepository.appendImagesToMessage(sessionId, targetMessageId, pickedBytesList)
             refresh(sessionId)
         }
     }

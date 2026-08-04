@@ -4,6 +4,7 @@ import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.database.LocalTavernDB
 import chat.donzi.localtavern.data.database.PricingRepository
+import chat.donzi.localtavern.data.database.MessageRepository
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.domain.Character
@@ -19,6 +20,7 @@ import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.utils.io.ByteReadChannel
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -41,7 +43,7 @@ class ChatControllerTest {
     private suspend fun TestScope.newController(vararg streamChunks: String): Pair<ChatController, TestDb> {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
-        val sessionRepository = SessionRepository(db.database, testDispatcher)
+        val (sessionRepository, messageRepository) = newRepos(db, testDispatcher)
         val apiSettingsRepository = ApiSettingsRepository(db.database, chat.donzi.localtavern.data.security.ApiKeyCipher(chat.donzi.localtavern.data.security.TestSecretCrypto()), testDispatcher)
         apiSettingsRepository.insertApiConnection(
             provider = "test", name = "Test", baseUrl = "https://example.com",
@@ -49,6 +51,7 @@ class ChatControllerTest {
         )
         val controller = ChatController(
             sessionRepository = sessionRepository,
+            messageRepository = messageRepository,
             apiSettingsRepository = apiSettingsRepository,
             pricingRepository = PricingRepository(db.database, testDispatcher),
             chatClient = ChatClient(
@@ -81,17 +84,18 @@ class ChatControllerTest {
     }
 
     private suspend fun TestScope.seedSession(db: TestDb): Seed {
-        val sessionRepository = SessionRepository(db.database, StandardTestDispatcher(testScheduler))
+        val (sessionRepository, messageRepository) = newRepos(db, StandardTestDispatcher(testScheduler))
         val sessionId = sessionRepository.createNewSession(CHARACTER.id, PERSONA.id)
-        val greetingId = sessionRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
+        val greetingId = messageRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
         sessionRepository.updateSessionCurrentMessage(sessionId, greetingId)
-        val userId = sessionRepository.insertMessage(sessionId, "user", "Hi", greetingId)
-        val assistantId = sessionRepository.insertMessage(sessionId, "assistant", "Old reply", userId)
-        return Seed(sessionRepository, sessionId, greetingId, userId, assistantId)
+        val userId = messageRepository.insertMessage(sessionId, "user", "Hi", greetingId)
+        val assistantId = messageRepository.insertMessage(sessionId, "assistant", "Old reply", userId)
+        return Seed(sessionRepository, messageRepository, sessionId, greetingId, userId, assistantId)
     }
 
     private data class Seed(
         val sessionRepository: SessionRepository,
+        val messageRepository: MessageRepository,
         val sessionId: String,
         val greetingId: String,
         val userId: String,
@@ -110,6 +114,13 @@ class ChatControllerTest {
     private class TestDb {
         val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY).also { LocalTavernDB.Schema.create(it) }
         val database = LocalTavernDB(driver)
+    }
+
+    private data class Repos(val session: SessionRepository, val message: MessageRepository)
+
+    private fun newRepos(db: TestDb, dispatcher: CoroutineDispatcher): Repos {
+        val sessionRepository = SessionRepository(db.database, dispatcher)
+        return Repos(sessionRepository, MessageRepository(db.database, dispatcher, sessionRepository = sessionRepository))
     }
 
     @Test
@@ -142,7 +153,7 @@ data: [DONE]
     fun regenerate_attachesNewResponseToLastUserMessage() = runTest {
         val (controller, db) = newController("""{"choices":[{"delta":{"content":"New reply"}}]}""", "[DONE]")
         val seed = seedSession(db)
-        val sessionRepository = seed.sessionRepository
+        val (sessionRepository, messageRepository) = seed.sessionRepository to seed.messageRepository
 
         controller.refresh(seed.sessionId)
         testScheduler.advanceUntilIdle()
@@ -150,7 +161,7 @@ data: [DONE]
         controller.regenerate(seed.sessionId, CHARACTER, PERSONA)
         testScheduler.advanceUntilIdle()
 
-        val timeline = sessionRepository.getMessagesForSession(seed.sessionId)
+        val timeline = messageRepository.getMessagesForSession(seed.sessionId)
         assertEquals(3, timeline.size)
         assertTrue(timeline.none { it.id == seed.assistantId }, "Old assistant message should be deleted")
         val newAssistant = timeline.last()
@@ -296,7 +307,7 @@ data: [DONE]
     fun emptyStreamResponse_deletesPlaceholderMessage() = runTest {
         val (controller, db) = newController("[DONE]")
         val seed = seedSession(db)
-        val sessionRepository = seed.sessionRepository
+        val (sessionRepository, messageRepository) = seed.sessionRepository to seed.messageRepository
 
         controller.refresh(seed.sessionId)
         testScheduler.advanceUntilIdle()
@@ -304,7 +315,7 @@ data: [DONE]
         controller.requestAiResponse(seed.sessionId, CHARACTER, PERSONA, seed.userId)
         testScheduler.advanceUntilIdle()
 
-        val timeline = sessionRepository.getMessagesForSession(seed.sessionId)
+        val timeline = messageRepository.getMessagesForSession(seed.sessionId)
         assertEquals(2, timeline.size, "Empty response placeholder must be removed")
         assertEquals(seed.userId, sessionRepository.getSessionById(seed.sessionId)?.currentMessageId)
     }
@@ -315,7 +326,7 @@ data: [DONE]
         // error, not silently remove the placeholder.
         val (controller, db) = newController()
         val seed = seedSession(db)
-        val sessionRepository = seed.sessionRepository
+        val (sessionRepository, messageRepository) = seed.sessionRepository to seed.messageRepository
 
         controller.refresh(seed.sessionId)
         testScheduler.advanceUntilIdle()
@@ -323,7 +334,7 @@ data: [DONE]
         controller.requestAiResponse(seed.sessionId, CHARACTER, PERSONA, seed.userId)
         testScheduler.advanceUntilIdle()
 
-        val timeline = sessionRepository.getMessagesForSession(seed.sessionId)
+        val timeline = messageRepository.getMessagesForSession(seed.sessionId)
         assertEquals(2, timeline.size, "Placeholder must be removed on a dead stream")
         assertEquals("Empty response from API.", controller.state.value.errorMessage)
         assertFalse(controller.state.value.errorIsWarning)
@@ -382,19 +393,19 @@ data: [DONE]
     fun deletingCurrentMessage_movesCurrentToParent() = runTest {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
-        val sessionRepository = SessionRepository(db.database, testDispatcher)
+        val (sessionRepository, messageRepository) = newRepos(db, testDispatcher)
 
         val sessionId = sessionRepository.createNewSession(CHARACTER.id, PERSONA.id)
-        val greetingId = sessionRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
+        val greetingId = messageRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
         sessionRepository.updateSessionCurrentMessage(sessionId, greetingId)
-        val userId = sessionRepository.insertMessage(sessionId, "user", "Hi", greetingId)
+        val userId = messageRepository.insertMessage(sessionId, "user", "Hi", greetingId)
 
         assertEquals(userId, sessionRepository.getSessionById(sessionId)?.currentMessageId)
-        sessionRepository.deleteMessage(userId)
+        messageRepository.deleteMessage(userId)
         testScheduler.advanceUntilIdle()
 
         assertEquals(greetingId, sessionRepository.getSessionById(sessionId)?.currentMessageId, "currentMessageId must not point to a deleted message")
-        val timeline = sessionRepository.getMessagesForSession(sessionId)
+        val timeline = messageRepository.getMessagesForSession(sessionId)
         assertEquals(1, timeline.size)
         assertEquals(greetingId, timeline.first().id)
     }
@@ -403,40 +414,40 @@ data: [DONE]
     fun deleteMessage_doesNotMoveCurrentWhenDeletingNonCurrentMessage() = runTest {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
-        val sessionRepository = SessionRepository(db.database, testDispatcher)
+        val (sessionRepository, messageRepository) = newRepos(db, testDispatcher)
 
         val sessionId = sessionRepository.createNewSession(CHARACTER.id, PERSONA.id)
-        val greetingId = sessionRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
-        val greeting2Id = sessionRepository.insertMessageRaw(sessionId, "assistant", "Alt greeting", null, false)
+        val greetingId = messageRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
+        val greeting2Id = messageRepository.insertMessageRaw(sessionId, "assistant", "Alt greeting", null, false)
         sessionRepository.updateSessionCurrentMessage(sessionId, greetingId)
-        val userId = sessionRepository.insertMessage(sessionId, "user", "Hi", greetingId)
+        val userId = messageRepository.insertMessage(sessionId, "user", "Hi", greetingId)
 
-        sessionRepository.deleteMessage(greeting2Id)
+        messageRepository.deleteMessage(greeting2Id)
         testScheduler.advanceUntilIdle()
 
         val session = sessionRepository.getSessionById(sessionId)
         assertNotNull(session)
         assertEquals(userId, session.currentMessageId, "Deleting a non-current message must not touch currentMessageId")
-        assertEquals(1, sessionRepository.getMessageSiblings(sessionId, null).size)
+        assertEquals(1, messageRepository.getMessageSiblings(sessionId, null).size)
     }
 
     @Test
     fun deleteMessage_deactivatesDescendantsAndRepointsCurrent() = runTest {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
-        val sessionRepository = SessionRepository(db.database, testDispatcher)
+        val (sessionRepository, messageRepository) = newRepos(db, testDispatcher)
 
         val sessionId = sessionRepository.createNewSession(CHARACTER.id, PERSONA.id)
-        val greetingId = sessionRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
+        val greetingId = messageRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
         sessionRepository.updateSessionCurrentMessage(sessionId, greetingId)
-        val userId = sessionRepository.insertMessage(sessionId, "user", "Hi", greetingId)
-        val replyId = sessionRepository.insertMessage(sessionId, "assistant", "Reply", userId)
-        val followUpId = sessionRepository.insertMessage(sessionId, "user", "Follow-up", replyId)
+        val userId = messageRepository.insertMessage(sessionId, "user", "Hi", greetingId)
+        val replyId = messageRepository.insertMessage(sessionId, "assistant", "Reply", userId)
+        val followUpId = messageRepository.insertMessage(sessionId, "user", "Follow-up", replyId)
 
-        sessionRepository.deleteMessage(replyId)
+        messageRepository.deleteMessage(replyId)
         testScheduler.advanceUntilIdle()
 
-        val timeline = sessionRepository.getMessagesForSession(sessionId)
+        val timeline = messageRepository.getMessagesForSession(sessionId)
         assertEquals(listOf(greetingId, userId), timeline.map { it.id },
             "Descendants of a deleted message must be deactivated")
         assertEquals(userId, sessionRepository.getSessionById(sessionId)?.currentMessageId,
@@ -447,17 +458,17 @@ data: [DONE]
     fun deleteRootGreeting_doesNotReseedGreetings() = runTest {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
-        val sessionRepository = SessionRepository(db.database, testDispatcher)
+        val (sessionRepository, messageRepository) = newRepos(db, testDispatcher)
 
         val sessionId = sessionRepository.createNewSession(CHARACTER.id, PERSONA.id)
-        val greetingId = sessionRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
+        val greetingId = messageRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
         sessionRepository.updateSessionCurrentMessage(sessionId, greetingId)
 
-        sessionRepository.deleteMessage(greetingId)
-        sessionRepository.ensureInitialGreetings(sessionId, CHARACTER)
+        messageRepository.deleteMessage(greetingId)
+        messageRepository.ensureInitialGreetings(sessionId, CHARACTER)
         testScheduler.advanceUntilIdle()
 
-        assertTrue(sessionRepository.getMessagesForSession(sessionId).isEmpty(),
+        assertTrue(messageRepository.getMessagesForSession(sessionId).isEmpty(),
             "Deleting the root greeting must not trigger greeting re-seeding")
         assertEquals(null, sessionRepository.getSessionById(sessionId)?.currentMessageId)
     }
@@ -466,20 +477,20 @@ data: [DONE]
     fun selectVariation_deactivatesDescendantsOfDeselectedBranch() = runTest {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
-        val sessionRepository = SessionRepository(db.database, testDispatcher)
+        val (sessionRepository, messageRepository) = newRepos(db, testDispatcher)
 
         val sessionId = sessionRepository.createNewSession(CHARACTER.id, PERSONA.id)
-        val greetingId = sessionRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
+        val greetingId = messageRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
         sessionRepository.updateSessionCurrentMessage(sessionId, greetingId)
-        val userId = sessionRepository.insertMessage(sessionId, "user", "Hi", greetingId)
-        val replyA = sessionRepository.insertMessage(sessionId, "assistant", "Reply A", userId)
-        val followUp = sessionRepository.insertMessage(sessionId, "user", "Follow-up", replyA)
-        val replyB = sessionRepository.insertMessageRaw(sessionId, "assistant", "Reply B", userId, false)
+        val userId = messageRepository.insertMessage(sessionId, "user", "Hi", greetingId)
+        val replyA = messageRepository.insertMessage(sessionId, "assistant", "Reply A", userId)
+        val followUp = messageRepository.insertMessage(sessionId, "user", "Follow-up", replyA)
+        val replyB = messageRepository.insertMessageRaw(sessionId, "assistant", "Reply B", userId, false)
 
-        sessionRepository.selectVariation(sessionId, replyB, userId)
+        messageRepository.selectVariation(sessionId, replyB, userId)
         testScheduler.advanceUntilIdle()
 
-        val timeline = sessionRepository.getMessagesForSession(sessionId)
+        val timeline = messageRepository.getMessagesForSession(sessionId)
         assertEquals(listOf(greetingId, userId, replyB), timeline.map { it.id },
             "Only the selected branch must remain active")
         assertEquals(replyB, sessionRepository.getSessionById(sessionId)?.currentMessageId)
@@ -489,14 +500,14 @@ data: [DONE]
     fun deleteMessagesRaw_keepsTimelineConsistent() = runTest {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
-        val sessionRepository = SessionRepository(db.database, testDispatcher)
+        val (sessionRepository, messageRepository) = newRepos(db, testDispatcher)
         val apiSettingsRepository = ApiSettingsRepository(db.database, chat.donzi.localtavern.data.security.ApiKeyCipher(chat.donzi.localtavern.data.security.TestSecretCrypto()), testDispatcher)
         apiSettingsRepository.insertApiConnection(
             provider = "test", name = "Test", baseUrl = "https://example.com",
             apiKey = "key", model = "model", isActive = true
         )
         val controller = ChatController(
-            sessionRepository, apiSettingsRepository, PricingRepository(db.database, testDispatcher),
+            sessionRepository, messageRepository, apiSettingsRepository, PricingRepository(db.database, testDispatcher),
             ChatClient(HttpClient(MockEngine { respond(
                 content = ByteReadChannel("data: [DONE]"),
                 status = HttpStatusCode.OK,
@@ -507,12 +518,12 @@ data: [DONE]
         )
 
         val sessionId = sessionRepository.createNewSession(CHARACTER.id, PERSONA.id)
-        val greetingId = sessionRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
+        val greetingId = messageRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
         sessionRepository.updateSessionCurrentMessage(sessionId, greetingId)
-        val u1 = sessionRepository.insertMessage(sessionId, "user", "Hi", greetingId)
-        val a1 = sessionRepository.insertMessage(sessionId, "assistant", "Reply A", u1)
-        val u2 = sessionRepository.insertMessage(sessionId, "user", "Follow-up", a1)
-        val a2 = sessionRepository.insertMessage(sessionId, "assistant", "Reply B", u2)
+        val u1 = messageRepository.insertMessage(sessionId, "user", "Hi", greetingId)
+        val a1 = messageRepository.insertMessage(sessionId, "assistant", "Reply A", u1)
+        val u2 = messageRepository.insertMessage(sessionId, "user", "Follow-up", a1)
+        val a2 = messageRepository.insertMessage(sessionId, "assistant", "Reply B", u2)
 
         controller.refresh(sessionId)
         testScheduler.advanceUntilIdle()
@@ -521,7 +532,7 @@ data: [DONE]
         controller.deleteMessagesRaw(sessionId, allSuffix.shuffled(Random(42)))
         testScheduler.advanceUntilIdle()
 
-        val timeline = sessionRepository.getMessagesForSession(sessionId)
+        val timeline = messageRepository.getMessagesForSession(sessionId)
         assertEquals(listOf(greetingId), timeline.map { it.id },
             "Deleting the whole suffix must leave only the greeting active")
         assertEquals(greetingId, sessionRepository.getSessionById(sessionId)?.currentMessageId,
@@ -532,9 +543,9 @@ data: [DONE]
     fun deleteMessagesRaw_deletingTailRepointsCurrentToLastRemaining() = runTest {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
-        val sessionRepository = SessionRepository(db.database, testDispatcher)
+        val (sessionRepository, messageRepository) = newRepos(db, testDispatcher)
         val controller = ChatController(
-            sessionRepository,
+            sessionRepository, messageRepository,
             ApiSettingsRepository(db.database, chat.donzi.localtavern.data.security.ApiKeyCipher(chat.donzi.localtavern.data.security.TestSecretCrypto()), testDispatcher),
             PricingRepository(db.database, testDispatcher),
             ChatClient(HttpClient(MockEngine { respond(
@@ -547,12 +558,12 @@ data: [DONE]
         )
 
         val sessionId = sessionRepository.createNewSession(CHARACTER.id, PERSONA.id)
-        val greetingId = sessionRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
+        val greetingId = messageRepository.insertMessageRaw(sessionId, "assistant", "Hello!", null, true)
         sessionRepository.updateSessionCurrentMessage(sessionId, greetingId)
-        val u1 = sessionRepository.insertMessage(sessionId, "user", "Hi", greetingId)
-        val a1 = sessionRepository.insertMessage(sessionId, "assistant", "Reply A", u1)
-        val u2 = sessionRepository.insertMessage(sessionId, "user", "Follow-up", a1)
-        val a2 = sessionRepository.insertMessage(sessionId, "assistant", "Reply B", u2)
+        val u1 = messageRepository.insertMessage(sessionId, "user", "Hi", greetingId)
+        val a1 = messageRepository.insertMessage(sessionId, "assistant", "Reply A", u1)
+        val u2 = messageRepository.insertMessage(sessionId, "user", "Follow-up", a1)
+        val a2 = messageRepository.insertMessage(sessionId, "assistant", "Reply B", u2)
 
         controller.refresh(sessionId)
         testScheduler.advanceUntilIdle()
@@ -562,22 +573,22 @@ data: [DONE]
         controller.deleteMessagesRaw(sessionId, listOf(u2, a2))
         testScheduler.advanceUntilIdle()
 
-        val timeline = sessionRepository.getMessagesForSession(sessionId)
+        val timeline = messageRepository.getMessagesForSession(sessionId)
         assertEquals(listOf(greetingId, u1, a1), timeline.map { it.id })
         assertEquals(a1, sessionRepository.getSessionById(sessionId)?.currentMessageId)
 
         // The next user message must attach to the surviving tail.
-        val u3 = sessionRepository.insertMessage(sessionId, "user", "Again", a1)
+        val u3 = messageRepository.insertMessage(sessionId, "user", "Again", a1)
         val session = sessionRepository.getSessionById(sessionId)
         assertEquals(u3, session?.currentMessageId)
-        assertEquals(4, sessionRepository.getMessagesForSession(sessionId).size)
+        assertEquals(4, messageRepository.getMessagesForSession(sessionId).size)
     }
 
     @Test
     fun generationCompletion_doesNotOverwriteViewOfAnotherSession() = runTest {
         val (controller, db) = newController("""{"choices":[{"delta":{"content":"Done"}}]}""", "[DONE]")
         val seed = seedSession(db)
-        val sessionRepository = seed.sessionRepository
+        val (sessionRepository, messageRepository) = seed.sessionRepository to seed.messageRepository
         val otherSessionId = sessionRepository.createNewSession(CHARACTER.id, PERSONA.id)
 
         controller.refresh(seed.sessionId)
@@ -589,7 +600,7 @@ data: [DONE]
         testScheduler.advanceUntilIdle()
 
         // The response must be persisted in A's session...
-        val sessionATimeline = sessionRepository.getMessagesForSession(seed.sessionId)
+        val sessionATimeline = messageRepository.getMessagesForSession(seed.sessionId)
         assertEquals("Done", sessionATimeline.last().content)
 
         // ...but the UI must still be showing B (empty session), not A.
@@ -720,7 +731,7 @@ data: [DONE]
     fun apiError_doesNotPersistErrorMessage() = runTest {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
-        val sessionRepository = SessionRepository(db.database, testDispatcher)
+        val (sessionRepository, messageRepository) = newRepos(db, testDispatcher)
         val apiSettingsRepository = ApiSettingsRepository(db.database, chat.donzi.localtavern.data.security.ApiKeyCipher(chat.donzi.localtavern.data.security.TestSecretCrypto()), testDispatcher)
         apiSettingsRepository.insertApiConnection(
             provider = "test", name = "Test", baseUrl = "https://example.com",
@@ -747,7 +758,7 @@ data: [DONE]
             }
         )
         val controller = ChatController(
-            sessionRepository, apiSettingsRepository, PricingRepository(db.database, testDispatcher), client,
+            sessionRepository, messageRepository, apiSettingsRepository, PricingRepository(db.database, testDispatcher), client,
             CoroutineScope(testDispatcher + SupervisorJob()),
             payloadDispatcher = testDispatcher
         )
@@ -759,7 +770,7 @@ data: [DONE]
         controller.requestAiResponse(seed.sessionId, CHARACTER, PERSONA, seed.userId)
         testScheduler.advanceUntilIdle()
 
-        val timeline = sessionRepository.getMessagesForSession(seed.sessionId)
+        val timeline = messageRepository.getMessagesForSession(seed.sessionId)
         assertEquals(2, timeline.size, "Placeholder must be removed on API error")
         assertTrue(timeline.none { it.content.contains("Error") }, "Error text must not be persisted as a message")
         assertEquals("API error: Invalid API key", controller.state.value.errorMessage)
@@ -912,7 +923,7 @@ data: [DONE]
     fun regenerateDuringGeneration_restartsCleanly() = runTest {
         val (controller, db) = newController("""{"choices":[{"delta":{"content":"New reply"}}]}""", "[DONE]")
         val seed = seedSession(db)
-        val sessionRepository = seed.sessionRepository
+        val (sessionRepository, messageRepository) = seed.sessionRepository to seed.messageRepository
 
         controller.refresh(seed.sessionId)
         testScheduler.advanceUntilIdle()
@@ -926,7 +937,7 @@ data: [DONE]
         controller.regenerate(seed.sessionId, CHARACTER, PERSONA)
         testScheduler.advanceUntilIdle()
 
-        val timeline = sessionRepository.getMessagesForSession(seed.sessionId)
+        val timeline = messageRepository.getMessagesForSession(seed.sessionId)
         assertEquals(3, timeline.size, "Regenerating mid-stream must produce exactly one fresh response")
         assertTrue(timeline.none { it.id == seed.assistantId }, "Old assistant message must be deleted")
         assertEquals("New reply", timeline.last().content)
@@ -974,7 +985,7 @@ data: [DONE]
     fun truncatedStream_recoversFullResponseReplacingPartial() = runTest {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
-        val sessionRepository = SessionRepository(db.database, testDispatcher)
+        val (sessionRepository, messageRepository) = newRepos(db, testDispatcher)
         val apiSettingsRepository = ApiSettingsRepository(db.database, chat.donzi.localtavern.data.security.ApiKeyCipher(chat.donzi.localtavern.data.security.TestSecretCrypto()), testDispatcher)
         apiSettingsRepository.insertApiConnection(
             provider = "test", name = "Test", baseUrl = "https://example.com",
@@ -1013,7 +1024,7 @@ data: [DONE]
             }
         )
         val controller = ChatController(
-            sessionRepository, apiSettingsRepository, PricingRepository(db.database, testDispatcher), client,
+            sessionRepository, messageRepository, apiSettingsRepository, PricingRepository(db.database, testDispatcher), client,
             CoroutineScope(testDispatcher + SupervisorJob()),
             payloadDispatcher = testDispatcher
         )
@@ -1025,7 +1036,7 @@ data: [DONE]
         controller.requestAiResponse(seed.sessionId, CHARACTER, PERSONA, seed.userId)
         testScheduler.advanceUntilIdle()
 
-        val timeline = sessionRepository.getMessagesForSession(seed.sessionId)
+        val timeline = messageRepository.getMessagesForSession(seed.sessionId)
         assertEquals(3, timeline.size)
         assertEquals("Full reply", timeline.last().content,
             "The recovered response must replace the partial text, not append to it")
@@ -1037,7 +1048,7 @@ data: [DONE]
     fun truncatedStream_withFailedRecovery_keepsPartialAndSurfacesError() = runTest {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
-        val sessionRepository = SessionRepository(db.database, testDispatcher)
+        val (sessionRepository, messageRepository) = newRepos(db, testDispatcher)
         val apiSettingsRepository = ApiSettingsRepository(db.database, chat.donzi.localtavern.data.security.ApiKeyCipher(chat.donzi.localtavern.data.security.TestSecretCrypto()), testDispatcher)
         apiSettingsRepository.insertApiConnection(
             provider = "test", name = "Test", baseUrl = "https://example.com",
@@ -1076,7 +1087,7 @@ data: [DONE]
             }
         )
         val controller = ChatController(
-            sessionRepository, apiSettingsRepository, PricingRepository(db.database, testDispatcher), client,
+            sessionRepository, messageRepository, apiSettingsRepository, PricingRepository(db.database, testDispatcher), client,
             CoroutineScope(testDispatcher + SupervisorJob()),
             payloadDispatcher = testDispatcher
         )
@@ -1088,7 +1099,7 @@ data: [DONE]
         controller.requestAiResponse(seed.sessionId, CHARACTER, PERSONA, seed.userId)
         testScheduler.advanceUntilIdle()
 
-        val timeline = sessionRepository.getMessagesForSession(seed.sessionId)
+        val timeline = messageRepository.getMessagesForSession(seed.sessionId)
         assertEquals(3, timeline.size)
         assertEquals("Partial", timeline.last().content,
             "Partial tokens of a truncated stream must be kept, not deleted")

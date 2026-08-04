@@ -111,6 +111,7 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
                     chatController = chatController,
                     characterRepository = container.characterRepository,
                     sessionRepository = container.sessionRepository,
+                    messageRepository = container.messageRepository,
                     apiSettingsRepository = container.apiSettingsRepository,
                     pricingRepository = container.pricingRepository,
                     apiKeyCipher = container.apiKeyCipher,

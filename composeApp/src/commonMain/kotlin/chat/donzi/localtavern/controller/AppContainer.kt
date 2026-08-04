@@ -9,6 +9,7 @@ import chat.donzi.localtavern.data.database.CharacterRepository
 import chat.donzi.localtavern.data.database.DriverFactory
 import chat.donzi.localtavern.data.database.LocalTavernDB
 import chat.donzi.localtavern.data.database.LogicalClock
+import chat.donzi.localtavern.data.database.MessageRepository
 import chat.donzi.localtavern.data.database.PricingRepository
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.data.network.ChatClient
@@ -60,7 +61,8 @@ class AppContainer(driverFactory: DriverFactory) {
     // keeping LWW immune to wall-clock skew between devices.
     val logicalClock = LogicalClock(database)
     val characterRepository: CharacterRepository = CharacterRepository(database, clock = logicalClock, ioDispatcher = databaseDispatcher)
-    val sessionRepository: SessionRepository = SessionRepository(database, ioDispatcher = databaseDispatcher, clock = logicalClock, blobStore = blobStore)
+    val sessionRepository: SessionRepository = SessionRepository(database, ioDispatcher = databaseDispatcher, clock = logicalClock)
+    val messageRepository: MessageRepository = MessageRepository(database, ioDispatcher = databaseDispatcher, clock = logicalClock, blobStore = blobStore, sessionRepository = sessionRepository)
     val apiSettingsRepository: ApiSettingsRepository = ApiSettingsRepository(database, apiKeyCipher, databaseDispatcher, clock = logicalClock)
     val pricingRepository: PricingRepository = PricingRepository(database, databaseDispatcher)
 
@@ -198,7 +200,7 @@ class AppContainer(driverFactory: DriverFactory) {
         if (::syncDiscovery.isInitialized) syncDiscovery.start()
     }
 
-    val chatController: ChatController = ChatController(sessionRepository, apiSettingsRepository, pricingRepository, chatClient, appScope)
+    val chatController: ChatController = ChatController(sessionRepository, messageRepository, apiSettingsRepository, pricingRepository, chatClient, appScope)
     val appState: AppState = AppState(characterRepository, apiSettingsRepository, sessionRepository, appScope)
 
     // Cancels all app-level coroutines (generation, flows, settings writes)

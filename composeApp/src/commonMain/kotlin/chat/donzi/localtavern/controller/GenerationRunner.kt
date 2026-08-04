@@ -2,7 +2,7 @@ package chat.donzi.localtavern.controller
 
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.database.PricingRepository
-import chat.donzi.localtavern.data.database.SessionRepository
+import chat.donzi.localtavern.data.database.MessageRepository
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.data.network.GenerationParams
 import chat.donzi.localtavern.data.network.StreamChunk
@@ -48,7 +48,7 @@ import kotlin.time.TimeSource
  * unwind its own state.
  */
 class GenerationRunner(
-    private val sessionRepository: SessionRepository,
+    private val messageRepository: MessageRepository,
     private val apiSettingsRepository: ApiSettingsRepository,
     private val pricingRepository: PricingRepository,
     private val chatClient: ChatClient,
@@ -71,7 +71,7 @@ class GenerationRunner(
             return
         }
 
-        val aiMessageId = sessionRepository.insertMessage(sessionId, "assistant", "...", targetParentId)
+        val aiMessageId = messageRepository.insertMessage(sessionId, "assistant", "...", targetParentId)
         onRefresh(sessionId)
 
         val responseBuilder = StringBuilder()
@@ -85,7 +85,7 @@ class GenerationRunner(
         // with no error surfaced.
         try {
             val (messagesPayload, inputTokens) = withContext(payloadDispatcher) {
-                val dbMessages = sessionRepository.getMessagesForSession(sessionId)
+                val dbMessages = messageRepository.getMessagesForSession(sessionId)
 
                 val chatHistory = dbMessages
                     .filter { it.id != aiMessageId }
@@ -241,14 +241,14 @@ class GenerationRunner(
                     }
                     if (now - lastPersistTime >= 250) {
                         lastPersistTime = now
-                        sessionRepository.updateMessageContentAndReasoning(aiMessageId, responseBuilder.toString(), reasoningBuilder.toString().takeIf { it.isNotBlank() })
+                        messageRepository.updateMessageContentAndReasoning(aiMessageId, responseBuilder.toString(), reasoningBuilder.toString().takeIf { it.isNotBlank() })
                     }
                 }
                 val fullResponse = responseBuilder.toString()
                 if (fullResponse.isBlank()) {
-                    sessionRepository.deleteMessage(aiMessageId)
+                    messageRepository.deleteMessage(aiMessageId)
                 } else {
-                    sessionRepository.updateMessageContentAndReasoning(
+                    messageRepository.updateMessageContentAndReasoning(
                         aiMessageId, fullResponse,
                         reasoningBuilder.toString().takeIf { it.isNotBlank() }
                     )
@@ -273,9 +273,9 @@ class GenerationRunner(
                         )
                     }
                     if (recovered.text.isBlank()) {
-                        sessionRepository.deleteMessage(aiMessageId)
+                        messageRepository.deleteMessage(aiMessageId)
                     } else {
-                        sessionRepository.updateMessageContentAndReasoning(
+                        messageRepository.updateMessageContentAndReasoning(
                             aiMessageId, recovered.text,
                             recovered.reasoningText?.takeIf { it.isNotBlank() }
                         )
@@ -301,9 +301,9 @@ class GenerationRunner(
                 streamJob.cancel()
                 val partialResponse = responseBuilder.toString()
                 if (partialResponse.isBlank()) {
-                    sessionRepository.deleteMessage(aiMessageId)
+                    messageRepository.deleteMessage(aiMessageId)
                 } else {
-                    sessionRepository.updateMessageContentAndReasoning(
+                    messageRepository.updateMessageContentAndReasoning(
                         aiMessageId, partialResponse,
                         reasoningBuilder.toString().takeIf { it.isNotBlank() }
                     )
@@ -316,9 +316,9 @@ class GenerationRunner(
                 withContext(NonCancellable) {
                     val partialResponse = responseBuilder.toString()
                     if (partialResponse.isBlank()) {
-                        sessionRepository.deleteMessage(aiMessageId)
+                        messageRepository.deleteMessage(aiMessageId)
                     } else {
-                        sessionRepository.updateMessageContentAndReasoning(
+                        messageRepository.updateMessageContentAndReasoning(
                             aiMessageId, partialResponse,
                             reasoningBuilder.toString().takeIf { it.isNotBlank() }
                         )
@@ -330,9 +330,9 @@ class GenerationRunner(
                 streamJob.cancel()
                 val partialResponse = responseBuilder.toString()
                 if (partialResponse.isBlank()) {
-                    sessionRepository.deleteMessage(aiMessageId)
+                    messageRepository.deleteMessage(aiMessageId)
                 } else {
-                    sessionRepository.updateMessageContentAndReasoning(
+                    messageRepository.updateMessageContentAndReasoning(
                         aiMessageId, partialResponse,
                         reasoningBuilder.toString().takeIf { it.isNotBlank() }
                     )
@@ -345,7 +345,7 @@ class GenerationRunner(
             // Generation was stopped before any token was handled; drop the
             // placeholder so it cannot linger in the session.
             withContext(NonCancellable) {
-                sessionRepository.deleteMessage(aiMessageId)
+                messageRepository.deleteMessage(aiMessageId)
             }
             onRefresh(sessionId)
             throw e
@@ -353,7 +353,7 @@ class GenerationRunner(
             // Payload build or stream setup failed before any token was
             // handled; remove the placeholder and surface the error.
             withContext(NonCancellable) {
-                sessionRepository.deleteMessage(aiMessageId)
+                messageRepository.deleteMessage(aiMessageId)
             }
             state.update { it.copy(errorMessage = e.message ?: "Unknown error occurred", errorIsWarning = false) }
             onRefresh(sessionId)
@@ -370,6 +370,6 @@ class GenerationRunner(
     ) {
         val outputTokens = DefaultTokenizer.countTokens(responseText).toLong()
         val estimate = CostEstimator.estimate(pricing, inputTokens, outputTokens)
-        sessionRepository.updateMessageCostEstimate(messageId, estimate?.totalUsd)
+        messageRepository.updateMessageCostEstimate(messageId, estimate?.totalUsd)
     }
 }

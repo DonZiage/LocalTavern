@@ -12,6 +12,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import chat.donzi.localtavern.data.database.CharacterRepository
+import chat.donzi.localtavern.data.database.MessageRepository
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Message
@@ -29,6 +30,7 @@ internal fun CharacterEditorOverlay(
     messages: List<Message>,
     characterRepository: CharacterRepository,
     sessionRepository: SessionRepository,
+    messageRepository: MessageRepository,
     onSetEditingCharacter: (Character?) -> Unit,
     onSetActiveCharacter: (Character?) -> Unit,
     onExportCharacter: (Character) -> Unit,
@@ -74,15 +76,15 @@ internal fun CharacterEditorOverlay(
                                     // insert the same greeting root twice.
                                     val targetSessions = sessionRepository.getSessionsForCharacter(targetCharacter.id)
                                     targetSessions.forEach { session ->
-                                        sessionRepository.syncGreetingRoots(session.id, textList)
+                                        messageRepository.syncGreetingRoots(session.id, textList)
                                     }
 
                                     // Only the active session's view may be re-seeded.
                                     val currentActiveSessionId = activeSessionId
                                     if (currentActiveSessionId != null && activeCharacter?.id == targetCharacter.id) {
-                                        val finalRoots = sessionRepository.getMessageSiblings(currentActiveSessionId, null)
+                                        val finalRoots = messageRepository.getMessageSiblings(currentActiveSessionId, null)
                                         if (finalRoots.isNotEmpty() && finalRoots.none { it.id == messages.firstOrNull()?.id }) {
-                                            finalRoots.firstOrNull()?.let { sessionRepository.selectVariation(currentActiveSessionId, it.id, null) }
+                                            finalRoots.firstOrNull()?.let { messageRepository.selectVariation(currentActiveSessionId, it.id, null) }
                                         }
                                     }
                                 }
