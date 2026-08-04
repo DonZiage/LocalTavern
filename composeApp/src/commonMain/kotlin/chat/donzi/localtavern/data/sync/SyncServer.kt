@@ -20,11 +20,13 @@ import kotlinx.serialization.json.Json
 //   GET  /hello     -> device identity (for discovery)
 //   POST /pair      -> PIN-authenticated pairing, returns both keys
 //   POST /exchange  -> encrypted bidirectional sync exchange
+//   POST /blob/fetch-> encrypted chunked pull of message-image blobs
 class SyncServer(
     private val port: Int,
     private val hello: () -> HelloResponse,
     private val onPair: suspend (PairRequest, remoteHost: String?) -> PairResponse,
-    private val onExchange: suspend (fromDeviceId: String, payload: String, ephemeralPublicKey: String) -> ExchangeResponse
+    private val onExchange: suspend (fromDeviceId: String, payload: String, ephemeralPublicKey: String) -> ExchangeResponse,
+    private val onBlobFetch: suspend (fromDeviceId: String, payload: String, ephemeralPublicKey: String) -> BlobFetchResponse
 ) {
     private var server: EmbeddedServer<*, *>? = null
 
@@ -49,6 +51,15 @@ class SyncServer(
                 post("/exchange") {
                     val request = call.receive<ExchangeRequest>()
                     val response = onExchange(request.fromDeviceId, request.payload, request.ephemeralPublicKey)
+                    if (response.ok) {
+                        call.respond(response)
+                    } else {
+                        call.respond(HttpStatusCode.BadRequest, response)
+                    }
+                }
+                post("/blob/fetch") {
+                    val request = call.receive<BlobFetchRequest>()
+                    val response = onBlobFetch(request.fromDeviceId, request.payload, request.ephemeralPublicKey)
                     if (response.ok) {
                         call.respond(response)
                     } else {

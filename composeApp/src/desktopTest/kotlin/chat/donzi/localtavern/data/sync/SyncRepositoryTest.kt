@@ -71,7 +71,7 @@ class SyncRepositoryTest {
             lastUsed = 0L, temperature = 1.0, topP = 1.0, topK = 0L, presencePenalty = 0.0,
             frequencyPenalty = 0.0, contextLimit = 4096L, responseLimit = 1024L,
             displayOrder = 0L, timeoutLimit = 60L, reasoningOverride = 0L,
-            updatedAt = updatedAt, isDeleted = 0L
+            updatedAt = updatedAt, isDeleted = 0L, syncSeq = 0L
         )
     }
 
@@ -86,11 +86,18 @@ class SyncRepositoryTest {
         device.insert("p2", "Bob", 2000L)
         device.insert("p3", "Carol", 3000L, isDeleted = 1L)
 
-        val delta = device.repo.collectDelta(1500L)
+        // The delta cut is on the device-local sync sequence, not on
+        // updatedAt: each applied row was re-stamped 1, 2, 3 in arrival order.
+        val delta = device.repo.collectDelta(2L)
         assertEquals(
             listOf("p2", "p3"),
             delta.personas.map { it.id },
-            "Only rows newer than the cursor, including tombstones"
+            "Only rows at/after the sequence cursor, including tombstones"
+        )
+        assertEquals(
+            listOf(2L, 3L),
+            delta.personas.map { it.syncSeq },
+            "The delta must carry each row's device-local sequence"
         )
     }
 
@@ -275,16 +282,93 @@ class SyncRepositoryTest {
     @Test
     fun apiKeySync_incomingActiveFlagIsIgnored() = runTest {
         val device = newDevice("device-a", apiKeyCipher = ApiKeyCipher(ReversibleTestSecretCrypto()))
+        device.insertConnection(id = "c1", apiKey = "ltv1:X(sk-1)", isActive = 1L, updatedAt = 1000L)
 
-        // An old peer may still ship isActive=1; this device must not adopt it.
+        // An old peer may still ship isActive=1; with an active profile already
+        // in place this device must not adopt the wire flag.
         device.repo.applyChanges(
-            SyncChanges(apiConnections = listOf(syncApiConnection("c1", apiKey = "sk-1", isActive = 1L, updatedAt = 2000L))),
+            SyncChanges(apiConnections = listOf(syncApiConnection("c2", apiKey = "sk-2", isActive = 1L, updatedAt = 2000L))),
+            peerDeviceId = "device-b"
+        )
+
+        val stored = device.connAny("c2")
+        assertNotNull(stored)
+        assertEquals(0L, stored.isActive, "Incoming isActive=1 must be ignored when a profile is already active")
+        assertEquals(1L, device.connAny("c1")!!.isActive, "The local active profile must not be flipped by the wire flag")
+    }
+
+    @Test
+    fun apiKeySync_editFromPeerKeepsLocalActiveState() = runTest {
+        val device = newDevice("device-a", apiKeyCipher = ApiKeyCipher(ReversibleTestSecretCrypto()))
+        device.insertConnection(id = "c1", apiKey = "ltv1:X(sk-1)", isActive = 1L, updatedAt = 1000L)
+
+        // A peer edits the same connection (its wire copy never carries the flag).
+        device.repo.applyChanges(
+            SyncChanges(apiConnections = listOf(syncApiConnection("c1", apiKey = "sk-2", updatedAt = 2000L))),
             peerDeviceId = "device-b"
         )
 
         val stored = device.connAny("c1")
         assertNotNull(stored)
-        assertEquals(0L, stored.isActive, "Incoming isActive=1 must be ignored so sync cannot flip the local profile")
+        assertEquals(
+            1L, stored.isActive,
+            "Editing a connection on a peer must not deactivate the locally active profile"
+        )
+        assertEquals("ltv1:X(sk-2)", stored.apiKey, "The edit itself must still apply")
+    }
+
+    @Test
+    fun apiKeySync_firstIncomingConnectionAutoActivatesLikeLocalInsert() = runTest {
+        val device = newDevice("device-a", apiKeyCipher = ApiKeyCipher(ReversibleTestSecretCrypto()))
+
+        device.repo.applyChanges(
+            SyncChanges(apiConnections = listOf(syncApiConnection("c1", apiKey = "sk-1", updatedAt = 2000L))),
+            peerDeviceId = "device-b"
+        )
+
+        val stored = device.connAny("c1")
+        assertNotNull(stored)
+        assertEquals(1L, stored.isActive, "The first connection on a device must become active, like a local insert")
+    }
+
+    @Test
+    fun apiKeySync_incomingConnectionNeverStealsLocalActiveProfile() = runTest {
+        val device = newDevice("device-a", apiKeyCipher = ApiKeyCipher(ReversibleTestSecretCrypto()))
+        device.insertConnection(id = "c1", apiKey = "ltv1:X(sk-1)", isActive = 1L, updatedAt = 1000L)
+
+        device.repo.applyChanges(
+            SyncChanges(apiConnections = listOf(syncApiConnection("c2", apiKey = "sk-2", updatedAt = 2000L))),
+            peerDeviceId = "device-b"
+        )
+
+        assertEquals(1L, device.connAny("c1")!!.isActive, "The locally active profile stays active")
+        assertEquals(0L, device.connAny("c2")!!.isActive, "A new connection must not steal the active slot")
+        val activeCount = device.db.localTavernDBQueries.selectAllApiConnections().executeAsList().count { it.isActive == 1L }
+        assertEquals(1, activeCount, "Exactly one connection may be active at a time")
+    }
+
+    @Test
+    fun apiKeySync_activeStateIsPerDeviceAndConverges() = runTest {
+        // Both devices have their OWN active profile; exchanging edits must
+        // never merge them into one or flip either side's choice.
+        val a = newDevice("device-a", apiKeyCipher = ApiKeyCipher(ReversibleTestSecretCrypto()))
+        val b = newDevice("device-b", apiKeyCipher = ApiKeyCipher(ReversibleTestSecretCrypto()))
+        a.insertConnection(id = "c1", apiKey = "ltv1:X(sk-a)", isActive = 1L, updatedAt = 1000L)
+        b.insertConnection(id = "c2", apiKey = "ltv1:X(sk-b)", isActive = 1L, updatedAt = 2000L)
+
+        b.repo.applyChanges(a.repo.collectDelta(0L), peerDeviceId = "device-a")
+        a.repo.applyChanges(b.repo.collectDelta(0L), peerDeviceId = "device-b")
+
+        assertEquals(1L, a.connAny("c1")!!.isActive, "A keeps its own active profile")
+        assertEquals(0L, a.connAny("c2")!!.isActive, "B's active flag never crosses the wire")
+        assertEquals(0L, b.connAny("c1")!!.isActive, "A's active flag never crosses the wire")
+        assertEquals(1L, b.connAny("c2")!!.isActive, "B keeps its own active profile")
+
+        // A subsequent edit exchange must not disturb either side's choice.
+        b.repo.applyChanges(a.repo.collectDelta(1000L), peerDeviceId = "device-a")
+        a.repo.applyChanges(b.repo.collectDelta(2000L), peerDeviceId = "device-b")
+        assertEquals(1L, a.connAny("c1")!!.isActive)
+        assertEquals(1L, b.connAny("c2")!!.isActive)
     }
 
     // ---------- Clock-skew resilience ----------
@@ -345,12 +429,71 @@ class SyncRepositoryTest {
         device.charRepo().upsertCharacter(SillyTavernCardV2(name = "First"))
         val delta1 = device.repo.collectDelta(0L)
         device.charRepo().upsertCharacter(SillyTavernCardV2(name = "Second"))
-        val delta2 = device.repo.collectDelta(delta1.maxUpdatedAt)
+        val delta2 = device.repo.collectDelta(delta1.maxSyncSeq + 1)
 
         assertEquals("Second", delta2.characters.single().name)
         assertTrue(
             delta2.characters.single().updatedAt > delta1.maxUpdatedAt,
             "The second write must carry a strictly larger logical stamp"
         )
+        assertTrue(
+            delta2.characters.single().syncSeq > delta1.maxSyncSeq,
+            "The second write must carry a strictly larger sync sequence"
+        )
+    }
+
+    // ---------- Late rows from lagging peers ----------
+    //
+    // A row received from a peer whose clock lags can carry an updatedAt well
+    // below the cursors this device already reported. Delta queries must not
+    // cut on updatedAt (such a row would be skipped forever); applied rows
+    // are re-stamped with a fresh device-local sync sequence, so the late row
+    // always lands at/after the peer's cursor and gets forwarded.
+
+    @Test
+    fun lateRowFromLaggingPeer_isForwardedDespiteLowStamp() = runTest {
+        val a = newDevice("device-a")
+        val b = newDevice("device-b")
+
+        // First exchange: A sends its row; B's cursor for A advances past
+        // the row's updatedAt stamp.
+        a.insert("p1", "OnA", 1000L)
+        val firstDelta = a.repo.collectDelta(0L)
+        b.repo.applyChanges(firstDelta, peerDeviceId = "device-a")
+        val cursorAfterFirstExchange = firstDelta.maxSyncSeq + 1
+
+        // A row stamped at the OLD value arrives on A from a lagging third
+        // device P, AFTER B's cursor already advanced past that stamp.
+        a.repo.applyChanges(
+            SyncChanges(personas = listOf(syncPersona("p-late", "Late", 1000L, 0L))),
+            peerDeviceId = "device-p"
+        )
+
+        // A's next delta to B must still include the late row: it carries a
+        // fresh device-local sequence, not its (stale) updatedAt.
+        val secondDelta = a.repo.collectDelta(cursorAfterFirstExchange)
+        assertEquals(
+            listOf("p-late"),
+            secondDelta.personas.map { it.id },
+            "A row arriving late from a lagging peer must still be forwarded"
+        )
+        b.repo.applyChanges(secondDelta, peerDeviceId = "device-a")
+        assertTrue(b.personas.any { it.id == "p-late" }, "B must receive the late row")
+    }
+
+    @Test
+    fun appliedRowsAreRestampedWithLocalSequences() = runTest {
+        val a = newDevice("device-a")
+        val b = newDevice("device-b")
+
+        a.insert("p1", "OnA", 1000L)
+        a.insert("p2", "AlsoOnA", 2000L)
+        b.repo.applyChanges(a.repo.collectDelta(0L), peerDeviceId = "device-a")
+
+        // The received rows carry B's OWN sequences (1, 2), so B can forward
+        // them regardless of their (foreign) updatedAt stamps.
+        val bSeq = b.db.localTavernDBQueries.selectPersonaByIdAny("p1").executeAsOne()!!.syncSeq
+        assertEquals(1L, bSeq, "Incoming rows must be re-stamped with the local sequence counter")
+        assertEquals(2L, b.db.localTavernDBQueries.selectPersonaByIdAny("p2").executeAsOne()!!.syncSeq)
     }
 }

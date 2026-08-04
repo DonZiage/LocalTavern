@@ -1,5 +1,6 @@
 package chat.donzi.localtavern.data.sync
 
+import chat.donzi.localtavern.data.blob.BlobStore
 import chat.donzi.localtavern.data.database.SyncPeer
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
@@ -16,6 +17,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -37,11 +40,20 @@ data class SyncUiState(
     // Fingerprint of the peer that just paired (host and client side), shown
     // for out-of-band comparison until the user confirms it.
     val pendingPeerFingerprint: String? = null,
-    val pendingPeerName: String? = null
+    val pendingPeerName: String? = null,
+    // Progress of an in-flight image-blob transfer (null when idle).
+    val blobProgress: BlobTransferProgress? = null
+)
+
+// Bytes transferred so far vs. total bytes of the current blob transfer.
+data class BlobTransferProgress(
+    val doneBytes: Long,
+    val totalBytes: Long
 )
 
 const val SYNC_PORT = 47324
 const val SYNC_DISCOVERY_PORT = 47325
+const val CHUNK_BYTES = 512 * 1024
 private const val PAIRING_TTL_MS = 5 * 60 * 1000L
 
 // The sync server winds down when it goes quiet: after this long without any
@@ -65,9 +77,18 @@ class SyncService(
     private val scope: CoroutineScope,
     private val port: Int = SYNC_PORT,
     private val localAddressesProvider: () -> List<String> = { emptyList() },
-    private val onServerStopped: () -> Unit = {}
+    private val onServerStopped: () -> Unit = {},
+    // Content-addressed blob store: serves image blobs to peers and holds
+    // blobs fetched from them. Null (tests) disables out-of-band transfers;
+    // envelope refs still sync, but no bytes move.
+    private val blobStore: BlobStore? = null
 ) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    // Ref hashes the peer reported as not serving; they are not re-fetched
+    // during this app session (they would only be re-reported missing).
+    private val knownMissingRefs = mutableSetOf<String>()
+    private val knownMissingMutex = Mutex()
 
     private val _state = MutableStateFlow(SyncUiState())
     val state: StateFlow<SyncUiState> = _state.asStateFlow()
@@ -90,7 +111,8 @@ class SyncService(
         port = port,
         hello = { HelloResponse(deviceId = identity.deviceId, deviceName = identity.deviceName) },
         onPair = { request, remoteHost -> handlePairRequest(request, remoteHost) },
-        onExchange = { fromDeviceId, payload, ephemeralPublicKey -> handleExchange(fromDeviceId, payload, ephemeralPublicKey) }
+        onExchange = { fromDeviceId, payload, ephemeralPublicKey -> handleExchange(fromDeviceId, payload, ephemeralPublicKey) },
+        onBlobFetch = { fromDeviceId, payload, ephemeralPublicKey -> handleBlobFetch(fromDeviceId, payload, ephemeralPublicKey) }
     )
 
     fun startServer() {
@@ -353,7 +375,8 @@ class SyncService(
                 fromDeviceId = identity.deviceId,
                 cursor = peer.receivedCursor,
                 changes = myChanges,
-                fromDeviceName = identity.deviceName
+                fromDeviceName = identity.deviceName,
+                fetchAddress = advertisedFetchAddress()
             )
             val aad = aad(from = identity.deviceId, to = peer.deviceId)
             val payload = encodeBase64(crypto.encrypt(channelKey.key, aad, encodeEnvelope(envelope)))
@@ -388,13 +411,21 @@ class SyncService(
             if (!responseEnvelope.changes.isEmpty) {
                 repository.applyChanges(responseEnvelope.changes, peerDeviceId = peer.deviceId)
             }
+            // Pull image blobs referenced by the received rows out of band
+            // (chunked, authenticated). The peer's stored address is used;
+            // envelope.fetchAddress is only used server-side (the responder
+            // cannot know the initiator's stored address).
+            val refs = responseEnvelope.changes.messages.flatMap { it.imageRefs }
+            if (refs.isNotEmpty() && blobStore != null) {
+                fetchMissingBlobs(peerId, address, refs, peerPublicKey)
+            }
             // The peer's new display name (if any), authenticated by the
             // exchange: only the device holding the paired key can have
             // produced this envelope. Display-only — cursors are untouched.
             DeviceName.sanitize(responseEnvelope.fromDeviceName.orEmpty())?.let { name ->
                 repository.updatePeerName(peer.deviceId, name)
             }
-            val newReceivedCursor = maxOf(responseEnvelope.changes.maxUpdatedAt, peer.receivedCursor)
+            val newReceivedCursor = nextReceivedCursor(peer.receivedCursor, responseEnvelope.changes)
             repository.updatePeerCursors(
                 deviceId = peer.deviceId,
                 receivedCursor = newReceivedCursor,
@@ -434,7 +465,18 @@ class SyncService(
             if (applyResult.isFailure) {
                 return ExchangeResponse(ok = false, message = "Failed to apply changes.")
             }
-            val newReceivedCursor = maxOf(envelope.changes.maxUpdatedAt, peer.receivedCursor)
+            // The sender referenced image blobs this device may not have; pull
+            // them from the sender's advertised address WITHOUT blocking the
+            // exchange round-trip (the response goes out first, the blobs
+            // follow in the background and land as placeholders until then).
+            val pendingRefs = envelope.changes.messages.flatMap { it.imageRefs }
+            val senderAddress = envelope.fetchAddress
+            if (pendingRefs.isNotEmpty() && senderAddress != null && blobStore != null) {
+                scope.launch {
+                    runCatching { fetchMissingBlobs(fromDeviceId, senderAddress, pendingRefs, peerKey) }
+                }
+            }
+            val newReceivedCursor = nextReceivedCursor(peer.receivedCursor, envelope.changes)
             repository.updatePeerCursors(
                 deviceId = fromDeviceId,
                 receivedCursor = newReceivedCursor,
@@ -447,7 +489,8 @@ class SyncService(
                 fromDeviceId = identity.deviceId,
                 cursor = newReceivedCursor,
                 changes = myChanges,
-                fromDeviceName = identity.deviceName
+                fromDeviceName = identity.deviceName,
+                fetchAddress = advertisedFetchAddress()
             )
             val responsePayload = encodeBase64(
                 crypto.encrypt(myExchangeKey.key, aad(from = identity.deviceId, to = fromDeviceId), encodeEnvelope(responseEnvelope))
@@ -459,6 +502,203 @@ class SyncService(
             )
         }.getOrElse { error ->
             ExchangeResponse(ok = false, message = error.message ?: "Sync failed.")
+        }
+    }
+
+    // ---------- Image blob transfer ----------
+
+    // Chunk size for /blob/fetch responses: bounds per-request memory on
+    // both sides while keeping the number of round trips small.
+    private fun advertisedFetchAddress(): String? =
+        pickPairingAddress()?.let { "$it:$port" }
+
+    private suspend fun isRefKnownMissing(hash: String): Boolean =
+        knownMissingMutex.withLock { hash in knownMissingRefs }
+
+    private suspend fun rememberMissingRefs(refs: List<String>) {
+        knownMissingMutex.withLock { knownMissingRefs.addAll(refs) }
+    }
+
+    /**
+     * Pulls every [refs] blob this device does not yet have from [address]
+     * over the authenticated /blob/fetch endpoint, chunk by chunk, and stores
+     * the reassembled blobs in the local store. The protocol is stateless and
+     * strictly per-ref with offset addressing, so a dropped request is simply
+     * retried from the last acknowledged offset. Refs the peer cannot serve
+     * are remembered for the session and skipped in later syncs. Progress is
+     * surfaced through [SyncUiState.blobProgress].
+     */
+    private suspend fun fetchMissingBlobs(peerId: String, address: String, refs: List<SyncImageRef>, peerPublicKey: ByteArray) {
+        val store = blobStore ?: return
+        val host = address.substringBeforeLast(':')
+        val port = address.substringAfterLast(':').toIntOrNull() ?: SYNC_PORT
+
+        // Only fetch what is genuinely missing; refs the peer already
+        // reported as missing are skipped for this session.
+        val pending = refs.filter { store.read(it.sha256) == null && !isRefKnownMissing(it.sha256) }
+        if (pending.isEmpty()) return
+
+        val totalBytes = pending.sumOf { it.size }
+        var doneBytes = 0L
+        noteActivity()
+        _state.update { it.copy(blobProgress = BlobTransferProgress(doneBytes, totalBytes)) }
+        try {
+            var refIndex = 0
+            while (refIndex < pending.size) {
+                val ref = pending[refIndex]
+                // Resume-safe accumulation: chunks for the current ref are
+                // reassembled from the first byte.
+                val builder = ArrayList<ByteArray>()
+                var offset = 0
+                var finalSize = 0
+                var refComplete = false
+                while (!refComplete) {
+                    noteActivity()
+                    val request = encodeBlobRequest(BlobFetchPayload(
+                        refs = pending.map { it.sha256 },
+                        refIndex = refIndex,
+                        offset = offset
+                    ))
+                    val channelKey = outboundChannelKey(peerPublicKey)
+                    val aad = aad(from = identity.deviceId, to = peerId)
+                    val payload = encodeBase64(crypto.encrypt(channelKey.key, aad, request))
+                    val response: BlobFetchResponse = httpClient.post("http://$host:$port/blob/fetch") {
+                        contentType(ContentType.Application.Json)
+                        setBody(
+                            BlobFetchRequest(
+                                fromDeviceId = identity.deviceId,
+                                payload = payload,
+                                ephemeralPublicKey = encodeBase64(channelKey.ephemeralPublicKey)
+                            )
+                        )
+                    }.body()
+                    if (!response.ok) {
+                        // The peer refused the fetch; abandon the remaining refs.
+                        refIndex = pending.size
+                        break
+                    }
+
+                    val resultPayload = response.payload ?: run {
+                        refIndex = pending.size
+                        break
+                    }
+                    val peerEphemeral = runCatching { decodeBase64(response.ephemeralPublicKey) }.getOrNull()
+                    if (peerEphemeral == null || peerEphemeral.size != 32) {
+                        refIndex = pending.size
+                        break
+                    }
+                    val responseKey = inboundChannelKey(peerPublicKey, peerEphemeral)
+                    val result = decodeBlobResult(
+                        crypto.decrypt(responseKey, aad(from = peerId, to = identity.deviceId), decodeBase64(resultPayload))
+                    )
+                    if (result.refIndex != refIndex) {
+                        // Protocol drift: never loop on an unexpected index.
+                        refIndex = pending.size
+                        break
+                    }
+                    if (result.missing.isNotEmpty()) {
+                        rememberMissingRefs(result.missing)
+                        doneBytes += ref.size
+                        refIndex++
+                        refComplete = true
+                        _state.update { it.copy(blobProgress = BlobTransferProgress(doneBytes, totalBytes)) }
+                        continue
+                    }
+                    if (result.data.isNotEmpty()) {
+                        builder.add(decodeBase64(result.data))
+                        finalSize = result.total
+                    } else if (!result.hasMore) {
+                        // Empty blob or offset past the end: nothing to store.
+                        refIndex = pending.size
+                        break
+                    }
+                    offset += CHUNK_BYTES
+                    doneBytes += minOf(CHUNK_BYTES.toLong(), (finalSize - (offset - CHUNK_BYTES)).coerceAtLeast(0).toLong())
+                    _state.update { it.copy(blobProgress = BlobTransferProgress(doneBytes, totalBytes)) }
+                    if (!result.hasMore) {
+                        // Ref complete: store the reassembled blob — only when
+                        // the reassembly exactly matches the advertised total,
+                        // so a truncated reassembly never poisons future
+                        // fetches of the same ref.
+                        val combined = ByteArray(builder.sumOf { it.size })
+                        var pos = 0
+                        builder.forEach { part -> part.copyInto(combined, pos); pos += part.size }
+                        if (combined.size == finalSize && store.read(ref.sha256) == null) store.write(ref.sha256, combined)
+                        refIndex++
+                        refComplete = true
+                    }
+                }
+            }
+        } finally {
+            _state.update { it.copy(blobProgress = null) }
+        }
+    }
+
+    // Server side of /blob/fetch: serves one chunk of the addressed ref to a
+    // paired device, or reports the ref as missing. Stateless and strictly
+    // per-ref: the chunk is served at exactly (refIndex, offset); the client
+    // advances to the next ref itself.
+    private suspend fun handleBlobFetch(fromDeviceId: String, encryptedPayload: String, requestEphemeralKey: String): BlobFetchResponse {
+        noteActivity()
+        return runCatching {
+            val peer = repository.getPeer(fromDeviceId)
+                ?: return BlobFetchResponse(ok = false, message = "Not paired.")
+            val peerKey = peer.publicKey
+                ?: return BlobFetchResponse(ok = false, message = "Peer has no key.")
+            val peerEphemeral = runCatching { decodeBase64(requestEphemeralKey) }.getOrNull()
+            if (peerEphemeral == null || peerEphemeral.size != 32) {
+                return BlobFetchResponse(ok = false, message = "Invalid ephemeral key.")
+            }
+            val channelKey = inboundChannelKey(peerKey, peerEphemeral)
+            val payload = decodeBlobRequest(
+                crypto.decrypt(channelKey, aad(from = fromDeviceId, to = identity.deviceId), decodeBase64(encryptedPayload))
+            )
+
+            val store = blobStore
+            val result = if (store == null || payload.refIndex !in payload.refs.indices) {
+                BlobFetchResult(
+                    refIndex = payload.refIndex,
+                    offset = payload.offset,
+                    total = 0,
+                    data = "",
+                    hasMore = false,
+                    missing = payload.refs.getOrNull(payload.refIndex)?.let { listOf(it) } ?: emptyList()
+                )
+            } else {
+                val hash = payload.refs[payload.refIndex]
+                val bytes = store.read(hash)
+                if (bytes == null) {
+                    BlobFetchResult(
+                        refIndex = payload.refIndex,
+                        offset = payload.offset,
+                        total = 0,
+                        data = "",
+                        hasMore = false,
+                        missing = listOf(hash)
+                    )
+                } else {
+                    val chunk = if (payload.offset < bytes.size) {
+                        bytes.copyOfRange(payload.offset, minOf(payload.offset + CHUNK_BYTES, bytes.size))
+                    } else {
+                        ByteArray(0)
+                    }
+                    BlobFetchResult(
+                        refIndex = payload.refIndex,
+                        offset = payload.offset,
+                        total = bytes.size,
+                        data = encodeBase64(chunk),
+                        hasMore = payload.offset + chunk.size < bytes.size
+                    )
+                }
+            }
+
+            val outbound = outboundChannelKey(peerKey)
+            val responsePayload = encodeBase64(
+                crypto.encrypt(outbound.key, aad(from = identity.deviceId, to = fromDeviceId), encodeBlobResult(result))
+            )
+            BlobFetchResponse(ok = true, payload = responsePayload, ephemeralPublicKey = encodeBase64(outbound.ephemeralPublicKey))
+        }.getOrElse { error ->
+            BlobFetchResponse(ok = false, message = error.message ?: "Blob fetch failed.")
         }
     }
 
@@ -538,8 +778,36 @@ class SyncService(
 
     // ---------- Envelope serialization ----------
 
+    /**
+     * The receiver's new cursor after applying [changes]: the highest sync
+     * sequence carried by the envelope PLUS ONE when it carries anything.
+     *
+     * Sync sequences are strictly monotone DEVICE-LOCAL counters: every local
+     * write and every applied incoming row is stamped with a fresh value
+     * (see SyncRepository.applyChanges), so the delta queries
+     * (`syncSeq >= cursor`) have no boundary/equality cases and a cursor of
+     * `maxSeq + 1` is exact: it cannot skip a row, and nothing is ever
+     * re-sent. An empty envelope carries no information and must not move
+     * the cursor (a row could still be written between the query and the
+     * response).
+     */
+    private fun nextReceivedCursor(oldCursor: Long, changes: SyncChanges): Long =
+        if (changes.isEmpty) oldCursor else changes.maxSyncSeq + 1
+
     private fun encodeEnvelope(envelope: SyncEnvelope): ByteArray =
         json.encodeToString(SyncEnvelope.serializer(), envelope).encodeToByteArray()
+
+    private fun encodeBlobRequest(payload: BlobFetchPayload): ByteArray =
+        json.encodeToString(BlobFetchPayload.serializer(), payload).encodeToByteArray()
+
+    private fun decodeBlobRequest(bytes: ByteArray): BlobFetchPayload =
+        json.decodeFromString(BlobFetchPayload.serializer(), bytes.decodeToString())
+
+    private fun encodeBlobResult(result: BlobFetchResult): ByteArray =
+        json.encodeToString(BlobFetchResult.serializer(), result).encodeToByteArray()
+
+    private fun decodeBlobResult(bytes: ByteArray): BlobFetchResult =
+        json.decodeFromString(BlobFetchResult.serializer(), bytes.decodeToString())
 
     private fun decodeEnvelope(bytes: ByteArray): SyncEnvelope =
         json.decodeFromString(SyncEnvelope.serializer(), bytes.decodeToString())

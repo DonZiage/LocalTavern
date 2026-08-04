@@ -20,6 +20,7 @@ data class SyncCharacter(
     val isAssistant: Long,
     val updatedAt: Long,
     val isDeleted: Long,
+    val syncSeq: Long = 0,
     val systemPrompt: String?,
     val postHistoryInstructions: String?,
     val creator: String?,
@@ -36,7 +37,8 @@ data class SyncPersona(
     val description: String?,
     val avatarData: ByteArray?,
     val updatedAt: Long,
-    val isDeleted: Long
+    val isDeleted: Long,
+    val syncSeq: Long = 0
 )
 
 @Serializable
@@ -49,7 +51,19 @@ data class SyncSession(
     val currentMessageId: String?,
     val parentSessionId: String?,
     val updatedAt: Long,
-    val isDeleted: Long
+    val isDeleted: Long,
+    val syncSeq: Long = 0
+)
+
+// A content-addressed reference to one message-image blob on the sender.
+// The bytes travel OUT of band (the /blob/fetch protocol); the envelope only
+// carries the references, so sync exchanges stay small even with many
+// images. Older peers ship the bytes inline via SyncMessage.imageData, which
+// the receiver converts into refs + stored blobs.
+@Serializable
+data class SyncImageRef(
+    val sha256: String,
+    val size: Long
 )
 
 @Serializable
@@ -63,9 +77,13 @@ data class SyncMessage(
     val isActivePath: Long,
     val updatedAt: Long,
     val isDeleted: Long,
-    val imageData: ByteArray?,
+    // Legacy inline images (pre-blob-store peers); empty on modern sends.
+    val imageData: ByteArray? = null,
+    // Content-addressed refs to the image blobs (modern sends).
+    val imageRefs: List<SyncImageRef> = emptyList(),
     val reasoningText: String?,
-    val costEstimate: Double?
+    val costEstimate: Double?,
+    val syncSeq: Long = 0
 )
 
 @Serializable
@@ -95,7 +113,8 @@ data class SyncApiConnection(
     val timeoutLimit: Long,
     val reasoningOverride: Long,
     val updatedAt: Long,
-    val isDeleted: Long
+    val isDeleted: Long,
+    val syncSeq: Long = 0
 )
 
 @Serializable
@@ -107,7 +126,8 @@ data class SyncPromptBlock(
     val isCustom: Long,
     val displayOrder: Long,
     val updatedAt: Long,
-    val isDeleted: Long
+    val isDeleted: Long,
+    val syncSeq: Long = 0
 )
 
 @Serializable
@@ -131,6 +151,15 @@ data class SyncChanges(
             .coerceAtLeast(messages.maxOfOrNull { it.updatedAt } ?: 0L)
             .coerceAtLeast(apiConnections.maxOfOrNull { it.updatedAt } ?: 0L)
             .coerceAtLeast(promptBlocks.maxOfOrNull { it.updatedAt } ?: 0L)
+
+    /** Highest sync sequence carried by any row in these changes. */
+    val maxSyncSeq: Long
+        get() = (characters.maxOfOrNull { it.syncSeq } ?: 0L)
+            .coerceAtLeast(personas.maxOfOrNull { it.syncSeq } ?: 0L)
+            .coerceAtLeast(sessions.maxOfOrNull { it.syncSeq } ?: 0L)
+            .coerceAtLeast(messages.maxOfOrNull { it.syncSeq } ?: 0L)
+            .coerceAtLeast(apiConnections.maxOfOrNull { it.syncSeq } ?: 0L)
+            .coerceAtLeast(promptBlocks.maxOfOrNull { it.syncSeq } ?: 0L)
 }
 
 // One side's view of an exchange: everything the sender changed since the
@@ -145,7 +174,60 @@ data class SyncEnvelope(
     // private key can rename itself on a peer; recipients update their peer
     // row but never the cursor machinery. Default keeps envelopes from
     // older peers parseable.
-    val fromDeviceName: String? = null
+    val fromDeviceName: String? = null,
+    // Where the sender's sync server can be reached, so the RECEIVER can
+    // pull image blobs referenced by this envelope out of band. The receiver
+    // never trusts it blindly: /blob/fetch is authenticated by the same
+    // paired-key scheme as /exchange.
+    val fetchAddress: String? = null
+)
+
+// ---------- Blob fetch protocol (message images travel out of band) ----------
+
+// Encrypted body of a /blob/fetch request: the content-addressed refs the
+// receiver is missing, and where to resume. The server is stateless: each
+// request addresses exactly one chunk via (refIndex, offset), so a dropped
+// request can be retried from the last acknowledged offset.
+@Serializable
+data class BlobFetchPayload(
+    val refs: List<String> = emptyList(),
+    val refIndex: Int = 0,
+    val offset: Int = 0
+)
+
+// Encrypted body of the /blob/fetch response: one chunk of the requested
+// ref, or a missing marker for it. The server is strictly per-ref: it serves
+// the chunk at (refIndex, offset) of the addressed ref, or reports that ref
+// as missing — it never auto-advances to another ref. The receiver
+// reassembles chunks sequentially (offset advances by CHUNK_BYTES), stores
+// the blob once a ref is complete (hasMore = false), and moves to the next
+// ref.
+@Serializable
+data class BlobFetchResult(
+    val refIndex: Int = 0,
+    val offset: Int = 0,
+    val total: Int = 0,
+    val data: String = "",
+    val hasMore: Boolean = false,
+    // Set when the addressed ref cannot be served (its blob is absent).
+    val missing: List<String> = emptyList()
+)
+
+// Wire bodies of /blob/fetch: an encrypted payload plus the sender's
+// per-request ephemeral X25519 public key, identical in shape to /exchange.
+@Serializable
+data class BlobFetchRequest(
+    val fromDeviceId: String,
+    val payload: String,
+    val ephemeralPublicKey: String = ""
+)
+
+@Serializable
+data class BlobFetchResponse(
+    val ok: Boolean,
+    val message: String = "",
+    val payload: String? = null,
+    val ephemeralPublicKey: String = ""
 )
 
 // Pairing handshake. The PIN is never transmitted: [nonce] is a fresh random

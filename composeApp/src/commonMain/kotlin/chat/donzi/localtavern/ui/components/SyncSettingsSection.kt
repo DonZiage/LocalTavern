@@ -111,6 +111,20 @@ fun SyncSettingsSection(
             }
         }
 
+        syncState.blobProgress?.let { progress ->
+            Spacer(modifier = Modifier.height(8.dp))
+            LinearProgressIndicator(
+                progress = { if (progress.totalBytes > 0L) progress.doneBytes.toFloat() / progress.totalBytes.toFloat() else 0f },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Syncing images… ${formatBytes(progress.doneBytes)} / ${formatBytes(progress.totalBytes)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
         Spacer(modifier = Modifier.height(12.dp))
         Text("Sync Key", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(
@@ -215,5 +229,14 @@ private fun relativeTime(timestamp: Long): String {
         minutes < 60 -> "${minutes}m ago"
         minutes < 1440 -> "${minutes / 60}h ago"
         else -> "${minutes / 1440}d ago"
+    }
+}
+
+private fun formatBytes(bytes: Long): String {
+    val kb = bytes / 1024.0
+    return when {
+        kb >= 1024.0 -> "${(kb / 1024.0 * 10).toLong() / 10.0} MB"
+        bytes >= 1024 -> "${(kb * 10).toLong() / 10.0} KB"
+        else -> "$bytes B"
     }
 }

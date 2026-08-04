@@ -54,4 +54,27 @@ class LogicalClock(
             queries.updateLastHlc(timestamp)
         }
     }
+
+    /**
+     * Next monotone sync sequence for a row that is about to be written (a
+     * local edit) or applied (an incoming sync row re-stamped for forwarding).
+     *
+     * Unlike [nextTimestamp], this counter is a strict DEVICE-LOCAL sequence:
+     * it never absorbs anything from peers and never consults the wall clock,
+     * so it is strictly increasing and its value space belongs to this device
+     * alone. Sync deltas cut on it (`syncSeq >= cursor`), which makes cursors
+     * exact — a row can never be stamped below a cursor that already passed
+     * its sequence, no matter how late it arrives or how skewed peer clocks
+     * are. Same concurrency caveat as [nextTimestamp]: SQLite serializes the
+     * read-modify-write, and a collision would only produce two rows sharing
+     * one sequence, which the inclusive delta cut still delivers (cursor
+     * advances past them in one exchange).
+     */
+    fun nextSyncSeq(): Long {
+        queries.insertDefaultSettings()
+        val last = queries.selectLastSyncSeq().executeAsOne()
+        val next = last + 1
+        queries.updateLastSyncSeq(next)
+        return next
+    }
 }

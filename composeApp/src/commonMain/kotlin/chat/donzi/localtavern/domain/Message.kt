@@ -9,6 +9,9 @@ data class Message(
     val parentId: String?,
     val isActivePath: Boolean,
     val images: List<ByteArray> = emptyList(),
+    // Content-addressed references to the stored image blobs; images holds
+    // the hydrated bytes (may be empty while blobs are pending sync).
+    val imageRefs: List<ImageRef> = emptyList(),
     val reasoningText: String? = null,
     val costEstimateUsd: Double? = null
 ) {
@@ -27,6 +30,7 @@ data class Message(
         for (i in images.indices) {
             if (!images[i].contentEquals(other.images[i])) return false
         }
+        if (imageRefs != other.imageRefs) return false
         if (reasoningText != other.reasoningText) return false
         if (costEstimateUsd != other.costEstimateUsd) return false
         return true
@@ -41,6 +45,7 @@ data class Message(
         result = 31 * result + (parentId?.hashCode() ?: 0)
         result = 31 * result + isActivePath.hashCode()
         result = 31 * result + images.sumOf { it.contentHashCode() }
+        result = 31 * result + imageRefs.hashCode()
         result = 31 * result + (reasoningText?.hashCode() ?: 0)
         result = 31 * result + (costEstimateUsd?.hashCode() ?: 0)
         return result

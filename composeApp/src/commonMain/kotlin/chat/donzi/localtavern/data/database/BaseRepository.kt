@@ -21,4 +21,7 @@ abstract class BaseRepository(
 
     /** Logical sync timestamp for the updatedAt of synced rows (HLC). */
     protected fun nextTimestamp(): Long = clock.nextTimestamp()
+
+    /** Device-local monotone sync sequence for the syncSeq of synced rows. */
+    protected fun nextSyncSeq(): Long = clock.nextSyncSeq()
 }

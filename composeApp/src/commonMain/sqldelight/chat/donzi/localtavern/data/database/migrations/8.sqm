@@ -1,0 +1,25 @@
+-- v8 -> v9: per-row monotone sync sequences.
+--
+-- The sync deltas previously cut on updatedAt (a hybrid-logical-clock
+-- timestamp). Cursors derived from a shared timestamp space are inexact: a
+-- row stamped at (or below) a cursor that arrived late (e.g. forwarded from
+-- a third device whose clock lags) is silently skipped forever. The fix is a
+-- device-local strictly-monotone sequence stamped on every row: on every
+-- local write AND on every incoming row that is applied, the device stamps a
+-- fresh value from its own counter, so no row can ever carry a sequence
+-- below a cursor that already advanced past it, and the inclusive delta cut
+-- has no boundary/equality cases.
+--
+-- Existing rows get syncSeq 0 (the default) and every peer's cursors are
+-- reset to 0: the cursor unit changes from timestamps to sequences, so all
+-- devices re-sync everything exactly once after upgrading. Re-sending is
+-- safe (LWW merge on updatedAt is unchanged) and converges.
+
+ALTER TABLE CharacterEntity ADD COLUMN syncSeq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE PersonaEntity ADD COLUMN syncSeq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ChatSession ADD COLUMN syncSeq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE MessageEntity ADD COLUMN syncSeq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ApiConnection ADD COLUMN syncSeq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE PromptBlockEntity ADD COLUMN syncSeq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE AppSettings ADD COLUMN lastSyncSeq INTEGER NOT NULL DEFAULT 0;
+UPDATE SyncPeer SET receivedCursor = 0, peerReceivedCursor = 0;

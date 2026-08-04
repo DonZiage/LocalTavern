@@ -223,6 +223,7 @@ private fun ChatMessageItem(
             onBranch = { actions.onBranchMessage(message) },
             avatarData = currentAvatar,
             messageImages = message.images,
+            pendingImageCount = (message.imageRefs.size - message.images.size).coerceAtLeast(0),
             isSelectMode = isSelectMode,
             isSelected = selectedMessageIds.contains(message.id),
             onSelectToggle = { onSelectMessageToggle(message.id) },

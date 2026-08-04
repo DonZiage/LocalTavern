@@ -49,6 +49,7 @@ class CharacterRepository(
     suspend fun createAssistant(): String = withContext(ioDispatcher) {
         val newId = generateUuid()
         val now = nextTimestamp()
+        val seq = nextSyncSeq()
         queries.insertCharacter(
             id = newId,
             name = "Assistant",
@@ -69,7 +70,8 @@ class CharacterRepository(
             characterVersion = null,
             tags = null,
             extensions = null,
-            characterBook = null
+            characterBook = null,
+            syncSeq = seq
         )
         newId
     }
@@ -84,6 +86,7 @@ class CharacterRepository(
     ): String = withContext(ioDispatcher) {
         val newId = generateUuid()
         val now = nextTimestamp()
+        val seq = nextSyncSeq()
         queries.insertCharacter(
             id = newId,
             name = card.name,
@@ -104,7 +107,8 @@ class CharacterRepository(
             characterVersion = card.character_version,
             tags = encodeTags(card.tags),
             extensions = encodeJsonObject(card.extensions),
-            characterBook = encodeJsonObject(card.character_book)
+            characterBook = encodeJsonObject(card.character_book),
+            syncSeq = seq
         )
         newId
     }
@@ -119,6 +123,7 @@ class CharacterRepository(
         database.transaction {
             characters.forEach { imported ->
                 val card = imported.card
+                val seq = nextSyncSeq()
                 queries.insertCharacter(
                     id = generateUuid(),
                     name = card.name,
@@ -139,7 +144,8 @@ class CharacterRepository(
                     characterVersion = card.character_version,
                     tags = encodeTags(card.tags),
                     extensions = encodeJsonObject(card.extensions),
-                    characterBook = encodeJsonObject(card.character_book)
+                    characterBook = encodeJsonObject(card.character_book),
+                    syncSeq = seq
                 )
                 count++
             }
@@ -150,6 +156,7 @@ class CharacterRepository(
     suspend fun createCharacter(name: String): String = withContext(ioDispatcher) {
         val newId = generateUuid()
         val now = nextTimestamp()
+        val seq = nextSyncSeq()
         queries.insertCharacter(
             id = newId,
             name = name,
@@ -170,7 +177,8 @@ class CharacterRepository(
             characterVersion = null,
             tags = null,
             extensions = null,
-            characterBook = null
+            characterBook = null,
+            syncSeq = seq
         )
         newId
     }
@@ -206,6 +214,7 @@ class CharacterRepository(
             extensions = existing?.extensions,
             characterBook = existing?.characterBook,
             updatedAt = nextTimestamp(),
+            syncSeq = nextSyncSeq(),
             id = id
         )
     }
@@ -214,6 +223,7 @@ class CharacterRepository(
         if (ids.isEmpty()) return@withContext
         queries.deleteCharactersByIds(
             updatedAt = nextTimestamp(),
+            syncSeq = nextSyncSeq(),
             id = ids.toList()
         )
     }
@@ -239,6 +249,7 @@ class CharacterRepository(
             extensions = existing.extensions,
             characterBook = encodeJsonObject(characterBook),
             updatedAt = nextTimestamp(),
+            syncSeq = nextSyncSeq(),
             id = id
         )
     }
@@ -255,7 +266,8 @@ class CharacterRepository(
             description = description,
             avatarData = avatarData,
             updatedAt = nextTimestamp(),
-            isDeleted = 0L
+            isDeleted = 0L,
+            syncSeq = nextSyncSeq()
         )
         newId
     }
@@ -266,6 +278,7 @@ class CharacterRepository(
             description = description,
             avatarData = avatarData,
             updatedAt = nextTimestamp(),
+            syncSeq = nextSyncSeq(),
             id = id
         )
     }
@@ -273,6 +286,7 @@ class CharacterRepository(
     suspend fun deletePersona(id: String) = withContext(ioDispatcher) {
         queries.deletePersona(
             updatedAt = nextTimestamp(),
+            syncSeq = nextSyncSeq(),
             id = id
         )
     }

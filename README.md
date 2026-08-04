@@ -7,7 +7,7 @@ LocalTavern is a standalone, privacy-focused LLM interface that runs as a **nati
 The project exists to solve the "service complexity" problem: most LLM interfaces require Python/Node.js environments or cloud accounts. LocalTavern is a simple, native binary — zero dependency, zero telemetry, and your configuration synced across **your own** devices over **your own** network.
 
 - **License:** GPL-3.0
-- **Current version:** 0.5.5
+- **Current version:** 0.6.0
 - **Backend:** Kotlin 2.3.21, Compose Multiplatform 1.10.3
 
 ---
@@ -99,6 +99,8 @@ The project exists to solve the "service complexity" problem: most LLM interface
 - Devices pair over the local network with a **6-digit PIN** (shown by the hosting device). Each device runs an embedded Ktor server.
 - Exchanges are encrypted end-to-end with **forward-secret per-exchange channel keys**: static X25519 for authentication + a fresh ephemeral X25519 per exchange, HKDF-SHA256 → AES-256-GCM.
 - Merged **last-writer-wins per row** (tombstones included). LWW timestamps use **hybrid logical clocks** — each device stamps rows with `max(wall clock, last-observed + 1)` — so edits are never lost to wall-clock drift.
+- **Delta cursors run on per-row monotone sync sequences** (device-local counters, re-stamped on every applied incoming row), so a row arriving late from a lagging peer — however low its timestamp — is always forwardable and never silently skipped. Upgrading from an older release resets peer cursors and re-syncs everything once (idempotent LWW).
+- **Message images travel out of band:** rows carry only content-addressed SHA-256 refs; the referenced blobs are pulled from the peer in 512 KB chunks over an authenticated `/blob/fetch` endpoint (progress shown in the sync UI). Sync exchanges stay small even with image-heavy histories.
 - PIN pairing is authenticated with an HMAC proof (the PIN never travels over the wire) and rate-limited to 5 attempts; both devices display a mutual key fingerprint for out-of-band MITM verification.
 - The sync identity key can be rotated, which invalidates all pairings.
 - **LAN discovery** (UDP broadcast) lists nearby devices and auto-updates peer addresses after DHCP changes — not available on iOS, where you pair by manual address.
@@ -111,7 +113,7 @@ The project exists to solve the "service complexity" problem: most LLM interface
 | Layer | Choice |
 |---|---|
 | Framework | Compose Multiplatform (Kotlin 2.3.x, Compose 1.10.x, Material3) |
-| Database | SQLDelight (type-safe, cross-platform SQL, schema v5) |
+| Database | SQLDelight (type-safe, cross-platform SQL, schema v10) |
 | Networking | Ktor 3.x (client for API calls; embedded CIO server + UDP discovery for sync) |
 | Image loading | Coil3 |
 | Serialization | kotlinx-serialization (JSON), kotlinx-datetime, kotlinx-coroutines |
@@ -148,7 +150,7 @@ composeApp/
 
 | Platform | Location |
 |---|---|
-| Desktop | `~/.localtavern/` (SQLite database, passphrase-protection blob, sync identity) |
+| Desktop | `~/.localtavern/` (SQLite database, image blob store, passphrase-protection blob, sync identity) |
 | Android | App-private directory |
 | iOS | App Documents folder |
 | Character exports | `Downloads/LocalTavern/ExportedCharacters` (Android) or app Documents folder (iOS) |
@@ -157,7 +159,8 @@ composeApp/
 
 ## Known Limitations
 
-- **Images live in the SQLite database as BLOBs.** Message images and avatars are stored inline in `MessageEntity`/`CharacterEntity` rows and travel inside the encrypted sync envelope. They are bounded at ingest (sanitized to ≤1024px and ≤1.5MB each with a quality ladder), but a long image-heavy history grows the database file and produces large (tens of MB) sync exchanges. A file-based store would require a schema migration, sync file transfer, and platform storage — not implemented.
+- **Message images live in a platform blob store** (content-addressed files, never in SQLite). They travel out of band during sync: rows carry SHA-256 refs and the bytes are pulled chunked from the peer. A blob the peer cannot serve shows a "pending sync" placeholder (re-attempted after an app restart); a blob fetch that fails mid-transfer is retried on the next sync.
+- **The legacy `imageData` column remains in schema v10** (unused, emptied by the startup extraction pass). It will be dropped by a later migration once the blob offload has been live for at least one release — a device jumping straight past the extraction would lose its inline images, so the drop is deliberately deferred.
 - **The tokenizer is a heuristic, not a true BPE tokenizer:** it estimates ~4 characters per token for Latin text and 1 token per CJK character. Accurate enough for context budgeting, cost estimates, and editor token counters, but it will not match a model's exact tokenizer.
 - **The hand-rolled markdown renderer is deliberately conservative:** no raw HTML, links render as non-clickable labels, and inline spans are strict-format only — malformed LLM output degrades to plain text instead of misrendering.
 

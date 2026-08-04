@@ -1,5 +1,24 @@
 package chat.donzi.localtavern.utils
 
+import chat.donzi.localtavern.domain.ImageRef
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
+
+private val imageRefsJson = Json { ignoreUnknownKeys = true; isLenient = true }
+
+// imageRefs column format: JSON array of {sha256, size} references into the
+// content-addressed blob store. Parsing is defensive: corrupt or legacy
+// content degrades to an empty reference list, never a crash.
+fun serializeImageRefs(refs: List<ImageRef>): String? =
+    if (refs.isEmpty()) null else imageRefsJson.encodeToString(ListSerializer(ImageRef.serializer()), refs)
+
+fun deserializeImageRefs(json: String?): List<ImageRef> {
+    if (json.isNullOrBlank()) return emptyList()
+    return runCatching {
+        imageRefsJson.decodeFromString(ListSerializer(ImageRef.serializer()), json)
+    }.getOrNull() ?: emptyList()
+}
+
 internal fun Int.writeTo(bytes: ByteArray, offset: Int) {
     bytes[offset] = (this shr 24).toByte()
     bytes[offset + 1] = (this shr 16).toByte()

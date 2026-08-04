@@ -18,7 +18,8 @@ CREATE TABLE CharacterEntity (
     characterVersion TEXT,
     tags TEXT,
     extensions TEXT,
-    characterBook TEXT
+    characterBook TEXT,
+    syncSeq INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_character_assistant ON CharacterEntity(isAssistant);
@@ -29,7 +30,8 @@ CREATE TABLE PersonaEntity (
     description TEXT,
     avatarData BLOB,
     updatedAt INTEGER NOT NULL DEFAULT 0,
-    isDeleted INTEGER NOT NULL DEFAULT 0
+    isDeleted INTEGER NOT NULL DEFAULT 0,
+    syncSeq INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE ChatSession (
@@ -41,7 +43,8 @@ CREATE TABLE ChatSession (
     currentMessageId TEXT,
     parentSessionId TEXT,
     updatedAt INTEGER NOT NULL DEFAULT 0,
-    isDeleted INTEGER NOT NULL DEFAULT 0
+    isDeleted INTEGER NOT NULL DEFAULT 0,
+    syncSeq INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_character_time ON ChatSession(characterId, lastTimestamp DESC);
@@ -57,8 +60,10 @@ CREATE TABLE MessageEntity (
     updatedAt INTEGER NOT NULL DEFAULT 0,
     isDeleted INTEGER NOT NULL DEFAULT 0,
     imageData BLOB,
+    imageRefs TEXT,
     reasoningText TEXT,
-    costEstimate REAL
+    costEstimate REAL,
+    syncSeq INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_message_active_timeline ON MessageEntity(sessionId, isActivePath, timestamp ASC);
@@ -91,7 +96,8 @@ CREATE TABLE ApiConnection (
     timeoutLimit INTEGER NOT NULL DEFAULT 60,
     reasoningOverride INTEGER NOT NULL DEFAULT 0,
     updatedAt INTEGER NOT NULL DEFAULT 0,
-    isDeleted INTEGER NOT NULL DEFAULT 0
+    isDeleted INTEGER NOT NULL DEFAULT 0,
+    syncSeq INTEGER NOT NULL DEFAULT 0
 );
 
 -- User overrides for the bundled pricing catalog. A row whose modelPattern
@@ -136,7 +142,16 @@ CREATE TABLE AppSettings (
     -- Auto-sync with paired devices when the app starts.
     autoSyncOnLaunch INTEGER NOT NULL DEFAULT 0,
     -- Ask for confirmation before deleting characters/personas.
-    confirmBeforeDelete INTEGER NOT NULL DEFAULT 1
+    confirmBeforeDelete INTEGER NOT NULL DEFAULT 1,
+    -- High-water mark of the per-row sync sequence counter (the syncSeq
+    -- column on every synced table). Unlike the HLC timestamp, syncSeq is a
+    -- strictly monotone DEVICE-LOCAL counter: every local write and every
+    -- incoming row that is applied is stamped with a fresh value, so a row
+    -- can never carry a sequence below a cursor that was already advanced
+    -- past it (a row "arriving late" from a lagging peer always gets a
+    -- sequence newer than every previously delivered row). Cursors are exact
+    -- with no boundary/equality cases.
+    lastSyncSeq INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE PromptBlockEntity (
@@ -147,7 +162,8 @@ CREATE TABLE PromptBlockEntity (
     isCustom INTEGER NOT NULL DEFAULT 0,
     displayOrder INTEGER NOT NULL DEFAULT 0,
     updatedAt INTEGER NOT NULL DEFAULT 0,
-    isDeleted INTEGER NOT NULL DEFAULT 0
+    isDeleted INTEGER NOT NULL DEFAULT 0,
+    syncSeq INTEGER NOT NULL DEFAULT 0
 );
 
 -- ==========================================
@@ -190,9 +206,6 @@ SELECT * FROM ApiConnection WHERE isActive = 1 AND isDeleted = 0 LIMIT 1;
 selectApiConnectionById:
 SELECT * FROM ApiConnection WHERE id = ? AND isDeleted = 0 LIMIT 1;
 
-updateApiConnectionApiKey:
-UPDATE ApiConnection SET apiKey = ?, updatedAt = ? WHERE id = ?;
-
 getAppSettings:
 SELECT * FROM AppSettings WHERE id = 1;
 
@@ -200,8 +213,8 @@ selectAllPromptBlocks:
 SELECT * FROM PromptBlockEntity WHERE isDeleted = 0 ORDER BY displayOrder ASC;
 
 insertCharacter:
-INSERT INTO CharacterEntity(id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant, updatedAt, isDeleted, systemPrompt, postHistoryInstructions, creator, characterVersion, tags, extensions, characterBook)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO CharacterEntity(id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant, updatedAt, isDeleted, systemPrompt, postHistoryInstructions, creator, characterVersion, tags, extensions, characterBook, syncSeq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 updateCharacter:
 UPDATE CharacterEntity
@@ -220,49 +233,51 @@ SET name = ?,
     tags = ?,
     extensions = ?,
     characterBook = ?,
-    updatedAt = ?
+    updatedAt = ?,
+    syncSeq = ?
 WHERE id = ?;
 
 deleteCharactersByIds:
-UPDATE CharacterEntity SET isDeleted = 1, updatedAt = ? WHERE id IN ?;
+UPDATE CharacterEntity SET isDeleted = 1, updatedAt = ?, syncSeq = ? WHERE id IN ?;
 
 insertPersona:
-INSERT INTO PersonaEntity(id, name, description, avatarData, updatedAt, isDeleted) VALUES (?, ?, ?, ?, ?, ?);
+INSERT INTO PersonaEntity(id, name, description, avatarData, updatedAt, isDeleted, syncSeq) VALUES (?, ?, ?, ?, ?, ?, ?);
 
 updatePersona:
 UPDATE PersonaEntity
 SET name = ?,
     description = ?,
     avatarData = ?,
-    updatedAt = ?
+    updatedAt = ?,
+    syncSeq = ?
 WHERE id = ?;
 
 deletePersona:
-UPDATE PersonaEntity SET isDeleted = 1, updatedAt = ? WHERE id = ?;
+UPDATE PersonaEntity SET isDeleted = 1, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 insertChatSession:
-INSERT INTO ChatSession(id, characterId, personaId, title, lastTimestamp, currentMessageId, parentSessionId, updatedAt, isDeleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO ChatSession(id, characterId, personaId, title, lastTimestamp, currentMessageId, parentSessionId, updatedAt, isDeleted, syncSeq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 updateSessionCurrentMessage:
-UPDATE ChatSession SET currentMessageId = ?, lastTimestamp = ?, updatedAt = ? WHERE id = ?;
+UPDATE ChatSession SET currentMessageId = ?, lastTimestamp = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 updateSessionTitle:
-UPDATE ChatSession SET title = ?, updatedAt = ? WHERE id = ?;
+UPDATE ChatSession SET title = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 deleteSession:
-UPDATE ChatSession SET isDeleted = 1, updatedAt = ? WHERE id = ?;
+UPDATE ChatSession SET isDeleted = 1, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 insertMessageWithParent:
-INSERT INTO MessageEntity(id, sessionId, role, content, timestamp, parentId, isActivePath, updatedAt, isDeleted, imageData, reasoningText, costEstimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO MessageEntity(id, sessionId, role, content, timestamp, parentId, isActivePath, updatedAt, isDeleted, imageRefs, reasoningText, costEstimate, syncSeq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 deactivateSiblings:
-UPDATE MessageEntity SET isActivePath = 0, updatedAt = ? WHERE sessionId = ? AND parentId IS ? AND id != ?;
+UPDATE MessageEntity SET isActivePath = 0, updatedAt = ?, syncSeq = ? WHERE sessionId = ? AND parentId IS ? AND id != ?;
 
 deactivateMessage:
-UPDATE MessageEntity SET isActivePath = 0, updatedAt = ? WHERE sessionId = ? AND id = ?;
+UPDATE MessageEntity SET isActivePath = 0, updatedAt = ?, syncSeq = ? WHERE sessionId = ? AND id = ?;
 
 activateMessage:
-UPDATE MessageEntity SET isActivePath = 1, updatedAt = ? WHERE id = ?;
+UPDATE MessageEntity SET isActivePath = 1, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 selectAllMessagesForSession:
 SELECT * FROM MessageEntity WHERE sessionId = ? AND isDeleted = 0;
@@ -271,32 +286,32 @@ selectAnyMessageForSession:
 SELECT COUNT(*) FROM MessageEntity WHERE sessionId = ?;
 
 updateMessageContent:
-UPDATE MessageEntity SET content = ?, updatedAt = ? WHERE id = ?;
+UPDATE MessageEntity SET content = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 updateMessageReasoning:
-UPDATE MessageEntity SET reasoningText = ?, updatedAt = ? WHERE id = ?;
+UPDATE MessageEntity SET reasoningText = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 updateMessageCostEstimate:
-UPDATE MessageEntity SET costEstimate = ?, updatedAt = ? WHERE id = ?;
+UPDATE MessageEntity SET costEstimate = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 updateMessageContentAndReasoning:
-UPDATE MessageEntity SET content = ?, reasoningText = ?, updatedAt = ? WHERE id = ?;
+UPDATE MessageEntity SET content = ?, reasoningText = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
-updateMessageImage:
-UPDATE MessageEntity SET imageData = ?, updatedAt = ? WHERE id = ?;
+updateMessageImageRefs:
+UPDATE MessageEntity SET imageRefs = ?, imageData = NULL, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 deleteMessage:
-UPDATE MessageEntity SET isDeleted = 1, updatedAt = ? WHERE id = ?;
+UPDATE MessageEntity SET isDeleted = 1, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 deleteMessagesForSession:
-UPDATE MessageEntity SET isDeleted = 1, updatedAt = ? WHERE sessionId = ?;
+UPDATE MessageEntity SET isDeleted = 1, updatedAt = ?, syncSeq = ? WHERE sessionId = ?;
 
 insertApiConnection:
 INSERT INTO ApiConnection(
     id, provider, name, baseUrl, apiKey, model, inferenceProvider, quantization, isActive, isChatCompletion, lastUsed,
-    temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit, displayOrder, timeoutLimit, reasoningOverride, updatedAt, isDeleted
+    temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit, displayOrder, timeoutLimit, reasoningOverride, updatedAt, isDeleted, syncSeq
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 updateApiConnection:
 UPDATE ApiConnection
@@ -319,23 +334,27 @@ SET provider = ?,
     displayOrder = ?,
     timeoutLimit = ?,
     reasoningOverride = ?,
-    updatedAt = ?
+    updatedAt = ?,
+    syncSeq = ?
 WHERE id = ?;
 
 updateApiConnectionLastUsed:
-UPDATE ApiConnection SET lastUsed = ?, updatedAt = ? WHERE id = ?;
+UPDATE ApiConnection SET lastUsed = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
+
+updateApiConnectionApiKey:
+UPDATE ApiConnection SET apiKey = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 deleteApiConnection:
-UPDATE ApiConnection SET isDeleted = 1, updatedAt = ? WHERE id = ?;
+UPDATE ApiConnection SET isDeleted = 1, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 setActiveApiConnection:
-UPDATE ApiConnection SET isActive = 0, updatedAt = ? WHERE isActive = 1;
+UPDATE ApiConnection SET isActive = 0, updatedAt = ?, syncSeq = ? WHERE isActive = 1;
 
 updateActiveApiConnection:
-UPDATE ApiConnection SET isActive = 1, lastUsed = ?, updatedAt = ? WHERE id = ?;
+UPDATE ApiConnection SET isActive = 1, lastUsed = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 updateApiConnectionDisplayOrder:
-UPDATE ApiConnection SET displayOrder = ?, updatedAt = ? WHERE id = ?;
+UPDATE ApiConnection SET displayOrder = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 updateDarkMode:
 UPDATE AppSettings SET isDarkMode = ? WHERE id = 1;
@@ -365,29 +384,51 @@ SELECT lastHlc FROM AppSettings WHERE id = 1;
 updateLastHlc:
 UPDATE AppSettings SET lastHlc = ? WHERE id = 1;
 
+-- ==========================================
+-- Sync sequence counter (syncSeq stamps)
+-- ==========================================
+
+selectLastSyncSeq:
+SELECT lastSyncSeq FROM AppSettings WHERE id = 1;
+
+updateLastSyncSeq:
+UPDATE AppSettings SET lastSyncSeq = ? WHERE id = 1;
+
 insertPromptBlock:
-INSERT INTO PromptBlockEntity(id, name, template, isEnabled, isCustom, displayOrder, updatedAt, isDeleted)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO PromptBlockEntity(id, name, template, isEnabled, isCustom, displayOrder, updatedAt, isDeleted, syncSeq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 updatePromptBlock:
 UPDATE PromptBlockEntity
 SET name = ?,
     template = ?,
     isEnabled = ?,
-    updatedAt = ?
+    updatedAt = ?,
+    syncSeq = ?
 WHERE id = ?;
 
 deletePromptBlock:
-UPDATE PromptBlockEntity SET isDeleted = 1, updatedAt = ? WHERE id = ? AND isCustom = 1;
+UPDATE PromptBlockEntity SET isDeleted = 1, updatedAt = ?, syncSeq = ? WHERE id = ? AND isCustom = 1;
 
 updatePromptBlockDisplayOrder:
-UPDATE PromptBlockEntity SET displayOrder = ?, updatedAt = ? WHERE id = ?;
+UPDATE PromptBlockEntity SET displayOrder = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 selectCharacterById:
 SELECT * FROM CharacterEntity WHERE id = ? AND isDeleted = 0 LIMIT 1;
 
 selectMessageById:
 SELECT * FROM MessageEntity WHERE id = ? AND isDeleted = 0;
+
+-- Blob-store migration: rows still carrying legacy inline images. The
+-- extraction pass reads these, writes the blobs content-addressed and
+-- replaces imageData with imageRefs; the query is naturally idempotent.
+selectMessagesWithImages:
+SELECT * FROM MessageEntity WHERE imageData IS NOT NULL;
+
+-- GC key collection: every blob key referenced by a LIVE (non-tombstoned)
+-- message. Files whose key is absent here are unreferenced and deletable.
+selectAllLiveImageRefs:
+SELECT imageRefs FROM MessageEntity WHERE imageRefs IS NOT NULL AND isDeleted = 0;
 
 -- ==========================================
 -- Model Pricing
@@ -465,25 +506,33 @@ UPDATE SyncPeer SET isDeleted = 1, updatedAt = ? WHERE isDeleted = 0;
 
 -- ==========================================
 -- Sync Deltas (include tombstones: no isDeleted filter)
+--
+-- The delta cut is on the device-local sync sequence (syncSeq >= ?), which
+-- is strictly monotone per device and re-stamped on every applied incoming
+-- row, so the INCLUSIVE cut is exact: a row can never share a sequence with
+-- the cursor and can never be stamped below a cursor that already passed it
+-- (late arrivals from lagging peers always get a fresh sequence). Cursors
+-- advance to maxSeq + 1, so nothing is ever skipped and nothing is ever
+-- re-sent.
 -- ==========================================
 
 selectCharacterDeltas:
-SELECT * FROM CharacterEntity WHERE updatedAt > ?;
+SELECT * FROM CharacterEntity WHERE syncSeq >= ?;
 
 selectPersonaDeltas:
-SELECT * FROM PersonaEntity WHERE updatedAt > ?;
+SELECT * FROM PersonaEntity WHERE syncSeq >= ?;
 
 selectSessionDeltas:
-SELECT * FROM ChatSession WHERE updatedAt > ?;
+SELECT * FROM ChatSession WHERE syncSeq >= ?;
 
 selectMessageDeltas:
-SELECT * FROM MessageEntity WHERE updatedAt > ?;
+SELECT * FROM MessageEntity WHERE syncSeq >= ?;
 
 selectApiConnectionDeltas:
-SELECT * FROM ApiConnection WHERE updatedAt > ?;
+SELECT * FROM ApiConnection WHERE syncSeq >= ?;
 
 selectPromptBlockDeltas:
-SELECT * FROM PromptBlockEntity WHERE updatedAt > ?;
+SELECT * FROM PromptBlockEntity WHERE syncSeq >= ?;
 
 -- ==========================================
 -- Sync upserts (full-row writes, LWW resolved in code)
@@ -513,42 +562,42 @@ SET name = ?, description = ?, personality = ?, scenario = ?, firstMes = ?,
     mesExample = ?, creatorNotes = ?, altGreetings = ?, avatarData = ?,
     isAssistant = ?, updatedAt = ?, isDeleted = ?, systemPrompt = ?,
     postHistoryInstructions = ?, creator = ?, characterVersion = ?, tags = ?,
-    extensions = ?, characterBook = ?
+    extensions = ?, characterBook = ?, syncSeq = ?
 WHERE id = ?;
 
 insertCharacterFull:
-INSERT INTO CharacterEntity(id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant, updatedAt, isDeleted, systemPrompt, postHistoryInstructions, creator, characterVersion, tags, extensions, characterBook)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO CharacterEntity(id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant, updatedAt, isDeleted, systemPrompt, postHistoryInstructions, creator, characterVersion, tags, extensions, characterBook, syncSeq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 upsertPersonaFull:
 UPDATE PersonaEntity
-SET name = ?, description = ?, avatarData = ?, updatedAt = ?, isDeleted = ?
+SET name = ?, description = ?, avatarData = ?, updatedAt = ?, isDeleted = ?, syncSeq = ?
 WHERE id = ?;
 
 insertPersonaFull:
-INSERT INTO PersonaEntity(id, name, description, avatarData, updatedAt, isDeleted)
-VALUES (?, ?, ?, ?, ?, ?);
+INSERT INTO PersonaEntity(id, name, description, avatarData, updatedAt, isDeleted, syncSeq)
+VALUES (?, ?, ?, ?, ?, ?, ?);
 
 upsertSessionFull:
 UPDATE ChatSession
 SET characterId = ?, personaId = ?, title = ?, lastTimestamp = ?,
-    currentMessageId = ?, parentSessionId = ?, updatedAt = ?, isDeleted = ?
+    currentMessageId = ?, parentSessionId = ?, updatedAt = ?, isDeleted = ?, syncSeq = ?
 WHERE id = ?;
 
 insertSessionFull:
-INSERT INTO ChatSession(id, characterId, personaId, title, lastTimestamp, currentMessageId, parentSessionId, updatedAt, isDeleted)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO ChatSession(id, characterId, personaId, title, lastTimestamp, currentMessageId, parentSessionId, updatedAt, isDeleted, syncSeq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 upsertMessageFull:
 UPDATE MessageEntity
 SET sessionId = ?, role = ?, content = ?, timestamp = ?, parentId = ?,
-    isActivePath = ?, updatedAt = ?, isDeleted = ?, imageData = ?,
-    reasoningText = ?, costEstimate = ?
+    isActivePath = ?, updatedAt = ?, isDeleted = ?, imageRefs = ?,
+    reasoningText = ?, costEstimate = ?, syncSeq = ?
 WHERE id = ?;
 
 insertMessageFull:
-INSERT INTO MessageEntity(id, sessionId, role, content, timestamp, parentId, isActivePath, updatedAt, isDeleted, imageData, reasoningText, costEstimate)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO MessageEntity(id, sessionId, role, content, timestamp, parentId, isActivePath, updatedAt, isDeleted, imageRefs, reasoningText, costEstimate, syncSeq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 upsertApiConnectionFull:
 UPDATE ApiConnection
@@ -557,23 +606,23 @@ SET provider = ?, name = ?, baseUrl = ?, apiKey = ?, model = ?,
     isActive = ?, isChatCompletion = ?, lastUsed = ?, temperature = ?,
     topP = ?, topK = ?, presencePenalty = ?, frequencyPenalty = ?,
     contextLimit = ?, responseLimit = ?, displayOrder = ?, timeoutLimit = ?,
-    reasoningOverride = ?, updatedAt = ?, isDeleted = ?
+    reasoningOverride = ?, updatedAt = ?, isDeleted = ?, syncSeq = ?
 WHERE id = ?;
 
 insertApiConnectionFull:
 INSERT INTO ApiConnection(
     id, provider, name, baseUrl, apiKey, model, inferenceProvider, quantization, isActive, isChatCompletion, lastUsed,
     temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit,
-    displayOrder, timeoutLimit, reasoningOverride, updatedAt, isDeleted
+    displayOrder, timeoutLimit, reasoningOverride, updatedAt, isDeleted, syncSeq
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 upsertPromptBlockFull:
 UPDATE PromptBlockEntity
 SET name = ?, template = ?, isEnabled = ?, isCustom = ?, displayOrder = ?,
-    updatedAt = ?, isDeleted = ?
+    updatedAt = ?, isDeleted = ?, syncSeq = ?
 WHERE id = ?;
 
 insertPromptBlockFull:
-INSERT INTO PromptBlockEntity(id, name, template, isEnabled, isCustom, displayOrder, updatedAt, isDeleted)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO PromptBlockEntity(id, name, template, isEnabled, isCustom, displayOrder, updatedAt, isDeleted, syncSeq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);

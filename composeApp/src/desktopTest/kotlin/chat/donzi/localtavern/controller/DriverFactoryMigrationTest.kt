@@ -518,7 +518,7 @@ class DriverFactoryMigrationTest {
                         isActive = 1L, isChatCompletion = 1L, temperature = 1.0, topP = 1.0, topK = 0L,
                         presencePenalty = 0.0, frequencyPenalty = 0.0, contextLimit = 4096L,
                         responseLimit = 0L, displayOrder = 0L, timeoutLimit = 60L,
-                        reasoningOverride = 0L, updatedAt = 2L, id = "ac1"
+                        reasoningOverride = 0L, updatedAt = 2L, syncSeq = 0L, id = "ac1"
                     )
                     val updated = database.localTavernDBQueries.selectApiConnectionById("ac1").executeAsOneOrNull()
                     assertEquals("DeepSeek", updated?.inferenceProvider)
@@ -568,4 +568,209 @@ class DriverFactoryMigrationTest {
         assertTrue(data.containsKey("extensions"))
         assertTrue(data.containsKey("character_book"))
     }
+
+    @Test
+    fun `existing v8 database migrates to v9 and gains sync sequences`() = runTest {
+        val tempDir = tempDir()
+        try {
+            val dbFile = File(tempDir, ".localtavern/local_tavern.db")
+            dbFile.parentFile.mkdirs()
+
+            // A database written by the previous release: v8 schema (no
+            // syncSeq columns, HLC-era AppSettings, pre-upgrade cursors).
+            val v8Driver = JdbcSqliteDriver("jdbc:sqlite:${dbFile.absolutePath}")
+            try {
+                Regex("(?<=;)\\s*").split(v1CharacterDdl.trim())
+                    .filter { it.isNotBlank() }
+                    .forEach { statement -> v8Driver.execute(null, statement, 0) }
+                // migrations 1..7 (v1 -> v8)
+                v8Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN systemPrompt TEXT;", 0)
+                v8Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN postHistoryInstructions TEXT;", 0)
+                v8Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN creator TEXT;", 0)
+                v8Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN characterVersion TEXT;", 0)
+                v8Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN tags TEXT;", 0)
+                v8Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN extensions TEXT;", 0)
+                v8Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN characterBook TEXT;", 0)
+                v8Driver.execute(null, "ALTER TABLE MessageEntity ADD COLUMN reasoningText TEXT;", 0)
+                v8Driver.execute(null, "ALTER TABLE MessageEntity ADD COLUMN costEstimate REAL;", 0)
+                v8Driver.execute(null, "ALTER TABLE ApiConnection ADD COLUMN reasoningOverride INTEGER NOT NULL DEFAULT 0;", 0)
+                v8Driver.execute(
+                    null,
+                    "CREATE TABLE ModelPricing (provider TEXT NOT NULL, modelPattern TEXT NOT NULL, inputPerMillion REAL NOT NULL, outputPerMillion REAL NOT NULL, currency TEXT NOT NULL DEFAULT 'USD', PRIMARY KEY (provider, modelPattern));",
+                    0
+                )
+                v8Driver.execute(
+                    null,
+                    "CREATE TABLE SyncPeer (deviceId TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, publicKey BLOB, lastKnownAddress TEXT, receivedCursor INTEGER NOT NULL DEFAULT 0, peerReceivedCursor INTEGER NOT NULL DEFAULT 0, lastSyncAt INTEGER NOT NULL DEFAULT 0, updatedAt INTEGER NOT NULL DEFAULT 0, isDeleted INTEGER NOT NULL DEFAULT 0);",
+                    0
+                )
+                v8Driver.execute(null, "ALTER TABLE AppSettings ADD COLUMN lastHlc INTEGER NOT NULL DEFAULT 0;", 0)
+                v8Driver.execute(null, "ALTER TABLE ApiConnection ADD COLUMN inferenceProvider TEXT;", 0)
+                v8Driver.execute(null, "ALTER TABLE ApiConnection ADD COLUMN quantization TEXT;", 0)
+                v8Driver.execute(null, "ALTER TABLE AppSettings ADD COLUMN sendWithCtrlEnter INTEGER NOT NULL DEFAULT 0;", 0)
+                v8Driver.execute(null, "ALTER TABLE AppSettings ADD COLUMN autoSyncOnLaunch INTEGER NOT NULL DEFAULT 0;", 0)
+                v8Driver.execute(null, "ALTER TABLE AppSettings ADD COLUMN confirmBeforeDelete INTEGER NOT NULL DEFAULT 1;", 0)
+                // A stored persona and a paired peer with pre-upgrade cursors.
+                v8Driver.execute(
+                    null,
+                    "INSERT INTO PersonaEntity(id, name, description, avatarData, updatedAt, isDeleted) VALUES ('p1', 'Old Persona', 'desc', NULL, 5000, 0);",
+                    0
+                )
+                v8Driver.execute(
+                    null,
+                    "INSERT INTO SyncPeer(deviceId, name, publicKey, lastKnownAddress, receivedCursor, peerReceivedCursor, lastSyncAt, updatedAt, isDeleted) " +
+                        "VALUES ('peer-1', 'Laptop', NULL, '10.0.0.2:47324', 5000, 4000, 5000, 5000, 0);",
+                    0
+                )
+                v8Driver.execute(null, "PRAGMA user_version = 8;", 0)
+            } finally {
+                v8Driver.close()
+            }
+
+            val oldUserHome = System.getProperty("user.home")
+            System.setProperty("user.home", tempDir.absolutePath)
+            try {
+                val driver = DriverFactory().createDriver()
+                try {
+                    val database = LocalTavernDB(driver)
+
+                    // Every synced table gained its syncSeq column.
+                    val tables = listOf(
+                        "CharacterEntity", "PersonaEntity", "ChatSession",
+                        "MessageEntity", "ApiConnection", "PromptBlockEntity"
+                    )
+                    tables.forEach { table ->
+                        val hasSeq = driver.executeQuery(
+                            null,
+                            "SELECT count(*) FROM pragma_table_info('$table') WHERE name = 'syncSeq';",
+                            { cursor -> cursor.next(); app.cash.sqldelight.db.QueryResult.Value(cursor.getLong(0) ?: 0L) },
+                            0
+                        ).value == 1L
+                        assertTrue(hasSeq, "$table must gain the syncSeq column")
+                    }
+                    val hasLastSyncSeq = driver.executeQuery(
+                        null,
+                        "SELECT count(*) FROM pragma_table_info('AppSettings') WHERE name = 'lastSyncSeq';",
+                        { cursor -> cursor.next(); app.cash.sqldelight.db.QueryResult.Value(cursor.getLong(0) ?: 0L) },
+                        0
+                    ).value == 1L
+                    assertTrue(hasLastSyncSeq, "AppSettings must gain the lastSyncSeq counter")
+
+                    // The stored persona survived and is readable.
+                    val persona = database.localTavernDBQueries.selectPersonaByIdAny("p1").executeAsOne()!!
+                    assertEquals("Old Persona", persona.name)
+
+                    // Cursors switched units (timestamp -> sequence), so every
+                    // peer's cursors were reset: the next sync re-sends
+                    // everything once and LWW merges it.
+                    val peer = database.localTavernDBQueries.selectSyncPeerAny("peer-1").executeAsOne()!!
+                    assertEquals(0L, peer.receivedCursor, "Pre-upgrade cursors must be reset to 0")
+                    assertEquals(0L, peer.peerReceivedCursor, "Pre-upgrade cursors must be reset to 0")
+
+                    // The counter is writable through the generated queries.
+                    database.localTavernDBQueries.insertDefaultSettings()
+                    database.localTavernDBQueries.updateLastSyncSeq(7L)
+                } finally {
+                    driver.close()
+                }
+            } finally {
+                System.setProperty("user.home", oldUserHome)
+            }
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `existing v9 database migrates to v10 and gains image refs`() = runTest {
+        val tempDir = tempDir()
+        try {
+            val dbFile = File(tempDir, ".localtavern/local_tavern.db")
+            dbFile.parentFile.mkdirs()
+
+            // A database written by the previous release: v9 schema (syncSeq
+            // columns present, no imageRefs yet, legacy imageData populated).
+            val v9Driver = JdbcSqliteDriver("jdbc:sqlite:${dbFile.absolutePath}")
+            try {
+                Regex("(?<=;)\\s*").split(v1CharacterDdl.trim())
+                    .filter { it.isNotBlank() }
+                    .forEach { statement -> v9Driver.execute(null, statement, 0) }
+                // migrations 1..8 (v1 -> v9)
+                v9Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN systemPrompt TEXT;", 0)
+                v9Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN postHistoryInstructions TEXT;", 0)
+                v9Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN creator TEXT;", 0)
+                v9Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN characterVersion TEXT;", 0)
+                v9Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN tags TEXT;", 0)
+                v9Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN extensions TEXT;", 0)
+                v9Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN characterBook TEXT;", 0)
+                v9Driver.execute(null, "ALTER TABLE MessageEntity ADD COLUMN reasoningText TEXT;", 0)
+                v9Driver.execute(null, "ALTER TABLE MessageEntity ADD COLUMN costEstimate REAL;", 0)
+                v9Driver.execute(null, "ALTER TABLE ApiConnection ADD COLUMN reasoningOverride INTEGER NOT NULL DEFAULT 0;", 0)
+                v9Driver.execute(
+                    null,
+                    "CREATE TABLE ModelPricing (provider TEXT NOT NULL, modelPattern TEXT NOT NULL, inputPerMillion REAL NOT NULL, outputPerMillion REAL NOT NULL, currency TEXT NOT NULL DEFAULT 'USD', PRIMARY KEY (provider, modelPattern));",
+                    0
+                )
+                v9Driver.execute(
+                    null,
+                    "CREATE TABLE SyncPeer (deviceId TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, publicKey BLOB, lastKnownAddress TEXT, receivedCursor INTEGER NOT NULL DEFAULT 0, peerReceivedCursor INTEGER NOT NULL DEFAULT 0, lastSyncAt INTEGER NOT NULL DEFAULT 0, updatedAt INTEGER NOT NULL DEFAULT 0, isDeleted INTEGER NOT NULL DEFAULT 0);",
+                    0
+                )
+                v9Driver.execute(null, "ALTER TABLE AppSettings ADD COLUMN lastHlc INTEGER NOT NULL DEFAULT 0;", 0)
+                v9Driver.execute(null, "ALTER TABLE ApiConnection ADD COLUMN inferenceProvider TEXT;", 0)
+                v9Driver.execute(null, "ALTER TABLE ApiConnection ADD COLUMN quantization TEXT;", 0)
+                v9Driver.execute(null, "ALTER TABLE AppSettings ADD COLUMN sendWithCtrlEnter INTEGER NOT NULL DEFAULT 0;", 0)
+                v9Driver.execute(null, "ALTER TABLE AppSettings ADD COLUMN autoSyncOnLaunch INTEGER NOT NULL DEFAULT 0;", 0)
+                v9Driver.execute(null, "ALTER TABLE AppSettings ADD COLUMN confirmBeforeDelete INTEGER NOT NULL DEFAULT 1;", 0)
+                v9Driver.execute(null, "ALTER TABLE CharacterEntity ADD COLUMN syncSeq INTEGER NOT NULL DEFAULT 0;", 0)
+                v9Driver.execute(null, "ALTER TABLE PersonaEntity ADD COLUMN syncSeq INTEGER NOT NULL DEFAULT 0;", 0)
+                v9Driver.execute(null, "ALTER TABLE ChatSession ADD COLUMN syncSeq INTEGER NOT NULL DEFAULT 0;", 0)
+                v9Driver.execute(null, "ALTER TABLE MessageEntity ADD COLUMN syncSeq INTEGER NOT NULL DEFAULT 0;", 0)
+                v9Driver.execute(null, "ALTER TABLE ApiConnection ADD COLUMN syncSeq INTEGER NOT NULL DEFAULT 0;", 0)
+                v9Driver.execute(null, "ALTER TABLE PromptBlockEntity ADD COLUMN syncSeq INTEGER NOT NULL DEFAULT 0;", 0)
+                v9Driver.execute(null, "ALTER TABLE AppSettings ADD COLUMN lastSyncSeq INTEGER NOT NULL DEFAULT 0;", 0)
+                // A message still carrying legacy inline image bytes.
+                v9Driver.execute(
+                    null,
+                    "INSERT INTO MessageEntity(id, sessionId, role, content, timestamp, parentId, isActivePath, updatedAt, isDeleted, imageData, reasoningText, costEstimate, syncSeq) " +
+                        "VALUES ('m1', 's1', 'assistant', 'Hello', 1, NULL, 1, 1000, 0, X'0000000177777777', NULL, NULL, 1);",
+                    0
+                )
+                v9Driver.execute(null, "PRAGMA user_version = 9;", 0)
+            } finally {
+                v9Driver.close()
+            }
+
+            val oldUserHome = System.getProperty("user.home")
+            System.setProperty("user.home", tempDir.absolutePath)
+            try {
+                val driver = DriverFactory().createDriver()
+                try {
+                    val database = LocalTavernDB(driver)
+
+                    val hasRefs = driver.executeQuery(
+                        null,
+                        "SELECT count(*) FROM pragma_table_info('MessageEntity') WHERE name = 'imageRefs';",
+                        { cursor -> cursor.next(); app.cash.sqldelight.db.QueryResult.Value(cursor.getLong(0) ?: 0L) },
+                        0
+                    ).value == 1L
+                    assertTrue(hasRefs, "MessageEntity must gain the imageRefs column")
+
+                    // The stored message survived; the legacy column is still
+                    // readable so the app-side extraction pass can migrate it.
+                    val message = database.localTavernDBQueries.selectMessageByIdAny("m1").executeAsOne()!!
+                    assertEquals("assistant", message.role)
+                    assertTrue(message.imageData != null && message.imageData.isNotEmpty(), "Legacy imageData must survive for extraction")
+                    assertEquals(1L, message.syncSeq, "The v9 syncSeq value must survive")
+                } finally {
+                    driver.close()
+                }
+            } finally {
+                System.setProperty("user.home", oldUserHome)
+            }
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
 }

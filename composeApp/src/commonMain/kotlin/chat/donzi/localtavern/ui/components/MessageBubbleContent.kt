@@ -35,6 +35,7 @@ internal fun MessageBubbleContent(
     bringIntoViewRequester: BringIntoViewRequester,
     onSubmitEdit: () -> Unit,
     messageImages: List<ByteArray>,
+    pendingImageCount: Int = 0,
     reasoningText: String?,
     costText: String?
 ) {
@@ -90,6 +91,7 @@ internal fun MessageBubbleContent(
         } else {
             MessageImages(
                 images = messageImages,
+                pendingCount = pendingImageCount,
                 topPadding = if (content.isNotBlank() && content != "...") 8.dp else 0.dp
             )
         }

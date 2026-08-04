@@ -7,9 +7,15 @@ import chat.donzi.localtavern.data.database.LocalTavernDB
 import chat.donzi.localtavern.data.database.LogicalClock
 import chat.donzi.localtavern.data.database.MessageEntity
 import chat.donzi.localtavern.data.database.PersonaEntity
+import chat.donzi.localtavern.data.blob.BlobStore
 import chat.donzi.localtavern.data.database.PromptBlockEntity
 import chat.donzi.localtavern.data.database.SyncPeer
 import chat.donzi.localtavern.data.security.ApiKeyCipher
+import chat.donzi.localtavern.utils.Hashing
+import chat.donzi.localtavern.utils.deserializeImageList
+import chat.donzi.localtavern.utils.deserializeImageRefs
+import chat.donzi.localtavern.utils.serializeImageList
+import chat.donzi.localtavern.utils.serializeImageRefs
 import app.cash.sqldelight.coroutines.asFlow
 import app.cash.sqldelight.coroutines.mapToList
 import kotlinx.coroutines.CoroutineDispatcher
@@ -33,7 +39,11 @@ class SyncRepository(
     // write repositories use: applyChanges advances it past every timestamp
     // observed from a peer, and local writes stamp from it, which is what
     // makes LWW converge under wall-clock skew.
-    private val clock: LogicalClock = LogicalClock(database)
+    private val clock: LogicalClock = LogicalClock(database),
+    // Content-addressed blob store for message images. Incoming rows write
+    // their blobs here and outbound envelopes read them from here; a null
+    // store (tests) ships/holds no image bytes.
+    private val blobStore: BlobStore? = null
 ) {
     private val queries get() = database.localTavernDBQueries
 
@@ -122,7 +132,7 @@ class SyncRepository(
             characters = queries.selectCharacterDeltas(since).executeAsList().map { it.toSync() },
             personas = queries.selectPersonaDeltas(since).executeAsList().map { it.toSync() },
             sessions = queries.selectSessionDeltas(since).executeAsList().map { it.toSync() },
-            messages = queries.selectMessageDeltas(since).executeAsList().map { it.toSync() },
+            messages = queries.selectMessageDeltas(since).executeAsList().map { it.toSync(blobStore) },
             apiConnections = queries.selectApiConnectionDeltas(since).executeAsList().map { it.toSync(apiKeyCipher) },
             promptBlocks = queries.selectPromptBlockDeltas(since).executeAsList().map { it.toSync() }
         )
@@ -139,16 +149,50 @@ class SyncRepository(
      * timestamp — even for rows rejected as stale — so a subsequent local
      * edit always out-stamps the version it was caused by, regardless of how
      * far behind this device's wall clock is.
+     *
+     * Rows that ARE applied are re-stamped with a fresh device-local sync
+     * sequence ([LogicalClock.nextSyncSeq]): deltas cut on that sequence, so
+     * a row arriving late (however low its updatedAt stamp) always gets a
+     * sequence above every cursor this device has ever reported, and can
+     * therefore always be forwarded to other peers. Rows rejected as stale
+     * are not touched — their version loses, and the winning version will
+     * arrive from its author.
      */
     suspend fun applyChanges(changes: SyncChanges, peerDeviceId: String) = withContext(ioDispatcher) {
+        // Message image blobs are written to the store BEFORE the row touches
+        // the database (crash-safe ordering: a row never references a missing
+        // blob). Tombstoned rows are not persisted. Modern envelopes carry
+        // only content-addressed refs; legacy envelopes (older peers) ship
+        // the images inline, which are hashed and stored here.
+        val preparedMessages = changes.messages.map { row ->
+            val refs = when {
+                row.imageRefs.isNotEmpty() -> row.imageRefs.map { chat.donzi.localtavern.domain.ImageRef(it.sha256, it.size) }
+                row.imageData != null && row.isDeleted == 0L -> persistLegacyImages(row.imageData)
+                else -> emptyList()
+            }
+            PreparedMessage(row, serializeImageRefs(refs))
+        }
         database.transaction {
             changes.characters.forEach { row -> apply(row, peerDeviceId) }
             changes.personas.forEach { row -> apply(row, peerDeviceId) }
             changes.sessions.forEach { row -> apply(row, peerDeviceId) }
-            changes.messages.forEach { row -> apply(row, peerDeviceId) }
+            preparedMessages.forEach { apply(it.row, peerDeviceId, it.refsJson) }
             changes.apiConnections.forEach { row -> apply(row, peerDeviceId) }
             changes.promptBlocks.forEach { row -> apply(row, peerDeviceId) }
             clock.absorb(changes.maxUpdatedAt)
+        }
+    }
+
+    private data class PreparedMessage(val row: SyncMessage, val refsJson: String?)
+
+    // Legacy wire images (serialized byte-list BLOB) -> content-addressed
+    // blobs + references. Only writes blobs that are not already stored.
+    private suspend fun persistLegacyImages(imageData: ByteArray): List<chat.donzi.localtavern.domain.ImageRef> {
+        val store = blobStore ?: return emptyList()
+        return deserializeImageList(imageData).map { img ->
+            val hash = Hashing.sha256Hex(img)
+            if (store.read(hash) == null) store.write(hash, img)
+            chat.donzi.localtavern.domain.ImageRef(hash, img.size.toLong())
         }
     }
 
@@ -162,6 +206,11 @@ class SyncRepository(
     private fun apply(row: SyncCharacter, peerDeviceId: String) {
         val existing = queries.selectCharacterByIdAny(row.id).executeAsOneOrNull()
         if (existing != null && !incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        // Applied rows are re-stamped with a device-local sync sequence (see
+        // applyChanges): the row's own sequence (from its author) is only a
+        // cursor hint for the sender; here it must be local so it can always
+        // be forwarded.
+        val seq = clock.nextSyncSeq()
         if (existing == null) {
             queries.insertCharacterFull(
                 id = row.id, name = row.name, description = row.description,
@@ -171,7 +220,7 @@ class SyncRepository(
                 isDeleted = row.isDeleted, systemPrompt = row.systemPrompt,
                 postHistoryInstructions = row.postHistoryInstructions, creator = row.creator,
                 characterVersion = row.characterVersion, tags = row.tags, extensions = row.extensions,
-                characterBook = row.characterBook
+                characterBook = row.characterBook, syncSeq = seq
             )
         } else {
             queries.upsertCharacterFull(
@@ -182,7 +231,7 @@ class SyncRepository(
                 isDeleted = row.isDeleted, systemPrompt = row.systemPrompt,
                 postHistoryInstructions = row.postHistoryInstructions, creator = row.creator,
                 characterVersion = row.characterVersion, tags = row.tags, extensions = row.extensions,
-                characterBook = row.characterBook, id = row.id
+                characterBook = row.characterBook, syncSeq = seq, id = row.id
             )
         }
     }
@@ -190,15 +239,17 @@ class SyncRepository(
     private fun apply(row: SyncPersona, peerDeviceId: String) {
         val existing = queries.selectPersonaByIdAny(row.id).executeAsOneOrNull()
         if (existing != null && !incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        val seq = clock.nextSyncSeq()
         if (existing == null) {
             queries.insertPersonaFull(
                 id = row.id, name = row.name, description = row.description,
-                avatarData = row.avatarData, updatedAt = row.updatedAt, isDeleted = row.isDeleted
+                avatarData = row.avatarData, updatedAt = row.updatedAt, isDeleted = row.isDeleted,
+                syncSeq = seq
             )
         } else {
             queries.upsertPersonaFull(
                 name = row.name, description = row.description, avatarData = row.avatarData,
-                updatedAt = row.updatedAt, isDeleted = row.isDeleted, id = row.id
+                updatedAt = row.updatedAt, isDeleted = row.isDeleted, syncSeq = seq, id = row.id
             )
         }
     }
@@ -206,48 +257,50 @@ class SyncRepository(
     private fun apply(row: SyncSession, peerDeviceId: String) {
         val existing = queries.selectSessionByIdAny(row.id).executeAsOneOrNull()
         if (existing != null && !incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        val seq = clock.nextSyncSeq()
         if (existing == null) {
             queries.insertSessionFull(
                 id = row.id, characterId = row.characterId, personaId = row.personaId,
                 title = row.title, lastTimestamp = row.lastTimestamp,
                 currentMessageId = row.currentMessageId, parentSessionId = row.parentSessionId,
-                updatedAt = row.updatedAt, isDeleted = row.isDeleted
+                updatedAt = row.updatedAt, isDeleted = row.isDeleted, syncSeq = seq
             )
         } else {
             queries.upsertSessionFull(
                 characterId = row.characterId, personaId = row.personaId, title = row.title,
                 lastTimestamp = row.lastTimestamp, currentMessageId = row.currentMessageId,
                 parentSessionId = row.parentSessionId, updatedAt = row.updatedAt,
-                isDeleted = row.isDeleted, id = row.id
+                isDeleted = row.isDeleted, syncSeq = seq, id = row.id
             )
         }
     }
 
-    private fun apply(row: SyncMessage, peerDeviceId: String) {
+    private fun apply(row: SyncMessage, peerDeviceId: String, refsJson: String?) {
         val existing = queries.selectMessageByIdAny(row.id).executeAsOneOrNull()
         if (existing != null && !incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        val seq = clock.nextSyncSeq()
 
         if (existing == null) {
             queries.insertMessageFull(
                 id = row.id, sessionId = row.sessionId, role = row.role, content = row.content,
                 timestamp = row.timestamp, parentId = row.parentId, isActivePath = row.isActivePath,
-                updatedAt = row.updatedAt, isDeleted = row.isDeleted, imageData = row.imageData,
-                reasoningText = row.reasoningText, costEstimate = row.costEstimate
+                updatedAt = row.updatedAt, isDeleted = row.isDeleted, imageRefs = refsJson,
+                reasoningText = row.reasoningText, costEstimate = row.costEstimate, syncSeq = seq
             )
             // Match local insert semantics: a newly-active message deactivates
             // its siblings so the timeline never shows two active branches.
             if (row.isActivePath == 1L && row.isDeleted == 0L) {
-                queries.deactivateSiblings(updatedAt = row.updatedAt, sessionId = row.sessionId, parentId = row.parentId, id = row.id)
+                queries.deactivateSiblings(updatedAt = row.updatedAt, syncSeq = clock.nextSyncSeq(), sessionId = row.sessionId, parentId = row.parentId, id = row.id)
             }
         } else {
             queries.upsertMessageFull(
                 sessionId = row.sessionId, role = row.role, content = row.content,
                 timestamp = row.timestamp, parentId = row.parentId, isActivePath = row.isActivePath,
-                updatedAt = row.updatedAt, isDeleted = row.isDeleted, imageData = row.imageData,
-                reasoningText = row.reasoningText, costEstimate = row.costEstimate, id = row.id
+                updatedAt = row.updatedAt, isDeleted = row.isDeleted, imageRefs = refsJson,
+                reasoningText = row.reasoningText, costEstimate = row.costEstimate, syncSeq = seq, id = row.id
             )
             if (row.isActivePath == 1L && row.isDeleted == 0L && existing.isActivePath != 1L) {
-                queries.deactivateSiblings(updatedAt = row.updatedAt, sessionId = row.sessionId, parentId = row.parentId, id = row.id)
+                queries.deactivateSiblings(updatedAt = row.updatedAt, syncSeq = clock.nextSyncSeq(), sessionId = row.sessionId, parentId = row.parentId, id = row.id)
             }
         }
     }
@@ -258,34 +311,48 @@ class SyncRepository(
         // The active flag is a per-device preference (like activePersonaId);
         // it never crosses the wire, so a sync cannot silently flip which
         // profile THIS device uses, and its deactivation cascade cannot
-        // generate sync churn.
+        // generate sync churn. Incoming rows therefore preserve the LOCAL
+        // active state: an existing row keeps its own isActive value, and a
+        // brand-new row mirrors the local auto-activation semantic (the first
+        // connection on a device becomes active) instead of adopting anything
+        // from the wire.
         val storedKey = effectiveApiKey(row.apiKey, existing?.apiKey)
+        val seq = clock.nextSyncSeq()
         if (existing == null) {
+            // Mirrors ApiSettingsRepository.insertApiConnection: with no
+            // active connection, the incoming first one becomes active so the
+            // device is not left without a profile. The deactivation cascade
+            // (and a fresh local HLC stamp, since this is a local decision)
+            // matches the local insert path exactly.
+            val shouldActivate = queries.selectActiveApiConnection().executeAsOneOrNull() == null
+            if (shouldActivate) {
+                queries.setActiveApiConnection(updatedAt = clock.nextTimestamp(), syncSeq = clock.nextSyncSeq())
+            }
             queries.insertApiConnectionFull(
                 id = row.id, provider = row.provider, name = row.name, baseUrl = row.baseUrl,
                 apiKey = storedKey, model = row.model, inferenceProvider = row.inferenceProvider,
                 quantization = row.quantization,
-                isActive = 0L,
-                isChatCompletion = row.isChatCompletion, lastUsed = row.lastUsed,
+                isActive = if (shouldActivate) 1L else 0L,
+                isChatCompletion = row.isChatCompletion, lastUsed = if (shouldActivate) row.lastUsed ?: row.updatedAt else row.lastUsed,
                 temperature = row.temperature, topP = row.topP, topK = row.topK,
                 presencePenalty = row.presencePenalty, frequencyPenalty = row.frequencyPenalty,
                 contextLimit = row.contextLimit, responseLimit = row.responseLimit,
                 displayOrder = row.displayOrder, timeoutLimit = row.timeoutLimit,
                 reasoningOverride = row.reasoningOverride, updatedAt = row.updatedAt,
-                isDeleted = row.isDeleted
+                isDeleted = row.isDeleted, syncSeq = seq
             )
         } else {
             queries.upsertApiConnectionFull(
                 provider = row.provider, name = row.name, baseUrl = row.baseUrl, apiKey = storedKey,
                 model = row.model, inferenceProvider = row.inferenceProvider,
                 quantization = row.quantization,
-                isActive = 0L, isChatCompletion = row.isChatCompletion,
+                isActive = existing.isActive, isChatCompletion = row.isChatCompletion,
                 lastUsed = row.lastUsed, temperature = row.temperature, topP = row.topP,
                 topK = row.topK, presencePenalty = row.presencePenalty,
                 frequencyPenalty = row.frequencyPenalty, contextLimit = row.contextLimit,
                 responseLimit = row.responseLimit, displayOrder = row.displayOrder,
                 timeoutLimit = row.timeoutLimit, reasoningOverride = row.reasoningOverride,
-                updatedAt = row.updatedAt, isDeleted = row.isDeleted, id = row.id
+                updatedAt = row.updatedAt, isDeleted = row.isDeleted, syncSeq = seq, id = row.id
             )
         }
     }
@@ -310,17 +377,18 @@ class SyncRepository(
     private fun apply(row: SyncPromptBlock, peerDeviceId: String) {
         val existing = queries.selectPromptBlockByIdAny(row.id).executeAsOneOrNull()
         if (existing != null && !incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        val seq = clock.nextSyncSeq()
         if (existing == null) {
             queries.insertPromptBlockFull(
                 id = row.id, name = row.name, template = row.template,
                 isEnabled = row.isEnabled, isCustom = row.isCustom, displayOrder = row.displayOrder,
-                updatedAt = row.updatedAt, isDeleted = row.isDeleted
+                updatedAt = row.updatedAt, isDeleted = row.isDeleted, syncSeq = seq
             )
         } else {
             queries.upsertPromptBlockFull(
                 name = row.name, template = row.template, isEnabled = row.isEnabled,
                 isCustom = row.isCustom, displayOrder = row.displayOrder, updatedAt = row.updatedAt,
-                isDeleted = row.isDeleted, id = row.id
+                isDeleted = row.isDeleted, syncSeq = seq, id = row.id
             )
         }
     }
@@ -336,6 +404,7 @@ private fun CharacterEntity.toSync() = SyncCharacter(
     scenario = scenario ?: "", firstMes = firstMes, mesExample = mesExample,
     creatorNotes = creatorNotes, altGreetings = altGreetings, avatarData = avatarData,
     isAssistant = isAssistant, updatedAt = updatedAt, isDeleted = isDeleted,
+    syncSeq = syncSeq,
     systemPrompt = systemPrompt, postHistoryInstructions = postHistoryInstructions,
     creator = creator, characterVersion = characterVersion, tags = tags,
     extensions = extensions, characterBook = characterBook
@@ -343,21 +412,32 @@ private fun CharacterEntity.toSync() = SyncCharacter(
 
 private fun PersonaEntity.toSync() = SyncPersona(
     id = id, name = name, description = description, avatarData = avatarData,
-    updatedAt = updatedAt, isDeleted = isDeleted
+    updatedAt = updatedAt, isDeleted = isDeleted, syncSeq = syncSeq
 )
 
 private fun ChatSession.toSync() = SyncSession(
     id = id, characterId = characterId, personaId = personaId, title = title,
     lastTimestamp = lastTimestamp, currentMessageId = currentMessageId,
-    parentSessionId = parentSessionId, updatedAt = updatedAt, isDeleted = isDeleted
+    parentSessionId = parentSessionId, updatedAt = updatedAt, isDeleted = isDeleted,
+    syncSeq = syncSeq
 )
 
-private fun MessageEntity.toSync() = SyncMessage(
-    id = id, sessionId = sessionId, role = role, content = content, timestamp = timestamp,
-    parentId = parentId, isActivePath = isActivePath, updatedAt = updatedAt,
-    isDeleted = isDeleted, imageData = imageData, reasoningText = reasoningText,
-    costEstimate = costEstimate
-)
+private suspend fun MessageEntity.toSync(blobStore: BlobStore?): SyncMessage {
+    val refs = deserializeImageRefs(imageRefs)
+    return SyncMessage(
+        id = id, sessionId = sessionId, role = role, content = content, timestamp = timestamp,
+        parentId = parentId, isActivePath = isActivePath, updatedAt = updatedAt,
+        isDeleted = isDeleted,
+        // Legacy wire format: the image bytes ride in the envelope (loaded
+        // from the store); the refs ride along for newer peers to fetch.
+        imageData = blobStore?.let { store ->
+            refs.mapNotNull { store.read(it.sha256) }.takeIf { it.isNotEmpty() }?.let { serializeImageList(it) }
+        },
+        imageRefs = refs.map { SyncImageRef(sha256 = it.sha256, size = it.size) },
+        reasoningText = reasoningText,
+        costEstimate = costEstimate, syncSeq = syncSeq
+    )
+}
 
 private fun ApiConnection.toSync(cipher: ApiKeyCipher?) = SyncApiConnection(
     id = id, provider = provider, name = name, baseUrl = baseUrl,
@@ -372,11 +452,11 @@ private fun ApiConnection.toSync(cipher: ApiKeyCipher?) = SyncApiConnection(
     frequencyPenalty = frequencyPenalty, contextLimit = contextLimit,
     responseLimit = responseLimit, displayOrder = displayOrder,
     timeoutLimit = timeoutLimit, reasoningOverride = reasoningOverride,
-    updatedAt = updatedAt, isDeleted = isDeleted
+    updatedAt = updatedAt, isDeleted = isDeleted, syncSeq = syncSeq
 )
 
 private fun PromptBlockEntity.toSync() = SyncPromptBlock(
     id = id, name = name, template = template, isEnabled = isEnabled,
     isCustom = isCustom, displayOrder = displayOrder, updatedAt = updatedAt,
-    isDeleted = isDeleted
+    isDeleted = isDeleted, syncSeq = syncSeq
 )

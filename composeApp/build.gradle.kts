@@ -114,8 +114,8 @@ android {
         applicationId = "chat.donzi.localtavern"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 55
-        versionName = "0.5.5"
+        versionCode = 56
+        versionName = "0.6.0"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -137,7 +137,7 @@ compose.desktop {
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Rpm
             )
             packageName = "LocalTavern"
-            packageVersion = "0.5.5"
+            packageVersion = "0.6.0"
         }
     }
 }
@@ -146,7 +146,7 @@ sqldelight {
     databases {
         create("LocalTavernDB") {
             packageName.set("chat.donzi.localtavern.data.database")
-            version = 8
+            version = 10
         }
     }
 }

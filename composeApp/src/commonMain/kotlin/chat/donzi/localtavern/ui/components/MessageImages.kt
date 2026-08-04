@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -32,12 +33,39 @@ import coil3.compose.AsyncImage
 @Composable
 fun MessageImages(
     images: List<ByteArray>,
+    // References whose bytes have not arrived yet (pending blob sync). When
+    // non-zero and no bytes are hydrated, a placeholder box is shown so the
+    // message does not look bare while the transfer is in flight.
+    pendingCount: Int = 0,
     isEditing: Boolean = false,
     topPadding: Dp = 8.dp,
     onRemoveImage: ((Int) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    if (images.isEmpty()) return
+    if (images.isEmpty() && pendingCount <= 0) return
+
+    if (images.isEmpty() && pendingCount > 0) {
+        Box(
+            modifier = modifier
+                .padding(top = topPadding)
+                .fillMaxWidth()
+                .height(72.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = if (pendingCount == 1) "image pending sync" else "$pendingCount images pending sync",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        return
+    }
 
     if (isEditing) {
         Row(

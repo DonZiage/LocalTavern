@@ -43,6 +43,7 @@ fun MessageBubble(
     onBranch: () -> Unit = {},
     avatarData: ByteArray? = null,
     messageImages: List<ByteArray> = emptyList(),
+    pendingImageCount: Int = 0,
     isSelectMode: Boolean = false,
     isSelected: Boolean = false,
     onSelectToggle: () -> Unit = {},
@@ -234,6 +235,7 @@ fun MessageBubble(
                     isEditing = false
                 },
                 messageImages = messageImages,
+                pendingImageCount = pendingImageCount,
                 reasoningText = reasoningText,
                 costText = costText
             )

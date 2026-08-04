@@ -1,5 +1,9 @@
 package chat.donzi.localtavern.controller
 
+import chat.donzi.localtavern.data.blob.BlobStore
+import chat.donzi.localtavern.data.blob.createBlobStore
+import chat.donzi.localtavern.data.blob.migrateMessageImagesToBlobStore
+import chat.donzi.localtavern.data.blob.runBlobGc
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.database.CharacterRepository
 import chat.donzi.localtavern.data.database.DriverFactory
@@ -38,7 +42,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 
 class AppContainer(driverFactory: DriverFactory) {
-    val database: LocalTavernDB = LocalTavernDB(driverFactory.createDriver())
+    private val driver = driverFactory.createDriver()
+    val database: LocalTavernDB = LocalTavernDB(driver)
+    // Content-addressed store for message image blobs (never in SQLite).
+    val blobStore: BlobStore = createBlobStore()
     // All DB access must go through ONE thread: the JVM driver opens a separate
     // SQLite connection per thread (JdbcSqliteDriver.ThreadedConnectionManager),
     // so concurrent transactions on Dispatchers.IO run on different connections
@@ -53,7 +60,7 @@ class AppContainer(driverFactory: DriverFactory) {
     // keeping LWW immune to wall-clock skew between devices.
     val logicalClock = LogicalClock(database)
     val characterRepository: CharacterRepository = CharacterRepository(database, clock = logicalClock, ioDispatcher = databaseDispatcher)
-    val sessionRepository: SessionRepository = SessionRepository(database, ioDispatcher = databaseDispatcher, clock = logicalClock)
+    val sessionRepository: SessionRepository = SessionRepository(database, ioDispatcher = databaseDispatcher, clock = logicalClock, blobStore = blobStore)
     val apiSettingsRepository: ApiSettingsRepository = ApiSettingsRepository(database, apiKeyCipher, databaseDispatcher, clock = logicalClock)
     val pricingRepository: PricingRepository = PricingRepository(database, databaseDispatcher)
 
@@ -111,7 +118,23 @@ class AppContainer(driverFactory: DriverFactory) {
                 val identity = withContext(Dispatchers.Default) {
                     loadOrCreateSyncIdentity(syncIdentityStore)
                 }
-                syncRepository = SyncRepository(database, identity, ioDispatcher = databaseDispatcher, apiKeyCipher = apiKeyCipher, clock = logicalClock)
+                // One-time migration: v10 kept the legacy imageData BLOB column
+                // so the actual offload could run in app code (the .sqm files
+                // run atomically with no hook between statements). Reads every
+                // row that still carries inline images, writes the blobs to the
+                // content-addressed store and replaces the bytes with refs.
+                // Idempotent: rows are processed until none remain, so it is
+                // safe to run on every start.
+                val migratedImages = migrateMessageImagesToBlobStore(database, blobStore, logicalClock)
+                if (migratedImages > 0) {
+                    // Reclaim the freed database pages (the column contents
+                    // were the bulk of the file).
+                    withContext(databaseDispatcher) { driver.execute(null, "VACUUM", 0) }
+                }
+                // Unreferenced blobs (deleted/edited messages) are dropped now
+                // that the store is consistent with the database.
+                runBlobGc(database, blobStore)
+                syncRepository = SyncRepository(database, identity, ioDispatcher = databaseDispatcher, apiKeyCipher = apiKeyCipher, clock = logicalClock, blobStore = blobStore)
                 syncService = SyncService(
                     identity = identity,
                     crypto = SyncCrypto(),

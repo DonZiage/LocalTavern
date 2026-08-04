@@ -54,7 +54,7 @@ class ApiSettingsRepository(
                 // Only one connection may be active at a time; without this the
                 // row above would be a second active one and chat traffic
                 // would silently go to an arbitrary endpoint.
-                queries.setActiveApiConnection(updatedAt = ts)
+                queries.setActiveApiConnection(updatedAt = ts, syncSeq = nextSyncSeq())
             }
             queries.insertApiConnection(
                 id = newId, provider = provider, name = name, baseUrl = baseUrl, apiKey = apiKeyCipher.encryptForStorage(apiKey), model = model,
@@ -64,7 +64,7 @@ class ApiSettingsRepository(
                 presencePenalty = presencePenalty, frequencyPenalty = frequencyPenalty, contextLimit = contextLimit,
                 responseLimit = responseLimit, displayOrder = nextOrder, timeoutLimit = timeoutLimit,
                 reasoningOverride = reasoningOverride.toLong(),
-                updatedAt = ts, isDeleted = 0L
+                updatedAt = ts, isDeleted = 0L, syncSeq = nextSyncSeq()
             )
             newId
         }
@@ -117,8 +117,9 @@ class ApiSettingsRepository(
         // the update and the lastUsed write share the same transaction so a
         // failure between them cannot leave the profile half-written.
         database.transaction {
+            val seq = nextSyncSeq()
             if (isActive) {
-                queries.setActiveApiConnection(updatedAt = ts)
+                queries.setActiveApiConnection(updatedAt = ts, syncSeq = seq)
             }
             queries.updateApiConnection(
                 provider = provider, name = name, baseUrl = baseUrl, apiKey = finalKey, model = model,
@@ -128,12 +129,12 @@ class ApiSettingsRepository(
                 presencePenalty = presencePenalty, frequencyPenalty = frequencyPenalty, contextLimit = contextLimit,
                 responseLimit = responseLimit, displayOrder = displayOrder, timeoutLimit = timeoutLimit,
                 reasoningOverride = reasoningOverride.toLong(),
-                updatedAt = ts, id = id
+                updatedAt = ts, syncSeq = seq, id = id
             )
             // Only touch lastUsed when explicitly provided or when activating the
             // profile; editing an inactive connection must not wipe its marker.
             if (lastUsed != null || isActive) {
-                queries.updateApiConnectionLastUsed(lastUsed = lastUsed ?: now, updatedAt = ts, id = id)
+                queries.updateApiConnectionLastUsed(lastUsed = lastUsed ?: now, updatedAt = ts, syncSeq = seq, id = id)
             }
         }
     }
@@ -148,7 +149,7 @@ class ApiSettingsRepository(
                 val decrypted = apiKeyCipher.decryptFromStorage(row.apiKey)
                 val reEncrypted = apiKeyCipher.encryptForStorage(decrypted)
                 if (reEncrypted != row.apiKey) {
-                    queries.updateApiConnectionApiKey(apiKey = reEncrypted, updatedAt = ts, id = row.id)
+                    queries.updateApiConnectionApiKey(apiKey = reEncrypted, updatedAt = ts, syncSeq = nextSyncSeq(), id = row.id)
                 }
             }
         }
@@ -163,7 +164,7 @@ class ApiSettingsRepository(
             queries.selectAllApiConnections().executeAsList().forEach { row ->
                 val decrypted = apiKeyCipher.decryptFromStorage(row.apiKey)
                 if (decrypted != row.apiKey) {
-                    queries.updateApiConnectionApiKey(apiKey = decrypted, updatedAt = ts, id = row.id)
+                    queries.updateApiConnectionApiKey(apiKey = decrypted, updatedAt = ts, syncSeq = nextSyncSeq(), id = row.id)
                 }
             }
         }
@@ -175,6 +176,7 @@ class ApiSettingsRepository(
     suspend fun deleteApiConnection(id: String) = withContext(ioDispatcher) {
         queries.deleteApiConnection(
             updatedAt = nextTimestamp(),
+            syncSeq = nextSyncSeq(),
             id = id
         )
     }
@@ -187,8 +189,9 @@ class ApiSettingsRepository(
         // connections (silently losing its API profile), and two concurrent
         // activations could both succeed.
         database.transaction {
-            queries.setActiveApiConnection(updatedAt = ts)
-            queries.updateActiveApiConnection(lastUsed = now, updatedAt = ts, id = id)
+            val seq = nextSyncSeq()
+            queries.setActiveApiConnection(updatedAt = ts, syncSeq = seq)
+            queries.updateActiveApiConnection(lastUsed = now, updatedAt = ts, syncSeq = seq, id = id)
         }
     }
 
@@ -202,8 +205,9 @@ class ApiSettingsRepository(
     suspend fun updateApiConnectionDisplayOrders(orderedIds: List<String>): Unit = withContext(ioDispatcher) {
         val ts = nextTimestamp()
         database.transaction {
+            val seq = nextSyncSeq()
             orderedIds.forEachIndexed { index, id ->
-                queries.updateApiConnectionDisplayOrder(displayOrder = index.toLong(), updatedAt = ts, id = id)
+                queries.updateApiConnectionDisplayOrder(displayOrder = index.toLong(), updatedAt = ts, syncSeq = seq, id = id)
             }
         }
     }
@@ -260,13 +264,14 @@ class ApiSettingsRepository(
             val storedBlocks = queries.selectAllPromptBlocks().executeAsList()
             if (storedBlocks.isEmpty()) {
                 val ts = nextTimestamp()
+                val seq = nextSyncSeq()
                 var initialOrder = 0L
-                queries.insertPromptBlock("system", "System Prompt", "You are roleplaying. Stay in character, describe actions vividly, and adapt seamlessly to the story scenario.", 1L, 0L, initialOrder++, ts, 0L)
-                queries.insertPromptBlock("persona", "User Persona", "User Persona:\n{{user_persona}}", 1L, 0L, initialOrder++, ts, 0L)
-                queries.insertPromptBlock("description", "Character Description", "Character Info:\n{{character_description}}", 1L, 0L, initialOrder++, ts, 0L)
-                queries.insertPromptBlock("personality", "Personality", "Personality:\n{{personality}}", 1L, 0L, initialOrder++, ts, 0L)
-                queries.insertPromptBlock("scenario", "Scenario", "Scenario:\n{{scenario}}", 1L, 0L, initialOrder++, ts, 0L)
-                queries.insertPromptBlock("chat_history", "Chat History", "{{chat_history}}", 1L, 0L, initialOrder, ts, 0L)
+                queries.insertPromptBlock("system", "System Prompt", "You are roleplaying. Stay in character, describe actions vividly, and adapt seamlessly to the story scenario.", 1L, 0L, initialOrder++, ts, 0L, seq)
+                queries.insertPromptBlock("persona", "User Persona", "User Persona:\n{{user_persona}}", 1L, 0L, initialOrder++, ts, 0L, seq)
+                queries.insertPromptBlock("description", "Character Description", "Character Info:\n{{character_description}}", 1L, 0L, initialOrder++, ts, 0L, seq)
+                queries.insertPromptBlock("personality", "Personality", "Personality:\n{{personality}}", 1L, 0L, initialOrder++, ts, 0L, seq)
+                queries.insertPromptBlock("scenario", "Scenario", "Scenario:\n{{scenario}}", 1L, 0L, initialOrder++, ts, 0L, seq)
+                queries.insertPromptBlock("chat_history", "Chat History", "{{chat_history}}", 1L, 0L, initialOrder, ts, 0L, seq)
                 queries.selectAllPromptBlocks().executeAsList().map { it.toDomain() }
             } else {
                 storedBlocks.map { it.toDomain() }
@@ -275,7 +280,7 @@ class ApiSettingsRepository(
     }
 
     suspend fun savePromptBlock(id: String, name: String, template: String, isEnabled: Boolean) = withContext(ioDispatcher) {
-        queries.updatePromptBlock(name = name, template = template, isEnabled = if (isEnabled) 1L else 0L, updatedAt = nextTimestamp(), id = id)
+        queries.updatePromptBlock(name = name, template = template, isEnabled = if (isEnabled) 1L else 0L, updatedAt = nextTimestamp(), syncSeq = nextSyncSeq(), id = id)
     }
 
     @OptIn(kotlin.uuid.ExperimentalUuidApi::class)
@@ -284,19 +289,20 @@ class ApiSettingsRepository(
         val uniqueId = generateUuid()
         val currentBlocks = queries.selectAllPromptBlocks().executeAsList()
         val nextOrderPosition = (currentBlocks.maxOfOrNull { it.displayOrder } ?: -1L) + 1L
-        queries.insertPromptBlock(uniqueId, name, template, 1L, 1L, nextOrderPosition, ts, 0L)
+        queries.insertPromptBlock(uniqueId, name, template, 1L, 1L, nextOrderPosition, ts, 0L, nextSyncSeq())
         uniqueId
     }
 
     suspend fun deletePromptBlock(id: String) = withContext(ioDispatcher) {
-        queries.deletePromptBlock(updatedAt = nextTimestamp(), id = id)
+        queries.deletePromptBlock(updatedAt = nextTimestamp(), syncSeq = nextSyncSeq(), id = id)
     }
 
     suspend fun updatePromptBlockDisplayOrders(orderedIds: List<String>): Unit = withContext(ioDispatcher) {
         val ts = nextTimestamp()
         database.transaction {
+            val seq = nextSyncSeq()
             orderedIds.forEachIndexed { index, id ->
-                queries.updatePromptBlockDisplayOrder(displayOrder = index.toLong(), updatedAt = ts, id = id)
+                queries.updatePromptBlockDisplayOrder(displayOrder = index.toLong(), updatedAt = ts, syncSeq = seq, id = id)
             }
         }
     }

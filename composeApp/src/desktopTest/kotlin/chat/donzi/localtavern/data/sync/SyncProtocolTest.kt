@@ -1,6 +1,7 @@
 package chat.donzi.localtavern.data.sync
 
 import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
+import chat.donzi.localtavern.data.blob.BlobStore
 import chat.donzi.localtavern.data.database.LocalTavernDB
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -15,12 +16,28 @@ import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 // Full end-to-end protocol test: two real devices (identity + crypto + sync
 // repository + embedded Ktor server + HTTP client) pairing over localhost and
 // converging their databases.
 class SyncProtocolTest {
+
+    private class InMemoryBlobStore : BlobStore {
+        private val map = mutableMapOf<String, ByteArray>()
+        override suspend fun write(key: String, bytes: ByteArray) {
+            map[key] = bytes
+        }
+
+        override suspend fun read(key: String): ByteArray? = map[key]
+
+        override suspend fun delete(key: String) {
+            map.remove(key)
+        }
+
+        override suspend fun listKeys(): Set<String> = map.keys.toSet()
+    }
 
     private class FakeIdentityStore : SyncIdentityStore {
         private var bytes: ByteArray? = null
@@ -37,7 +54,8 @@ class SyncProtocolTest {
         val identity = runBlocking {
             SyncIdentity.create(deviceName = name, crypto = crypto).copy(deviceId = deviceId)
         }
-        val repository = SyncRepository(db, identity)
+        val blobStore = InMemoryBlobStore()
+        val repository = SyncRepository(db, identity, blobStore = blobStore)
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
         val service = SyncService(
@@ -47,7 +65,8 @@ class SyncProtocolTest {
             identityStore = FakeIdentityStore(),
             httpClient = client(),
             scope = scope,
-            port = port
+            port = port,
+            blobStore = blobStore
         )
 
         fun start() = service.startServer()
@@ -399,10 +418,181 @@ class SyncProtocolTest {
         }
     }
 
+    @Test
+    fun fullSync_lateRowFromLaggingPeerIsForwarded() = runTest {
+        val hostPort = freePort()
+        val host = Device("host-device", "Host", hostPort)
+        val guest = Device("guest-device", "Guest", hostPort + 1)
+        try {
+            host.start()
+            guest.start()
+            seedPersona(guest, "p-guest", "Guest Persona", 1000L)
+
+            host.service.startPairing()
+            val pin = host.service.state.value.pairingPin!!
+            guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+
+            // First exchange: guest's row reaches the host and both sides'
+            // cursors advance past its stamp.
+            var syncResult = guest.service.syncNow("host-device")
+            assertTrue(syncResult.isSuccess, "First sync must succeed: ${syncResult.exceptionOrNull()}")
+            assertTrue(host.personas().any { it.id == "p-guest" })
+
+            // A row stamped at the OLD value arrives on the guest from a
+            // lagging third device, after the host's cursor already passed
+            // that stamp. The sequence re-stamp must make it forwardable.
+            guest.repository.applyChanges(
+                SyncChanges(personas = listOf(SyncPersona(id = "p-late", name = "Late", description = null, avatarData = null, updatedAt = 1000L, isDeleted = 0L))),
+                peerDeviceId = "device-p"
+            )
+
+            // Second exchange: the late row must still reach the host.
+            syncResult = guest.service.syncNow("host-device")
+            assertTrue(syncResult.isSuccess, "Second sync must succeed: ${syncResult.exceptionOrNull()}")
+            assertTrue(host.personas().any { it.id == "p-late" }, "A late row from a lagging peer must be forwarded")
+        } finally {
+            host.stop()
+            guest.stop()
+        }
+    }
+
+    @Test
+    fun imageBlobs_areFetchedOutOfBandAfterSync() = runTest {
+        val hostPort = freePort()
+        val host = Device("host-device", "Host", hostPort)
+        val guest = Device("guest-device", "Guest", hostPort + 1)
+        try {
+            host.start()
+            guest.start()
+            host.service.startPairing()
+            val pin = host.service.state.value.pairingPin!!
+            guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+
+            // Host holds a message whose image blob is larger than one chunk,
+            // so the fetch must reassemble several pieces.
+            val img = ByteArray(600_000) { (it % 251).toByte() }
+            val hash = runBlocking { chat.donzi.localtavern.utils.Hashing.sha256Hex(img) }
+            runBlocking { host.blobStore.write(hash, img) }
+            host.repository.applyChanges(
+                SyncChanges(messages = listOf(
+                    SyncMessage(
+                        id = "m1", sessionId = "s1", role = "assistant", content = "Hello",
+                        timestamp = 1L, parentId = null, isActivePath = 1L,
+                        updatedAt = 1000L, isDeleted = 0L,
+                        imageRefs = listOf(SyncImageRef(hash, img.size.toLong())),
+                        reasoningText = null, costEstimate = null
+                    )
+                )),
+                peerDeviceId = "device-p"
+            )
+
+            // Guest syncs: the row arrives and the blob is pulled out of band
+            // during the same call.
+            val syncResult = guest.service.syncNow("host-device")
+            assertTrue(syncResult.isSuccess, "Sync must succeed: ${syncResult.exceptionOrNull()}")
+
+            val fetched = guest.blobStore.read(hash)
+            assertNotNull(fetched, "The referenced blob must be fetched from the peer")
+            assertEquals(img.toList(), fetched.toList(), "The reassembled blob must be byte-identical")
+
+            // The row on the guest references the blob.
+            val row = guest.db.localTavernDBQueries.selectMessageByIdAny("m1").executeAsOne()!!
+            assertTrue(row.imageRefs!!.contains(hash), "The row must carry the fetched ref")
+        } finally {
+            host.stop()
+            guest.stop()
+        }
+    }
+
+    @Test
+    fun imageBlobNotServedByPeer_isSkippedGracefully() = runTest {
+        val hostPort = freePort()
+        val host = Device("host-device", "Host", hostPort)
+        val guest = Device("guest-device", "Guest", hostPort + 1)
+        try {
+            host.start()
+            guest.start()
+            host.service.startPairing()
+            val pin = host.service.state.value.pairingPin!!
+            guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+
+            // The host references a blob it does not actually have (e.g. it
+            // never fetched it from its own upstream peer).
+            host.repository.applyChanges(
+                SyncChanges(messages = listOf(
+                    SyncMessage(
+                        id = "m1", sessionId = "s1", role = "assistant", content = "Hello",
+                        timestamp = 1L, parentId = null, isActivePath = 1L,
+                        updatedAt = 1000L, isDeleted = 0L,
+                        imageRefs = listOf(SyncImageRef("deadbeef", 42L)),
+                        reasoningText = null, costEstimate = null
+                    )
+                )),
+                peerDeviceId = "device-p"
+            )
+
+            val syncResult = guest.service.syncNow("host-device")
+            assertTrue(syncResult.isSuccess, "A missing blob must not fail the sync: ${syncResult.exceptionOrNull()}")
+            assertNull(guest.blobStore.read("deadbeef"), "An unservable blob must simply stay absent")
+
+            // A second sync must not error either (the ref is remembered).
+            val again = guest.service.syncNow("host-device")
+            assertTrue(again.isSuccess, "Second sync must succeed: ${again.exceptionOrNull()}")
+        } finally {
+            host.stop()
+            guest.stop()
+        }
+    }
+
+    @Test
+    fun legacyInlineImages_areStoredAndRefdOnTheReceivingSide() = runTest {
+        val hostPort = freePort()
+        val host = Device("host-device", "Host", hostPort)
+        val guest = Device("guest-device", "Guest", hostPort + 1)
+        try {
+            host.start()
+            guest.start()
+            host.service.startPairing()
+            val pin = host.service.state.value.pairingPin!!
+            guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+
+            // A pre-blob-store peer ships the serialized image bytes inline.
+            val img = ByteArray(64) { 3 }
+            val legacyBlob = chat.donzi.localtavern.utils.serializeImageList(listOf(img))!!
+            host.repository.applyChanges(
+                SyncChanges(messages = listOf(
+                    SyncMessage(
+                        id = "m1", sessionId = "s1", role = "assistant", content = "Hello",
+                        timestamp = 1L, parentId = null, isActivePath = 1L,
+                        updatedAt = 1000L, isDeleted = 0L,
+                        imageData = legacyBlob,
+                        reasoningText = null, costEstimate = null
+                    )
+                )),
+                peerDeviceId = "device-p"
+            )
+
+            val syncResult = guest.service.syncNow("host-device")
+            assertTrue(syncResult.isSuccess, "Sync must succeed: ${syncResult.exceptionOrNull()}")
+
+            // The bytes arrived inline and were converted to a stored blob.
+            val hash = runBlocking { chat.donzi.localtavern.utils.Hashing.sha256Hex(img) }
+            val stored = guest.blobStore.read(hash)
+            assertNotNull(stored, "Legacy inline bytes must be stored content-addressed")
+            assertEquals(img.toList(), stored.toList())
+
+            val row = guest.db.localTavernDBQueries.selectMessageByIdAny("m1").executeAsOne()!!
+            assertTrue(row.imageRefs!!.contains(hash), "The receiving side must adopt refs for legacy images")
+        } finally {
+            host.stop()
+            guest.stop()
+        }
+    }
+
     private fun seedPersona(device: Device, id: String, name: String, updatedAt: Long) {
         device.db.localTavernDBQueries.insertPersonaFull(
             id = id, name = name, description = null, avatarData = null,
-            updatedAt = updatedAt, isDeleted = 0L
+            updatedAt = updatedAt, isDeleted = 0L, syncSeq = 0L
         )
     }
 }
