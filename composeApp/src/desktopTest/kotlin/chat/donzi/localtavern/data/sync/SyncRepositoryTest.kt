@@ -215,6 +215,33 @@ class SyncRepositoryTest {
     }
 
     @Test
+    fun peerCursors_neverRegress() = runTest {
+        val device = newDevice("device-a")
+        val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+        device.repo.upsertPeer(
+            SyncPeer(
+                deviceId = "peer-1", name = "Laptop", publicKey = null,
+                lastKnownAddress = null, receivedCursor = 0L, peerReceivedCursor = 0L,
+                lastSyncAt = now, updatedAt = now, isDeleted = 0L
+            )
+        )
+        device.repo.updatePeerCursors("peer-1", receivedCursor = 100L, peerReceivedCursor = 200L)
+
+        // A peer restored from a backup (or a lost race) claims lower cursors;
+        // the stored values must not move backwards.
+        device.repo.updatePeerCursors("peer-1", receivedCursor = 0L, peerReceivedCursor = 0L)
+        val peer = device.repo.getPeer("peer-1")!!
+        assertEquals(100L, peer.receivedCursor, "receivedCursor must never regress")
+        assertEquals(200L, peer.peerReceivedCursor, "peerReceivedCursor must never regress")
+
+        // Higher values still advance normally.
+        device.repo.updatePeerCursors("peer-1", receivedCursor = 150L, peerReceivedCursor = 250L)
+        val advanced = device.repo.getPeer("peer-1")!!
+        assertEquals(150L, advanced.receivedCursor)
+        assertEquals(250L, advanced.peerReceivedCursor)
+    }
+
+    @Test
     fun apiKeySync_incomingPlaintextIsReencryptedUnderLocalBackend() = runTest {
         val cipher = ApiKeyCipher(ReversibleTestSecretCrypto())
         val device = newDevice("device-a", apiKeyCipher = cipher)

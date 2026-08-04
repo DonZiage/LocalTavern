@@ -39,7 +39,9 @@ interface SecretCrypto {
 expect fun createSecretCrypto(): SecretCrypto
 
 // Marker prefix distinguishing encrypted blobs from legacy plaintext keys.
-private const val ENCRYPTED_PREFIX = "ltv1:"
+// Exposed so other layers can recognize an unreadable stored blob without
+// round-tripping it through the backend (see reencryptAllApiKeys).
+internal const val EncryptedMarkerPrefix = "ltv1:"
 
 class ApiKeyCipher(private val crypto: SecretCrypto) {
 
@@ -51,21 +53,32 @@ class ApiKeyCipher(private val crypto: SecretCrypto) {
     fun protect(passphrase: String) = crypto.protect(passphrase)
     fun removeProtection() = crypto.removeProtection()
 
-    /** Encrypts a key for storage; blank keys stay blank, and when the crypto
-     *  backend is unavailable the plaintext is stored unchanged. */
+    /**
+     * Encrypts a key for storage; blank keys stay blank.
+     *
+     * A plaintext fallback exists ONLY while no secret store is configured
+     * (desktop before the passphrase is set, or a platform without a store):
+     * there is nothing to encrypt with, so the key is stored as-is and the
+     * UI reports "not protected". Once the backend IS configured
+     * ([SecretCrypto.isProtected]) but encryption fails (lost keystore key,
+     * corrupted keychain), this returns null instead of silently storing the
+     * plaintext: a key must never sit on disk unencrypted while the UI
+     * claims it is protected.
+     */
     fun encryptForStorage(plaintext: String?): String? {
         if (plaintext.isNullOrBlank()) return plaintext
-        return crypto.encrypt(plaintext)?.let { ENCRYPTED_PREFIX + it } ?: plaintext
+        val encrypted = crypto.encrypt(plaintext) ?: return if (crypto.isProtected) null else plaintext
+        return EncryptedMarkerPrefix + encrypted
     }
 
     /** Decrypts a stored key; legacy plaintext passes through unchanged, and
      *  an undecryptable blob is returned as-is (never nulled out). */
     fun decryptFromStorage(stored: String?): String? {
-        if (stored == null || !stored.startsWith(ENCRYPTED_PREFIX)) return stored
-        val decrypted = crypto.decrypt(stored.removePrefix(ENCRYPTED_PREFIX))
+        if (stored == null || !stored.startsWith(EncryptedMarkerPrefix)) return stored
+        val decrypted = crypto.decrypt(stored.removePrefix(EncryptedMarkerPrefix))
         // decrypt() already falls back to the raw payload on failure; keep the
         // marker off so a re-save of an unreadable blob does not double-encrypt.
-        return if (decrypted == stored.removePrefix(ENCRYPTED_PREFIX)) stored else decrypted
+        return if (decrypted == stored.removePrefix(EncryptedMarkerPrefix)) stored else decrypted
     }
 
     /**
@@ -85,7 +98,7 @@ class ApiKeyCipher(private val crypto: SecretCrypto) {
         val portable = decryptFromStorage(stored) ?: return null
         // Still carries the encrypted marker: this device could not decrypt
         // it, so no other device can either. Withhold it.
-        if (portable.startsWith(ENCRYPTED_PREFIX)) return null
+        if (portable.startsWith(EncryptedMarkerPrefix)) return null
         return portable
     }
 
@@ -100,7 +113,7 @@ class ApiKeyCipher(private val crypto: SecretCrypto) {
      * of storing an undecryptable one.
      */
     fun fromPortableForm(portable: String?): String? {
-        if (portable == null || portable.startsWith(ENCRYPTED_PREFIX)) return null
+        if (portable == null || portable.startsWith(EncryptedMarkerPrefix)) return null
         return encryptForStorage(portable)
     }
 }

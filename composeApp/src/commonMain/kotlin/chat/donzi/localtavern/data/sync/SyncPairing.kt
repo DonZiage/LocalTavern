@@ -1,6 +1,7 @@
 package chat.donzi.localtavern.data.sync
 
 import chat.donzi.localtavern.data.database.SyncPeer
+import dev.whyoleg.cryptography.random.CryptographyRandom
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.get
@@ -13,13 +14,17 @@ import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
-import kotlin.random.Random
 import kotlin.time.Clock
 
 // PIN-authenticated device pairing, host side (startPairing / handlePairRequest)
 // and client side (connectToDevice). The PIN never crosses the wire: the
-// client sends an HMAC proof computed over it; the host verifies it in
-// constant time and rate-limits attempts per pairing session.
+// client sends a proof computed over it, the host verifies it in constant
+// time and rate-limits attempts per pairing session.
+//
+// The proof is HMAC-SHA256 over PBKDF2-HMAC-SHA256(pin, nonce) with 200k
+// iterations: the nonce doubles as the KDF salt, so a sniffer who captures a
+// proof cannot brute-force the 6-digit PIN offline without repeating the
+// (intentionally expensive) KDF for every candidate.
 class SyncPairing(
     private val crypto: SyncCrypto,
     private val repository: SyncRepository,
@@ -35,6 +40,10 @@ class SyncPairing(
     private var pinExpiresAt: Long = 0L
     private var pairingFailures = 0
 
+    // Nonces seen during the CURRENT pairing session, to reject replayed
+    // pairing proofs (the PIN proof itself never expires until the PIN does).
+    private val seenPairingNonces = mutableSetOf<String>()
+
     private val identity get() = identityProvider()
 
     /** True while a pairing PIN is still valid (used by the idle watchdog). */
@@ -44,6 +53,7 @@ class SyncPairing(
     fun resetOnServerStop() {
         activePin = null
         pairingFailures = 0
+        seenPairingNonces.clear()
         state.update { it.copy(pairingPin = null) }
     }
 
@@ -52,18 +62,22 @@ class SyncPairing(
     fun startPairing() {
         ensureServerRunning()
         noteActivity()
-        activePin = (Random.nextInt(0, 1_000_000)).toString().padStart(6, '0')
+        // Cryptographically secure PIN and nonces: the nonce is the KDF salt
+        // of the PIN proof, so it must be unpredictable.
+        activePin = CryptographyRandom.Default.nextInt(0, 1_000_000).toString().padStart(6, '0')
         pinExpiresAt = Clock.System.now().toEpochMilliseconds() + PAIRING_TTL_MS
         pairingFailures = 0
+        seenPairingNonces.clear()
         state.update {
-            it.copy(pairingPin = activePin, pairingExpiresAt = pinExpiresAt, syncError = null, pendingPeerFingerprint = null, pendingPeerName = null)
+            it.copy(pairingPin = activePin, pairingExpiresAt = pinExpiresAt, syncError = null, pendingPeerFingerprint = null, pendingPeerName = null, pendingPeerDeviceId = null)
         }
     }
 
     fun cancelPairing() {
         activePin = null
         pairingFailures = 0
-        state.update { it.copy(pairingPin = null, pairingExpiresAt = null, pendingPeerFingerprint = null, pendingPeerName = null) }
+        seenPairingNonces.clear()
+        state.update { it.copy(pairingPin = null, pairingExpiresAt = null, pendingPeerFingerprint = null, pendingPeerName = null, pendingPeerDeviceId = null) }
     }
 
     /**
@@ -104,7 +118,7 @@ class SyncPairing(
 
     /** Acknowledges the out-of-band fingerprint comparison after pairing. */
     fun confirmFingerprint() {
-        state.update { it.copy(pendingPeerFingerprint = null, pendingPeerName = null) }
+        state.update { it.copy(pendingPeerFingerprint = null, pendingPeerName = null, pendingPeerDeviceId = null) }
     }
 
     suspend fun handlePairRequest(request: PairRequest, remoteHost: String?): PairResponse {
@@ -124,8 +138,19 @@ class SyncPairing(
         val nonce = runCatching { decodeBase64(request.nonce) }.getOrNull()
         val proof = runCatching { decodeBase64(request.pinProof) }.getOrNull()
         if (peerPublicKey == null || peerPublicKey.size != 32 || nonce == null || nonce.isEmpty() || proof == null) {
+            // Malformed payloads count toward the attempt budget too, so an
+            // attacker cannot probe the endpoint without exhausting the
+            // pairing session.
+            pairingFailures++
             return PairResponse(ok = false, message = "Invalid pairing payload.")
         }
+        if (request.nonce in seenPairingNonces) {
+            // The same nonce + proof cannot be accepted twice: a captured
+            // pairing request must not replay within the same session.
+            pairingFailures++
+            return PairResponse(ok = false, message = "Replayed pairing attempt.")
+        }
+        seenPairingNonces.add(request.nonce)
 
         // Constant-time PIN verification; the PIN never crosses the network.
         val pinOk = crypto.verifyPairingProof(pin, request.deviceId, peerPublicKey, nonce, proof)
@@ -152,7 +177,7 @@ class SyncPairing(
             )
         )
         state.update {
-            it.copy(pendingPeerFingerprint = fingerprint, pendingPeerName = request.deviceName)
+            it.copy(pendingPeerFingerprint = fingerprint, pendingPeerName = request.deviceName, pendingPeerDeviceId = request.deviceId)
         }
         return PairResponse(
             ok = true,
@@ -171,9 +196,10 @@ class SyncPairing(
             val hello: HelloResponse = httpClient.get("$base/hello").body()
             if (hello.deviceId == identity.deviceId) error("Cannot pair a device with itself.")
 
-            // Fresh nonce per pairing attempt: the proof cannot be replayed
-            // against a different key or in a different session.
-            val nonce = ByteArray(16).also { Random.nextBytes(it) }
+            // Fresh nonce per pairing attempt from the CSPRNG: the proof
+            // cannot be replayed against a different key or in a different
+            // session, and the nonce doubles as the KDF salt of the proof.
+            val nonce = ByteArray(16).also { CryptographyRandom.Default.nextBytes(it) }
             val proof = crypto.pairingProof(pin, identity.deviceId, identity.publicKeyBytes, nonce)
 
             val response: PairResponse = httpClient.post("$base/pair") {
@@ -210,7 +236,7 @@ class SyncPairing(
                 )
             )
             state.update {
-                it.copy(pendingPeerFingerprint = crypto.pairingFingerprint(identity.publicKeyBytes, peerKey), pendingPeerName = response.deviceName)
+                it.copy(pendingPeerFingerprint = crypto.pairingFingerprint(identity.publicKeyBytes, peerKey), pendingPeerName = response.deviceName, pendingPeerDeviceId = response.deviceId)
             }
             response.deviceId
         }

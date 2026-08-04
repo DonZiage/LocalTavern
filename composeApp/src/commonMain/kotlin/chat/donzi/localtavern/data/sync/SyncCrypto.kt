@@ -3,6 +3,7 @@ package chat.donzi.localtavern.data.sync
 import dev.whyoleg.cryptography.CryptographyProvider
 import dev.whyoleg.cryptography.algorithms.AES
 import dev.whyoleg.cryptography.algorithms.HKDF
+import dev.whyoleg.cryptography.algorithms.PBKDF2
 import dev.whyoleg.cryptography.algorithms.SHA256
 import dev.whyoleg.cryptography.algorithms.XDH
 import dev.whyoleg.cryptography.BinarySize.Companion.bits
@@ -22,9 +23,11 @@ import dev.whyoleg.cryptography.BinarySize.Companion.bits
 // identity keys later does not reveal past exchanges.
 //
 // Pairing: the PIN never leaves the device in cleartext. The client sends
-// HMAC-SHA256(pin, deviceId|publicKey|nonce) instead; the host verifies with
-// the PIN it displayed. A network sniffer cannot replay the proof against a
-// swapped key without the PIN.
+// HMAC-SHA256(PBKDF2(pin, nonce), deviceId|publicKey|nonce) instead; the host
+// verifies with the PIN it displayed. A network sniffer cannot replay the
+// proof against a swapped key without the PIN, and the PBKDF2 stretching
+// (200k rounds, nonce as salt) makes offline brute force of the 6-digit PIN
+// from a captured proof prohibitively expensive.
 //
 // AES-GCM (not ChaCha20) is used because the JDK ChaCha20-Poly1305 provider
 // rejects re-initializing a pooled cipher with a previously used (key, nonce)
@@ -42,6 +45,12 @@ class SyncCrypto(
         private const val CHANNEL_INFO = "sync-ephemeral-channel"
 
         private const val PAIRING_CONTEXT = "localtavern-pairing-v1"
+
+        // PBKDF2 cost for the pairing PIN proof. 200k HMAC-SHA256 rounds
+        // takes roughly 0.1-0.3 s on current hardware — imperceptible for one
+        // pairing attempt, but it multiplies every candidate of an offline
+        // 6-digit brute force by that cost.
+        private const val PAIRING_PBKDF2_ITERATIONS = 200_000
 
         private val HEX_DIGITS = "0123456789abcdef".toCharArray()
     }
@@ -117,18 +126,39 @@ class SyncCrypto(
     }
 
     /**
-     * PIN proof for pairing: HMAC-SHA256(pin, context|deviceId|publicKey|nonce).
+     * PIN proof for pairing: HMAC-SHA256(PBKDF2(pin, nonce), context|deviceId|publicKey|nonce).
      * The PIN itself never appears on the wire; the host recomputes and
      * constant-time-verifies this proof, and the client's nonce prevents
      * cross-session replay.
+     *
+     * The PIN is stretched with PBKDF2-HMAC-SHA256 ([PAIRING_PBKDF2_ITERATIONS]
+     * rounds, the nonce as salt) before the outer HMAC, so a sniffer who
+     * captures a proof cannot brute-force the 6-digit PIN offline: every
+     * candidate requires the full KDF, and the salt is unique per attempt.
      */
-    suspend fun pairingProof(pin: String, deviceId: String, publicKey: ByteArray, nonce: ByteArray): ByteArray =
-        hmacSha256(pin.encodeToByteArray(), pairingData(deviceId, publicKey, nonce))
+    suspend fun pairingProof(pin: String, deviceId: String, publicKey: ByteArray, nonce: ByteArray): ByteArray {
+        val stretchedPin = stretchPin(pin, nonce)
+        return hmacSha256(stretchedPin, pairingData(deviceId, publicKey, nonce))
+    }
 
     /** Constant-time verification of a [pairingProof]; true iff [pin] matches. */
     suspend fun verifyPairingProof(pin: String, deviceId: String, publicKey: ByteArray, nonce: ByteArray, proof: ByteArray): Boolean {
-        val expected = hmacSha256(pin.encodeToByteArray(), pairingData(deviceId, publicKey, nonce))
+        val stretchedPin = stretchPin(pin, nonce)
+        val expected = hmacSha256(stretchedPin, pairingData(deviceId, publicKey, nonce))
         return expected.size == proof.size && constantTimeEquals(expected, proof)
+    }
+
+    // PBKDF2-HMAC-SHA256 with the pairing nonce as the salt: the derivation
+    // is per-attempt unique (fresh nonce) and deliberately expensive, which
+    // is what turns the offline 10^6-candidate space of a 6-digit PIN into a
+    // prohibitive brute-force target.
+    private suspend fun stretchPin(pin: String, nonce: ByteArray): ByteArray {
+        return provider.get(PBKDF2).secretDerivation(
+            digest = SHA256,
+            iterations = PAIRING_PBKDF2_ITERATIONS,
+            outputSize = 256.bits,
+            salt = nonce
+        ).deriveSecretToByteArray(pin.encodeToByteArray())
     }
 
     /**
@@ -224,7 +254,10 @@ internal fun encodeBase64(bytes: ByteArray): String =
 internal fun decodeBase64(text: String): ByteArray =
     kotlin.io.encoding.Base64.decode(text)
 
-// Authenticated-data prefix binding each encrypted payload to its sender and
-// recipient: a payload cannot be replayed against a different device pair.
-internal fun aad(from: String, to: String): ByteArray =
-    "localtavern-sync|from=$from|to=$to".encodeToByteArray()
+// Authenticated-data prefix binding each encrypted payload to its sender,
+// recipient AND exchange: a payload cannot be replayed against a different
+// device pair or a different exchange (each request generates a fresh
+// exchange id, so the AEAD tag is unique to one round trip even when the
+// ciphertext itself is replayed verbatim).
+internal fun aad(from: String, to: String, exchangeId: String): ByteArray =
+    "localtavern-sync|from=$from|to=$to|ex=$exchangeId".encodeToByteArray()

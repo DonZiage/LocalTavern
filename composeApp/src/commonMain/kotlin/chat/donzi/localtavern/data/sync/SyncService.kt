@@ -26,9 +26,11 @@ data class SyncUiState(
     val statusMessage: String? = null,
     val syncError: String? = null,
     // Fingerprint of the peer that just paired (host and client side), shown
-    // for out-of-band comparison until the user confirms it.
+    // for out-of-band comparison until the user confirms it. While it is set,
+    // exchanges with that peer are refused — the peer is not yet trusted.
     val pendingPeerFingerprint: String? = null,
     val pendingPeerName: String? = null,
+    val pendingPeerDeviceId: String? = null,
     // Progress of an in-flight image-blob transfer (null when idle).
     val blobProgress: BlobTransferProgress? = null
 )
@@ -120,7 +122,8 @@ class SyncService(
         channelKeys = channelKeys,
         blobTransfer = blobTransfer,
         advertisedFetchAddress = { pairing.advertisedFetchAddress() },
-        noteActivity = { noteActivity() }
+        noteActivity = { noteActivity() },
+        unconfirmedPeerDeviceId = { _state.value.pendingPeerDeviceId }
     )
 
     // High-water mark of the most recent sync/pairing activity; the idle
@@ -132,8 +135,12 @@ class SyncService(
         port = port,
         hello = { HelloResponse(deviceId = identity.deviceId, deviceName = identity.deviceName) },
         onPair = { request, remoteHost -> pairing.handlePairRequest(request, remoteHost) },
-        onExchange = { fromDeviceId, payload, ephemeralPublicKey -> exchange.handleExchange(fromDeviceId, payload, ephemeralPublicKey) },
-        onBlobFetch = { fromDeviceId, payload, ephemeralPublicKey -> blobTransfer.handleBlobFetch(fromDeviceId, payload, ephemeralPublicKey) }
+        onExchange = { fromDeviceId, payload, ephemeralPublicKey, exchangeId ->
+            exchange.handleExchange(fromDeviceId, payload, ephemeralPublicKey, exchangeId)
+        },
+        onBlobFetch = { fromDeviceId, payload, ephemeralPublicKey, exchangeId ->
+            blobTransfer.handleBlobFetch(fromDeviceId, payload, ephemeralPublicKey, exchangeId)
+        }
     )
 
     fun startServer() {
@@ -195,7 +202,14 @@ class SyncService(
 
     // ---------- Sync exchange (delegated) ----------
 
-    suspend fun syncNow(peerId: String): Result<String> = exchange.syncNow(peerId)
+    suspend fun syncNow(peerId: String): Result<String> {
+        // A peer whose pairing fingerprint has not been confirmed yet is not
+        // trusted; refuse to sync with it locally (the server refuses too).
+        if (_state.value.pendingPeerFingerprint != null && _state.value.pendingPeerDeviceId == peerId) {
+            return Result.failure(IllegalStateException("Confirm the pairing fingerprint before syncing with this device."))
+        }
+        return exchange.syncNow(peerId)
+    }
 
     // ---------- Display name ----------
 
@@ -234,7 +248,17 @@ class SyncService(
             identityStore.save(SyncIdentity.serialize(newIdentity))
             identity = newIdentity
             repository.clearAllPeers()
-            _state.update { it.copy(statusMessage = "Sync key rotated. Re-pair your devices.", syncError = null) }
+            // A pending unconfirmed pairing belongs to the old key; clear it so
+            // the gate does not block the re-pairing flow.
+            _state.update {
+                it.copy(
+                    statusMessage = "Sync key rotated. Re-pair your devices.",
+                    syncError = null,
+                    pendingPeerFingerprint = null,
+                    pendingPeerName = null,
+                    pendingPeerDeviceId = null
+                )
+            }
             "Sync key rotated. Re-pair your devices."
         }.onFailure { error ->
             _state.update { it.copy(syncError = error.message, statusMessage = null) }

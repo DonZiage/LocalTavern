@@ -1,5 +1,6 @@
 package chat.donzi.localtavern.data.blob
 
+import chat.donzi.localtavern.utils.Hashing
 import java.io.File
 
 // Message images live on disk under ~/.localtavern/blobs/, next to the
@@ -19,7 +20,10 @@ private class FileBlobStore : BlobStore {
     }
 
     private fun fileFor(key: String): File? {
-        if (key.isBlank() || key.length > 128) return null
+        // Only canonical SHA-256 hex keys are valid file names: any other key
+        // (path traversal, relative segments, non-hex) must never resolve into
+        // the blob directory — refs can arrive from the wire.
+        if (!Hashing.isValidSha256Hex(key)) return null
         return directory()?.resolve(key)
     }
 

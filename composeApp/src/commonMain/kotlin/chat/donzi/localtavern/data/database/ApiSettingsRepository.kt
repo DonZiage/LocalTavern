@@ -106,12 +106,16 @@ class ApiSettingsRepository(
         val ts = nextTimestamp()
         // A stored key that is unchanged (or unreadable while locked) must be
         // carried forward untouched; only a genuinely new key is re-encrypted.
+        // When encryption is unavailable (backend configured but failing, or
+        // the passphrase is still locked) the PREVIOUS stored value is kept:
+        // writing plaintext would silently downgrade protection, and writing
+        // null would wipe the key.
         val storedRow = queries.selectApiConnectionById(id).executeAsOneOrNull()
         val storedKey = storedRow?.apiKey
         val finalKey = if (apiKey == null || apiKey == apiKeyCipher.decryptFromStorage(storedKey)) {
             storedKey
         } else {
-            apiKeyCipher.encryptForStorage(apiKey)
+            apiKeyCipher.encryptForStorage(apiKey) ?: storedKey
         }
         // Activating a connection must atomically deactivate any other one;
         // the update and the lastUsed write share the same transaction so a
@@ -147,8 +151,13 @@ class ApiSettingsRepository(
         database.transaction {
             queries.selectAllApiConnections().executeAsList().forEach { row ->
                 val decrypted = apiKeyCipher.decryptFromStorage(row.apiKey)
+                // A row that is STILL marked as encrypted was not decryptable
+                // here (lost keystore key, locked passphrase). Re-wrapping the
+                // marker string would permanently destroy the stored key, so
+                // such rows are left untouched.
+                if (decrypted != null && decrypted.startsWith(chat.donzi.localtavern.data.security.EncryptedMarkerPrefix)) return@forEach
                 val reEncrypted = apiKeyCipher.encryptForStorage(decrypted)
-                if (reEncrypted != row.apiKey) {
+                if (reEncrypted != row.apiKey && reEncrypted != null) {
                     queries.updateApiConnectionApiKey(apiKey = reEncrypted, updatedAt = ts, syncSeq = nextSyncSeq(), id = row.id)
                 }
             }

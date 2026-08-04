@@ -98,10 +98,16 @@ class SyncRepository(
     }
 
     suspend fun updatePeerCursors(deviceId: String, receivedCursor: Long, peerReceivedCursor: Long) = withContext(ioDispatcher) {
+        // Cursors must never regress: a peer that restores from a backup (or a
+        // concurrent sync that lost a race) could otherwise send a lower value
+        // and force this device to re-send its whole history on every sync.
+        val existing = queries.selectSyncPeer(deviceId).executeAsOneOrNull()
+        val effReceived = maxOf(receivedCursor, existing?.receivedCursor ?: 0L)
+        val effPeerReceived = maxOf(peerReceivedCursor, existing?.peerReceivedCursor ?: 0L)
         val now = currentTimeMillis()
         queries.updateSyncPeerCursors(
-            receivedCursor = receivedCursor,
-            peerReceivedCursor = peerReceivedCursor,
+            receivedCursor = effReceived,
+            peerReceivedCursor = effPeerReceived,
             lastSyncAt = now,
             updatedAt = now,
             deviceId = deviceId
@@ -154,13 +160,21 @@ class SyncRepository(
     suspend fun applyChanges(changes: SyncChanges, peerDeviceId: String) = withContext(ioDispatcher) {
         // Message image blobs are written to the store BEFORE the row touches
         // the database (crash-safe ordering: a row never references a missing
-        // blob). Tombstoned rows are not persisted. Modern envelopes carry
-        // only content-addressed refs; legacy envelopes (older peers) ship
-        // the images inline, which are hashed and stored here.
+        // blob). Tombstoned rows are not persisted — their refs are dropped,
+        // so a delete cannot trigger blob fetches for content that is gone.
+        // Modern envelopes carry only content-addressed refs; legacy envelopes
+        // (older peers) ship the images inline, which are hashed and stored
+        // here. Refs from the wire are filtered to the canonical SHA-256 hex
+        // shape: anything else (path traversal, garbage) is dropped rather
+        // than stored or served.
         val preparedMessages = changes.messages.map { row ->
             val refs = when {
-                row.imageRefs.isNotEmpty() -> row.imageRefs.map { chat.donzi.localtavern.domain.ImageRef(it.sha256, it.size) }
-                row.imageData != null && row.isDeleted == 0L -> persistLegacyImages(row.imageData)
+                row.isDeleted == 1L -> emptyList()
+                row.imageRefs.isNotEmpty() -> row.imageRefs
+                    .mapNotNull { ref ->
+                        if (Hashing.isValidSha256Hex(ref.sha256)) chat.donzi.localtavern.domain.ImageRef(ref.sha256, ref.size) else null
+                    }
+                row.imageData != null -> persistLegacyImages(row.imageData)
                 else -> emptyList()
             }
             PreparedMessage(row, serializeImageRefs(refs))

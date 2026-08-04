@@ -12,8 +12,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlin.time.Clock
 
 // One bidirectional delta exchange with a paired device: send my changes
 // (deltas since the peer's cursor), apply the peer's changes (LWW, resolved
@@ -31,11 +34,40 @@ class SyncExchange(
     private val channelKeys: SyncChannelKeys,
     private val blobTransfer: SyncBlobTransfer,
     private val advertisedFetchAddress: () -> String?,
-    private val noteActivity: () -> Unit
+    private val noteActivity: () -> Unit,
+    // Device id whose pairing fingerprint is still awaiting out-of-band
+    // confirmation; while set, exchanges with that peer are refused (the
+    // peer is not yet trusted). Null = nothing pending.
+    private val unconfirmedPeerDeviceId: () -> String? = { null }
 ) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     private val identity get() = identityProvider()
+
+    // Anti-replay: exchange ids seen within the last few minutes per peer.
+    // Every /exchange request carries a fresh id inside the AEAD associated
+    // data; a verbatim replay of a captured request (same id) is refused, and
+    // a replayed request with a different id fails decryption.
+    private val seenExchangeIds = LinkedHashMap<String, Long>()
+    private val seenMutex = Mutex()
+
+    private suspend fun markExchangeSeen(peerId: String, exchangeId: String) {
+        seenMutex.withLock {
+            val now = Clock.System.now().toEpochMilliseconds()
+            seenExchangeIds.entries.removeAll { it.value < now - REPLAY_WINDOW_MS }
+            if (seenExchangeIds.size >= MAX_SEEN_EXCHANGES) {
+                seenExchangeIds.remove(seenExchangeIds.entries.first().key)
+            }
+            seenExchangeIds["$peerId:$exchangeId"] = now
+        }
+    }
+
+    private suspend fun isExchangeReplay(peerId: String, exchangeId: String): Boolean =
+        seenMutex.withLock {
+            val now = Clock.System.now().toEpochMilliseconds()
+            seenExchangeIds.entries.removeAll { it.value < now - REPLAY_WINDOW_MS }
+            seenExchangeIds.containsKey("$peerId:$exchangeId")
+        }
 
     suspend fun syncNow(peerId: String): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
@@ -49,6 +81,7 @@ class SyncExchange(
             // Changes I have not yet sent this peer, and my received cursor.
             val myChanges = repository.collectDelta(peer.peerReceivedCursor)
             val channelKey = channelKeys.outboundChannelKey(peerPublicKey)
+            val exchangeId = freshExchangeId()
             val envelope = SyncEnvelope(
                 fromDeviceId = identity.deviceId,
                 cursor = peer.receivedCursor,
@@ -56,7 +89,7 @@ class SyncExchange(
                 fromDeviceName = identity.deviceName,
                 fetchAddress = advertisedFetchAddress()
             )
-            val aad = aad(from = identity.deviceId, to = peer.deviceId)
+            val aad = aad(from = identity.deviceId, to = peer.deviceId, exchangeId = exchangeId)
             val payload = encodeBase64(crypto.encrypt(channelKey.key, aad, encodeEnvelope(envelope)))
 
             val response: ExchangeResponse = httpClient.post("http://$host:$port/exchange") {
@@ -65,6 +98,7 @@ class SyncExchange(
                 setBody(
                     ExchangeRequest(
                         fromDeviceId = identity.deviceId,
+                        exchangeId = exchangeId,
                         payload = payload,
                         ephemeralPublicKey = encodeBase64(channelKey.ephemeralPublicKey)
                     )
@@ -72,6 +106,11 @@ class SyncExchange(
             }.body()
 
             if (!response.ok) error(response.message.ifBlank { "Sync rejected by peer." })
+            if (response.exchangeId != exchangeId) {
+                // A response from a different exchange context: it cannot be
+                // the answer to this request.
+                error("Sync response did not match the request.")
+            }
 
             // The peer answers with its own delta (changes newer than my
             // received cursor), its own fresh ephemeral key, and its updated
@@ -83,7 +122,7 @@ class SyncExchange(
             }
             val responseKey = channelKeys.inboundChannelKey(peerPublicKey, peerEphemeral)
             val responseEnvelope = decodeEnvelope(
-                crypto.decrypt(responseKey, aad(from = peer.deviceId, to = identity.deviceId), decodeBase64(responsePayload))
+                crypto.decrypt(responseKey, aad(from = peer.deviceId, to = identity.deviceId, exchangeId = exchangeId), decodeBase64(responsePayload))
             )
 
             if (!responseEnvelope.changes.isEmpty) {
@@ -113,9 +152,15 @@ class SyncExchange(
         }
     }
 
-    suspend fun handleExchange(fromDeviceId: String, encryptedPayload: String, requestEphemeralKey: String): ExchangeResponse {
+    suspend fun handleExchange(fromDeviceId: String, encryptedPayload: String, requestEphemeralKey: String, exchangeId: String): ExchangeResponse {
         noteActivity()
         return runCatching {
+            if (exchangeId.isBlank()) {
+                return ExchangeResponse(ok = false, message = "Missing exchange id.")
+            }
+            if (unconfirmedPeerDeviceId() == fromDeviceId) {
+                return ExchangeResponse(ok = false, message = "Confirm the pairing fingerprint on this device before syncing.")
+            }
             val peer = repository.getPeer(fromDeviceId)
                 ?: return ExchangeResponse(ok = false, message = "Not paired.")
             val peerKey = peer.publicKey
@@ -126,10 +171,13 @@ class SyncExchange(
             }
             val channelKey = channelKeys.inboundChannelKey(peerKey, peerEphemeral)
             val envelope = decodeEnvelope(
-                crypto.decrypt(channelKey, aad(from = fromDeviceId, to = identity.deviceId), decodeBase64(encryptedPayload))
+                crypto.decrypt(channelKey, aad(from = fromDeviceId, to = identity.deviceId, exchangeId = exchangeId), decodeBase64(encryptedPayload))
             )
             if (envelope.fromDeviceId != fromDeviceId) {
                 return ExchangeResponse(ok = false, message = "Sender mismatch.")
+            }
+            if (isExchangeReplay(fromDeviceId, exchangeId)) {
+                return ExchangeResponse(ok = false, message = "Replayed exchange.")
             }
             // Authenticated display-name update (see syncNow): never touches
             // cursors or deltas, so renaming cannot disturb sync state.
@@ -160,6 +208,7 @@ class SyncExchange(
                 receivedCursor = newReceivedCursor,
                 peerReceivedCursor = envelope.cursor
             )
+            markExchangeSeen(fromDeviceId, exchangeId)
 
             val myChanges = repository.collectDelta(envelope.cursor)
             val myExchangeKey = channelKeys.outboundChannelKey(peerKey)
@@ -171,10 +220,11 @@ class SyncExchange(
                 fetchAddress = advertisedFetchAddress()
             )
             val responsePayload = encodeBase64(
-                crypto.encrypt(myExchangeKey.key, aad(from = identity.deviceId, to = fromDeviceId), encodeEnvelope(responseEnvelope))
+                crypto.encrypt(myExchangeKey.key, aad(from = identity.deviceId, to = fromDeviceId, exchangeId = exchangeId), encodeEnvelope(responseEnvelope))
             )
             ExchangeResponse(
                 ok = true,
+                exchangeId = exchangeId,
                 payload = responsePayload,
                 ephemeralPublicKey = encodeBase64(myExchangeKey.ephemeralPublicKey)
             )
@@ -204,4 +254,12 @@ class SyncExchange(
 
     private fun decodeEnvelope(bytes: ByteArray): SyncEnvelope =
         json.decodeFromString(SyncEnvelope.serializer(), bytes.decodeToString())
+
+    private companion object {
+        // Exchange ids are only meaningful within minutes of an exchange; a
+        // bounded window keeps the seen-set small while still blocking
+        // verbatim replays.
+        const val REPLAY_WINDOW_MS = 10 * 60 * 1000L
+        const val MAX_SEEN_EXCHANGES = 256
+    }
 }

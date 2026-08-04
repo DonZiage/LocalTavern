@@ -1,5 +1,6 @@
 package chat.donzi.localtavern.data.sync
 
+import dev.whyoleg.cryptography.random.CryptographyRandom
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlin.random.Random
@@ -120,9 +121,10 @@ object DeviceName {
 }
 
 private fun randomDeviceId(): String {
-    // Compact lowercase id built from a random base64 (no dashes needed).
+    // Compact lowercase id built from a CSPRNG source (the device id anchors
+    // pairing and sync identities, so it must not be guessable).
     val bytes = ByteArray(16)
-    kotlin.random.Random.nextBytes(bytes)
+    CryptographyRandom.Default.nextBytes(bytes)
     return base64Encode(bytes).replace("+", "a").replace("/", "b").replace("=", "").lowercase().take(24)
 }
 

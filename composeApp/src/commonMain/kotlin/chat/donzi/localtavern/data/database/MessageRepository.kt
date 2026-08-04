@@ -185,18 +185,21 @@ class MessageRepository(
     }
 
     suspend fun appendImagesToMessage(sessionId: String, messageId: String, newImages: List<ByteArray>) = withContext(ioDispatcher) {
-        // All calls serialize on this repository's single dispatcher, so the
-        // read-combine-write sequence is atomic in practice; blobs are
-        // content-addressed, so an image already stored is not written twice.
-        val existingRefs = deserializeImageRefs(queries.selectMessageById(messageId).executeAsOneOrNull()?.imageRefs)
+        // Blobs are content-addressed, so an image already stored is not
+        // written twice; they can be persisted before the row update. The
+        // read-combine-write of the refs list runs inside ONE transaction so
+        // concurrent appends cannot lose each other's images.
         val newRefs = persistImages(newImages)
-        val combined = existingRefs + newRefs
-        queries.updateMessageImageRefs(
-            imageRefs = serializeImageRefs(combined),
-            updatedAt = nextTimestamp(),
-            syncSeq = nextSyncSeq(),
-            id = messageId
-        )
+        database.transaction {
+            val existingRefs = deserializeImageRefs(queries.selectMessageById(messageId).executeAsOneOrNull()?.imageRefs)
+            val combined = existingRefs + newRefs
+            queries.updateMessageImageRefs(
+                imageRefs = serializeImageRefs(combined),
+                updatedAt = nextTimestamp(),
+                syncSeq = nextSyncSeq(),
+                id = messageId
+            )
+        }
     }
 
     suspend fun deleteMessage(id: String) = withContext(ioDispatcher) {

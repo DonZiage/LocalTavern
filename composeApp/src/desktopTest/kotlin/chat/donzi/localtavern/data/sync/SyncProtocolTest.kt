@@ -4,7 +4,12 @@ import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import chat.donzi.localtavern.data.blob.BlobStore
 import chat.donzi.localtavern.data.database.LocalTavernDB
 import io.ktor.client.HttpClient
+import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -15,6 +20,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -84,6 +90,13 @@ class SyncProtocolTest {
                     json(Json { ignoreUnknownKeys = true; isLenient = true })
                 }
             }
+        }
+    }
+
+    // Fresh client for manual protocol calls in tests.
+    private fun httpClient(): HttpClient = HttpClient {
+        install(ContentNegotiation) {
+            json(Json { ignoreUnknownKeys = true; isLenient = true })
         }
     }
 
@@ -238,6 +251,8 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+            host.service.confirmFingerprint()
+            guest.service.confirmFingerprint()
 
             // Guest initiates the sync.
             val syncResult = guest.service.syncNow("host-device")
@@ -278,6 +293,8 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+            host.service.confirmFingerprint()
+            guest.service.confirmFingerprint()
 
             // Simulate the peer having changed IP (DHCP): the stored address
             // is wrong, discovery would fix it, but a manual update must be
@@ -305,6 +322,8 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+            host.service.confirmFingerprint()
+            guest.service.confirmFingerprint()
 
             // Host rotates its key: all pairings must be dropped.
             val rotateResult = host.service.rotateIdentityKey()
@@ -344,6 +363,8 @@ class SyncProtocolTest {
             val newPin = host.service.state.value.pairingPin!!
             val result = guest.service.connectToDevice("127.0.0.1", hostPort, newPin)
             assertTrue(result.isSuccess, "Re-pairing after rotation must succeed: ${result.exceptionOrNull()}")
+            host.service.confirmFingerprint()
+            guest.service.confirmFingerprint()
 
             seedPersona(host, "p-host", "Host Persona", 1000L)
             val syncResult = guest.service.syncNow("host-device")
@@ -366,6 +387,8 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+            host.service.confirmFingerprint()
+            guest.service.confirmFingerprint()
 
             // At pairing time the host records the name the guest sent.
             assertEquals("Guest", host.repository.getPeer("guest-device")!!.name)
@@ -431,6 +454,8 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+            host.service.confirmFingerprint()
+            guest.service.confirmFingerprint()
 
             // First exchange: guest's row reaches the host and both sides'
             // cursors advance past its stamp.
@@ -467,6 +492,8 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+            host.service.confirmFingerprint()
+            guest.service.confirmFingerprint()
 
             // Host holds a message whose image blob is larger than one chunk,
             // so the fetch must reassemble several pieces.
@@ -515,16 +542,20 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+            host.service.confirmFingerprint()
+            guest.service.confirmFingerprint()
 
             // The host references a blob it does not actually have (e.g. it
-            // never fetched it from its own upstream peer).
+            // never fetched it from its own upstream peer). The ref is a
+            // well-formed SHA-256 key, so it passes ingest validation.
+            val missingHash = runBlocking { chat.donzi.localtavern.utils.Hashing.sha256Hex(ByteArray(64) { 7 }) }
             host.repository.applyChanges(
                 SyncChanges(messages = listOf(
                     SyncMessage(
                         id = "m1", sessionId = "s1", role = "assistant", content = "Hello",
                         timestamp = 1L, parentId = null, isActivePath = 1L,
                         updatedAt = 1000L, isDeleted = 0L,
-                        imageRefs = listOf(SyncImageRef("deadbeef", 42L)),
+                        imageRefs = listOf(SyncImageRef(missingHash, 42L)),
                         reasoningText = null, costEstimate = null
                     )
                 )),
@@ -533,7 +564,7 @@ class SyncProtocolTest {
 
             val syncResult = guest.service.syncNow("host-device")
             assertTrue(syncResult.isSuccess, "A missing blob must not fail the sync: ${syncResult.exceptionOrNull()}")
-            assertNull(guest.blobStore.read("deadbeef"), "An unservable blob must simply stay absent")
+            assertNull(guest.blobStore.read(missingHash), "An unservable blob must simply stay absent")
 
             // A second sync must not error either (the ref is remembered).
             val again = guest.service.syncNow("host-device")
@@ -555,6 +586,8 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+            host.service.confirmFingerprint()
+            guest.service.confirmFingerprint()
 
             // A pre-blob-store peer ships the serialized image bytes inline.
             val img = ByteArray(64) { 3 }
@@ -583,6 +616,141 @@ class SyncProtocolTest {
 
             val row = guest.db.localTavernDBQueries.selectMessageByIdAny("m1").executeAsOne()!!
             assertTrue(row.imageRefs!!.contains(hash), "The receiving side must adopt refs for legacy images")
+        } finally {
+            host.stop()
+            guest.stop()
+        }
+    }
+
+    @Test
+    fun syncIsRefusedUntilPairingFingerprintIsConfirmed() = runTest {
+        val hostPort = freePort()
+        val host = Device("host-device", "Host", hostPort)
+        val guest = Device("guest-device", "Guest", hostPort + 1)
+        try {
+            host.start()
+            guest.start()
+            seedPersona(host, "p-host", "Host Persona", 1000L)
+
+            host.service.startPairing()
+            val pin = host.service.state.value.pairingPin!!
+            guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+
+            // Neither device has confirmed the out-of-band fingerprint yet:
+            // the peer is not trusted, so sync must be refused.
+            val early = guest.service.syncNow("host-device")
+            assertTrue(early.isFailure, "Sync must be refused before the fingerprint is confirmed")
+            assertTrue(
+                early.exceptionOrNull()?.message?.contains("fingerprint", ignoreCase = true) == true,
+                "The refusal must point at the fingerprint: ${early.exceptionOrNull()?.message}"
+            )
+
+            // Confirming on both sides opens the exchange.
+            host.service.confirmFingerprint()
+            guest.service.confirmFingerprint()
+            val syncResult = guest.service.syncNow("host-device")
+            assertTrue(syncResult.isSuccess, "Sync must succeed after confirmation: ${syncResult.exceptionOrNull()}")
+            assertTrue(guest.personas().any { it.id == "p-host" })
+        } finally {
+            host.stop()
+            guest.stop()
+        }
+    }
+
+    @Test
+    fun replayedExchangeRequest_isRejected() = runTest {
+        val hostPort = freePort()
+        val host = Device("host-device", "Host", hostPort)
+        val guest = Device("guest-device", "Guest", hostPort + 1)
+        try {
+            host.start()
+            guest.start()
+            host.service.startPairing()
+            val pin = host.service.state.value.pairingPin!!
+            guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+            host.service.confirmFingerprint()
+            guest.service.confirmFingerprint()
+
+            // Build one exchange request exactly as syncNow would, but with a
+            // FIXED exchange id so it can be sent twice verbatim.
+            val exchangeId = "fixed-replay-id"
+            val channelKeys = SyncChannelKeys(guest.crypto) { guest.identity }
+            val envelope = SyncEnvelope(
+                fromDeviceId = guest.identity.deviceId,
+                cursor = 0L,
+                changes = SyncChanges(),
+                fromDeviceName = guest.identity.deviceName
+            )
+            val json = Json { ignoreUnknownKeys = true; isLenient = true }
+            val channelKey = runBlocking { channelKeys.outboundChannelKey(host.identity.publicKeyBytes) }
+            val payload = runBlocking {
+                encodeBase64(
+                    guest.crypto.encrypt(
+                        channelKey.key,
+                        aad(guest.identity.deviceId, host.identity.deviceId, exchangeId),
+                        json.encodeToString(SyncEnvelope.serializer(), envelope).encodeToByteArray()
+                    )
+                )
+            }
+            val request = ExchangeRequest(
+                fromDeviceId = guest.identity.deviceId,
+                exchangeId = exchangeId,
+                payload = payload,
+                ephemeralPublicKey = encodeBase64(channelKey.ephemeralPublicKey)
+            )
+            suspend fun post(): ExchangeResponse = httpClient().post("http://127.0.0.1:$hostPort/exchange") {
+                contentType(ContentType.Application.Json)
+                setBody(request)
+            }.body()
+
+            val first = post()
+            assertTrue(first.ok, "First exchange must succeed: ${first.message}")
+            val second = post()
+            assertFalse(second.ok, "A verbatim replay of the exchange must be rejected")
+            assertTrue(second.message.contains("Replayed", ignoreCase = true), "Unexpected rejection message: ${second.message}")
+        } finally {
+            host.stop()
+            guest.stop()
+        }
+    }
+
+    @Test
+    fun invalidBlobRefs_fromWireAreDroppedAtIngest() = runTest {
+        val hostPort = freePort()
+        val host = Device("host-device", "Host", hostPort)
+        val guest = Device("guest-device", "Guest", hostPort + 1)
+        try {
+            host.start()
+            guest.start()
+            host.service.startPairing()
+            val pin = host.service.state.value.pairingPin!!
+            guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+            host.service.confirmFingerprint()
+            guest.service.confirmFingerprint()
+
+            // A hostile peer ships a path-traversal ref next to a valid one;
+            // only the well-formed SHA-256 key may survive ingest.
+            val validHash = runBlocking { chat.donzi.localtavern.utils.Hashing.sha256Hex(ByteArray(16) { 9 }) }
+            guest.repository.applyChanges(
+                SyncChanges(messages = listOf(
+                    SyncMessage(
+                        id = "m1", sessionId = "s1", role = "assistant", content = "Hello",
+                        timestamp = 1L, parentId = null, isActivePath = 1L,
+                        updatedAt = 1000L, isDeleted = 0L,
+                        imageRefs = listOf(
+                            SyncImageRef("../../../../etc/passwd", 1L),
+                            SyncImageRef(validHash, 16L)
+                        ),
+                        reasoningText = null, costEstimate = null
+                    )
+                )),
+                peerDeviceId = "device-p"
+            )
+
+            val row = guest.db.localTavernDBQueries.selectMessageByIdAny("m1").executeAsOne()!!
+            val refs = chat.donzi.localtavern.utils.deserializeImageRefs(row.imageRefs)
+            assertEquals(1, refs.size, "The path-traversal ref must be dropped")
+            assertEquals(validHash, refs[0].sha256)
         } finally {
             host.stop()
             guest.stop()

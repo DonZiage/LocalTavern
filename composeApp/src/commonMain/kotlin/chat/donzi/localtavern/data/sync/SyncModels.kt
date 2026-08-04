@@ -225,9 +225,13 @@ data class BlobFetchResult(
 
 // Wire bodies of /blob/fetch: an encrypted payload plus the sender's
 // per-request ephemeral X25519 public key, identical in shape to /exchange.
+// The exchange id binds this request to its response AND to the AEAD
+// associated data of both payloads; it rides outside the ciphertext because
+// both peers need it before they can derive the channel key.
 @Serializable
 data class BlobFetchRequest(
     val fromDeviceId: String,
+    val exchangeId: String = "",
     val payload: String,
     val ephemeralPublicKey: String = ""
 )
@@ -236,20 +240,23 @@ data class BlobFetchRequest(
 data class BlobFetchResponse(
     val ok: Boolean,
     val message: String = "",
+    val exchangeId: String = "",
     val payload: String? = null,
     val ephemeralPublicKey: String = ""
 )
 
-// Pairing handshake. The PIN is never transmitted: [nonce] is a fresh random
-// value and [pinProof] is HMAC-SHA256(pin, deviceId|publicKey|nonce), which
-// the host verifies against the PIN it displayed. A sniffer that relays the
-// exchange cannot swap keys without knowing the PIN.
+// Pairing handshake. The PIN is never transmitted: [nonce] is a fresh
+// CSPRNG value that doubles as the KDF salt, and [pinProof] is
+// HMAC-SHA256(PBKDF2(pin, nonce), deviceId|publicKey|nonce), which the host
+// verifies against the PIN it displayed. A sniffer that relays the exchange
+// cannot swap keys without knowing the PIN, and the stretched KDF makes
+// offline PIN recovery from a captured proof prohibitively expensive.
 @Serializable
 data class PairRequest(
     val deviceId: String,
     val deviceName: String,
     val publicKey: String,     // base64 X25519 public key
-    val nonce: String,         // base64 random 16 bytes
+    val nonce: String,         // base64 random 16 bytes (PBKDF2 salt)
     val pinProof: String       // base64 HMAC-SHA256 over deviceId|publicKey|nonce
 )
 
@@ -267,6 +274,52 @@ data class HelloResponse(
     val deviceId: String,
     val deviceName: String
 )
+
+// ---------- Wire-input validation ----------
+
+// Validates a peer-supplied fetch address before it is used to make HTTP
+// requests: an envelope's fetchAddress is attacker-controlled, so it must be
+// a bare "host:port" — no scheme, credentials, path, query or whitespace —
+// with a numeric port and an IPv4 or plain hostname host. Anything else
+// (e.g. "http://169.254.169.254/latest/meta-data") is rejected, which blocks
+// the SSRF vector of pointing this device at arbitrary internal hosts.
+// Returns (host, port) or null when the address is unusable.
+internal fun validateFetchAddress(address: String?): Pair<String, Int>? {
+    val trimmed = address?.trim() ?: return null
+    if (trimmed.isEmpty() || trimmed.length > 255) return null
+    if (trimmed.contains("://") || trimmed.contains("@") || trimmed.contains("/") ||
+        trimmed.contains("?") || trimmed.contains("#") || trimmed.any { it.isWhitespace() }
+    ) return null
+    val port = trimmed.substringAfterLast(':')
+    if (port == trimmed) return null
+    val portNumber = port.toIntOrNull() ?: return null
+    if (portNumber !in 1..65535) return null
+    val host = trimmed.substringBeforeLast(':')
+    if (host.isBlank() || host.length > 253) return null
+    // Colons in the host mean IPv6, which this protocol does not support
+    // (addresses are advertised as plain "ip:port").
+    if (':' in host) return null
+    if (!isIpv4Literal(host) && !isPlainHostname(host)) return null
+    return host to portNumber
+}
+
+private fun isIpv4Literal(host: String): Boolean {
+    val parts = host.split('.')
+    if (parts.size != 4) return false
+    return parts.all { part ->
+        val value = part.toIntOrNull() ?: return false
+        // Reject leading zeros (octal ambiguity) and out-of-range octets.
+        value in 0..255 && part == value.toString()
+    }
+}
+
+private fun isPlainHostname(host: String): Boolean {
+    if (host.isEmpty() || host.length > 253) return false
+    if (!host.first().isLetterOrDigit() || !host.last().isLetterOrDigit()) return false
+    return host.all { char ->
+        char.isLetterOrDigit() || char == '-' || char == '.'
+    }
+}
 
 // ---------- Entity -> DTO mappers ----------
 // Convert database rows (including tombstones) into the wire snapshots sent

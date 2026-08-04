@@ -56,9 +56,21 @@ class ApiKeyCipherTest {
     }
 
     @Test
-    fun unavailableCrypto_leavesKeysPlaintext() {
-        val cipher = ApiKeyCipher(FakeCrypto(isAvailable = false))
+    fun unavailableAndUnconfiguredCrypto_leavesKeysPlaintext() {
+        // No backend configured at all (e.g. desktop before the passphrase is
+        // set): there is nothing to encrypt with, so plaintext storage is the
+        // designed behavior and the UI reports "not protected".
+        val cipher = ApiKeyCipher(FakeCrypto(isAvailable = false, isProtected = false))
         assertEquals("sk-secret", cipher.encryptForStorage("sk-secret"))
+    }
+
+    @Test
+    fun unavailableButProtectedCrypto_failsClosed() {
+        // The backend IS configured (protection claimed) but encryption fails:
+        // storing plaintext would silently contradict the protection promise,
+        // so the write must fail closed instead.
+        val cipher = ApiKeyCipher(FakeCrypto(isAvailable = false, isProtected = true))
+        assertNull(cipher.encryptForStorage("sk-secret"))
     }
 
     @Test

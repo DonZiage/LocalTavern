@@ -1,5 +1,6 @@
 package chat.donzi.localtavern.data.blob
 
+import chat.donzi.localtavern.utils.Hashing
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.convert
@@ -32,7 +33,10 @@ private class IosBlobStore : BlobStore {
     }
 
     private fun urlFor(key: String): NSURL? {
-        if (key.isBlank() || key.length > 128) return null
+        // Only canonical SHA-256 hex keys are valid file names: any other key
+        // (path traversal, relative segments, non-hex) must never resolve into
+        // the blob directory — refs can arrive from the wire.
+        if (!Hashing.isValidSha256Hex(key)) return null
         return directoryUrl()?.URLByAppendingPathComponent(key)
     }
 

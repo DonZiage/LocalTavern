@@ -34,16 +34,23 @@ actual class DriverFactory {
                 LocalTavernDB.Schema.create(driver)
             } else {
                 // An existing database whose user_version was never stamped (0)
-                // cannot be assumed to be v1: it may already carry the v2
-                // round-trip columns (e.g. from an intermediate dev build).
-                // Re-running the v1 migration on a v2 schema would crash every
-                // launch with "duplicate column name". Detect the real schema
-                // from the columns instead of trusting the version number.
+                // cannot be assumed to be v1: it may already carry the
+                // round-trip columns from later versions (e.g. from an
+                // intermediate dev build). Re-running an old migration on a
+                // newer schema would crash every launch with "duplicate column
+                // name". Detect the real schema from the columns instead of
+                // trusting the version number. The mappings mirror the
+                // migrations: 1.sqm adds systemPrompt (v1->v2), 5.sqm adds
+                // inferenceProvider (v5->v6), 6.sqm adds quantization
+                // (v6->v7), 7.sqm adds sendWithCtrlEnter (v7->v8), 8.sqm adds
+                // syncSeq (v8->v9), 9.sqm adds imageRefs (v9->v10).
                 val actualOldVersion = currentVersion.coerceAtLeast(
                     when {
-                        hasColumn(driver, "AppSettings", "sendWithCtrlEnter") -> 7L
-                        hasColumn(driver, "ApiConnection", "quantization") -> 6L
-                        hasColumn(driver, "ApiConnection", "inferenceProvider") -> 5L
+                        hasColumn(driver, "MessageEntity", "imageRefs") -> 10L
+                        hasColumn(driver, "MessageEntity", "syncSeq") -> 9L
+                        hasColumn(driver, "AppSettings", "sendWithCtrlEnter") -> 8L
+                        hasColumn(driver, "ApiConnection", "quantization") -> 7L
+                        hasColumn(driver, "ApiConnection", "inferenceProvider") -> 6L
                         hasColumn(driver, "CharacterEntity", "systemPrompt") -> 2L
                         else -> 1L
                     }

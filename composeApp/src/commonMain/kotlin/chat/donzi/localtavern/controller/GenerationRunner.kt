@@ -71,19 +71,22 @@ class GenerationRunner(
             return
         }
 
-        val aiMessageId = messageRepository.insertMessage(sessionId, "assistant", "...", targetParentId)
-        onRefresh(sessionId)
-
-        val responseBuilder = StringBuilder()
-        val reasoningBuilder = StringBuilder()
-        var lastStateTime = 0L
-        var lastPersistTime = 0L
-
         // The placeholder is inserted before the payload is built and the
-        // stream is opened. Any failure in that phase must remove the
+        // stream is opened. Any failure — including a cancellation landing
+        // between the insert and the first refresh — must remove the
         // placeholder, or a phantom "..." message would remain in the session
-        // with no error surfaced.
+        // with no error surfaced. The whole phase runs inside the guarded
+        // try, so every exit path below is covered.
+        var aiMessageId: String? = null
         try {
+            aiMessageId = messageRepository.insertMessage(sessionId, "assistant", "...", targetParentId)
+            onRefresh(sessionId)
+
+            val responseBuilder = StringBuilder()
+            val reasoningBuilder = StringBuilder()
+            var lastStateTime = 0L
+            var lastPersistTime = 0L
+
             val (messagesPayload, inputTokens) = withContext(payloadDispatcher) {
                 val dbMessages = messageRepository.getMessagesForSession(sessionId)
 
@@ -241,18 +244,18 @@ class GenerationRunner(
                     }
                     if (now - lastPersistTime >= 250) {
                         lastPersistTime = now
-                        messageRepository.updateMessageContentAndReasoning(aiMessageId, responseBuilder.toString(), reasoningBuilder.toString().takeIf { it.isNotBlank() })
+                        messageRepository.updateMessageContentAndReasoning(aiMessageId!!, responseBuilder.toString(), reasoningBuilder.toString().takeIf { it.isNotBlank() })
                     }
                 }
                 val fullResponse = responseBuilder.toString()
                 if (fullResponse.isBlank()) {
-                    messageRepository.deleteMessage(aiMessageId)
+                    messageRepository.deleteMessage(aiMessageId!!)
                 } else {
                     messageRepository.updateMessageContentAndReasoning(
                         aiMessageId, fullResponse,
                         reasoningBuilder.toString().takeIf { it.isNotBlank() }
                     )
-                    persistCostEstimate(aiMessageId, pricing, inputTokens, responseBuilder.toString())
+                    persistCostEstimate(aiMessageId!!, pricing, inputTokens, responseBuilder.toString())
                 }
                 onRefresh(sessionId)
             } catch (e: StreamTruncatedException) {
@@ -273,13 +276,13 @@ class GenerationRunner(
                         )
                     }
                     if (recovered.text.isBlank()) {
-                        messageRepository.deleteMessage(aiMessageId)
+                        messageRepository.deleteMessage(aiMessageId!!)
                     } else {
                         messageRepository.updateMessageContentAndReasoning(
                             aiMessageId, recovered.text,
                             recovered.reasoningText?.takeIf { it.isNotBlank() }
                         )
-                        persistCostEstimate(aiMessageId, pricing, inputTokens, recovered.text)
+                        persistCostEstimate(aiMessageId!!, pricing, inputTokens, recovered.text)
                         state.update { st ->
                             if (!isCurrentView()) {
                                 st
@@ -301,13 +304,13 @@ class GenerationRunner(
                 streamJob.cancel()
                 val partialResponse = responseBuilder.toString()
                 if (partialResponse.isBlank()) {
-                    messageRepository.deleteMessage(aiMessageId)
+                    messageRepository.deleteMessage(aiMessageId!!)
                 } else {
                     messageRepository.updateMessageContentAndReasoning(
                         aiMessageId, partialResponse,
                         reasoningBuilder.toString().takeIf { it.isNotBlank() }
                     )
-                    persistCostEstimate(aiMessageId, pricing, inputTokens, partialResponse)
+                    persistCostEstimate(aiMessageId!!, pricing, inputTokens, partialResponse)
                 }
                 state.update { it.copy(errorMessage = "Response timeout exceeded.", errorIsWarning = true) }
                 onRefresh(sessionId)
@@ -316,13 +319,13 @@ class GenerationRunner(
                 withContext(NonCancellable) {
                     val partialResponse = responseBuilder.toString()
                     if (partialResponse.isBlank()) {
-                        messageRepository.deleteMessage(aiMessageId)
+                        messageRepository.deleteMessage(aiMessageId!!)
                     } else {
                         messageRepository.updateMessageContentAndReasoning(
                             aiMessageId, partialResponse,
                             reasoningBuilder.toString().takeIf { it.isNotBlank() }
                         )
-                        persistCostEstimate(aiMessageId, pricing, inputTokens, partialResponse)
+                        persistCostEstimate(aiMessageId!!, pricing, inputTokens, partialResponse)
                     }
                 }
                 onRefresh(sessionId)
@@ -330,30 +333,31 @@ class GenerationRunner(
                 streamJob.cancel()
                 val partialResponse = responseBuilder.toString()
                 if (partialResponse.isBlank()) {
-                    messageRepository.deleteMessage(aiMessageId)
+                    messageRepository.deleteMessage(aiMessageId!!)
                 } else {
                     messageRepository.updateMessageContentAndReasoning(
                         aiMessageId, partialResponse,
                         reasoningBuilder.toString().takeIf { it.isNotBlank() }
                     )
-                    persistCostEstimate(aiMessageId, pricing, inputTokens, partialResponse)
+                    persistCostEstimate(aiMessageId!!, pricing, inputTokens, partialResponse)
                 }
                 state.update { it.copy(errorMessage = e.message ?: "Unknown error occurred", errorIsWarning = false) }
                 onRefresh(sessionId)
             }
         } catch (e: CancellationException) {
             // Generation was stopped before any token was handled; drop the
-            // placeholder so it cannot linger in the session.
+            // placeholder (if it was inserted) so it cannot linger.
             withContext(NonCancellable) {
-                messageRepository.deleteMessage(aiMessageId)
+                aiMessageId?.let { messageRepository.deleteMessage(it) }
             }
             onRefresh(sessionId)
             throw e
         } catch (e: Exception) {
             // Payload build or stream setup failed before any token was
-            // handled; remove the placeholder and surface the error.
+            // handled; remove the placeholder (if it was inserted) and
+            // surface the error.
             withContext(NonCancellable) {
-                messageRepository.deleteMessage(aiMessageId)
+                aiMessageId?.let { messageRepository.deleteMessage(it) }
             }
             state.update { it.copy(errorMessage = e.message ?: "Unknown error occurred", errorIsWarning = false) }
             onRefresh(sessionId)

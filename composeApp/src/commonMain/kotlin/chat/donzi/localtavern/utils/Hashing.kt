@@ -10,6 +10,18 @@ object Hashing {
 
     private val HEX_DIGITS = "0123456789abcdef".toCharArray()
 
+    // The canonical key shape: exactly 64 lowercase hex chars (the output of
+    // sha256Hex). Keys from any untrusted source (sync envelopes) MUST pass
+    // this before touching the file system: the blob store resolves keys as
+    // file names, so an unvalidated key is a path-traversal primitive.
+    fun isValidSha256Hex(key: String): Boolean {
+        if (key.length != 64) return false
+        for (char in key) {
+            if (char !in HEX_DIGITS) return false
+        }
+        return true
+    }
+
     suspend fun sha256(data: ByteArray): ByteArray =
         CryptographyProvider.Default.get(SHA256).hasher().hash(data)
 
