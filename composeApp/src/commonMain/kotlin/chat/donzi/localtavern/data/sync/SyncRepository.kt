@@ -1,16 +1,10 @@
 package chat.donzi.localtavern.data.sync
 
-import chat.donzi.localtavern.data.database.ApiConnection
-import chat.donzi.localtavern.data.database.CharacterEntity
-import chat.donzi.localtavern.data.database.ChatSession
 import chat.donzi.localtavern.data.database.LocalTavernDB
 import chat.donzi.localtavern.data.database.LogicalClock
-import chat.donzi.localtavern.data.database.MessageEntity
-import chat.donzi.localtavern.data.database.PersonaEntity
 import chat.donzi.localtavern.data.blob.BlobStore
-import chat.donzi.localtavern.data.database.PromptBlockEntity
-import chat.donzi.localtavern.data.database.SyncPeer
 import chat.donzi.localtavern.data.security.ApiKeyCipher
+import chat.donzi.localtavern.data.database.SyncPeer
 import chat.donzi.localtavern.utils.Hashing
 import chat.donzi.localtavern.utils.deserializeImageList
 import chat.donzi.localtavern.utils.deserializeImageRefs
@@ -396,67 +390,3 @@ class SyncRepository(
 
 private fun currentTimeMillis(): Long =
     kotlin.time.Clock.System.now().toEpochMilliseconds()
-
-// ---------- Entity -> DTO mappers ----------
-
-private fun CharacterEntity.toSync() = SyncCharacter(
-    id = id, name = name, description = description, personality = personality ?: "",
-    scenario = scenario ?: "", firstMes = firstMes, mesExample = mesExample,
-    creatorNotes = creatorNotes, altGreetings = altGreetings, avatarData = avatarData,
-    isAssistant = isAssistant, updatedAt = updatedAt, isDeleted = isDeleted,
-    syncSeq = syncSeq,
-    systemPrompt = systemPrompt, postHistoryInstructions = postHistoryInstructions,
-    creator = creator, characterVersion = characterVersion, tags = tags,
-    extensions = extensions, characterBook = characterBook
-)
-
-private fun PersonaEntity.toSync() = SyncPersona(
-    id = id, name = name, description = description, avatarData = avatarData,
-    updatedAt = updatedAt, isDeleted = isDeleted, syncSeq = syncSeq
-)
-
-private fun ChatSession.toSync() = SyncSession(
-    id = id, characterId = characterId, personaId = personaId, title = title,
-    lastTimestamp = lastTimestamp, currentMessageId = currentMessageId,
-    parentSessionId = parentSessionId, updatedAt = updatedAt, isDeleted = isDeleted,
-    syncSeq = syncSeq
-)
-
-private suspend fun MessageEntity.toSync(blobStore: BlobStore?): SyncMessage {
-    val refs = deserializeImageRefs(imageRefs)
-    return SyncMessage(
-        id = id, sessionId = sessionId, role = role, content = content, timestamp = timestamp,
-        parentId = parentId, isActivePath = isActivePath, updatedAt = updatedAt,
-        isDeleted = isDeleted,
-        // Legacy wire format: the image bytes ride in the envelope (loaded
-        // from the store); the refs ride along for newer peers to fetch.
-        imageData = blobStore?.let { store ->
-            refs.mapNotNull { store.read(it.sha256) }.takeIf { it.isNotEmpty() }?.let { serializeImageList(it) }
-        },
-        imageRefs = refs.map { SyncImageRef(sha256 = it.sha256, size = it.size) },
-        reasoningText = reasoningText,
-        costEstimate = costEstimate, syncSeq = syncSeq
-    )
-}
-
-private fun ApiConnection.toSync(cipher: ApiKeyCipher?) = SyncApiConnection(
-    id = id, provider = provider, name = name, baseUrl = baseUrl,
-    // The key travels as portable plaintext inside the end-to-end-encrypted
-    // envelope (see ApiKeyCipher.toPortableForm); a key this device cannot
-    // read is withheld (null) so the peer never stores an undecryptable blob.
-    apiKey = if (cipher != null) cipher.toPortableForm(apiKey) else apiKey,
-    model = model, inferenceProvider = inferenceProvider, quantization = quantization,
-    isActive = 0L, isChatCompletion = isChatCompletion,
-    lastUsed = lastUsed, temperature = temperature, topP = topP,
-    topK = topK, presencePenalty = presencePenalty,
-    frequencyPenalty = frequencyPenalty, contextLimit = contextLimit,
-    responseLimit = responseLimit, displayOrder = displayOrder,
-    timeoutLimit = timeoutLimit, reasoningOverride = reasoningOverride,
-    updatedAt = updatedAt, isDeleted = isDeleted, syncSeq = syncSeq
-)
-
-private fun PromptBlockEntity.toSync() = SyncPromptBlock(
-    id = id, name = name, template = template, isEnabled = isEnabled,
-    isCustom = isCustom, displayOrder = displayOrder, updatedAt = updatedAt,
-    isDeleted = isDeleted, syncSeq = syncSeq
-)

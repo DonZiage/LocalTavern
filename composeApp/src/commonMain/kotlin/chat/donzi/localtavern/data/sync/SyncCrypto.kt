@@ -217,5 +217,14 @@ class SyncCrypto(
 }
 
 @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
-private fun encodeBase64(bytes: ByteArray): String =
+internal fun encodeBase64(bytes: ByteArray): String =
     kotlin.io.encoding.Base64.encode(bytes)
+
+@OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
+internal fun decodeBase64(text: String): ByteArray =
+    kotlin.io.encoding.Base64.decode(text)
+
+// Authenticated-data prefix binding each encrypted payload to its sender and
+// recipient: a payload cannot be replayed against a different device pair.
+internal fun aad(from: String, to: String): ByteArray =
+    "localtavern-sync|from=$from|to=$to".encodeToByteArray()
