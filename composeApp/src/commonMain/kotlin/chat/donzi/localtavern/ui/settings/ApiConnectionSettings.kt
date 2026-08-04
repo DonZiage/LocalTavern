@@ -225,13 +225,13 @@ fun ApiConnectionSettings(
             confirmLabel = "Protect",
             requireConfirmation = true,
             onDismiss = { showProtectDialog = false },
-            onConfirm = { passphrase ->
+            onConfirm = { input ->
                 scope.launch {
                     // Failure (e.g. data dir not writable) leaves the keys
                     // plaintext; the security section below reflects the real
                     // state on refresh and offers the full flow to retry.
                     runCatching {
-                        apiKeyCipher.protect(passphrase)
+                        apiKeyCipher.protect(input.value)
                         apiSettingsRepository.reencryptAllApiKeys()
                     }
                     showProtectDialog = false

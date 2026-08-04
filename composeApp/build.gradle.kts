@@ -74,6 +74,7 @@ kotlin {
         androidMain.dependencies {
             implementation(libs.sqldelight.driver.android)
             implementation(libs.androidx.activity.compose)
+            implementation(libs.androidx.biometric)
             implementation(libs.ktor.client.okhttp)
             // BouncyCastle-backed provider: X25519/ChaCha20-Poly1305 are not in
             // the Android JCA below API 28, BC works on every supported API.
@@ -147,7 +148,7 @@ sqldelight {
     databases {
         create("LocalTavernDB") {
             packageName.set("chat.donzi.localtavern.data.database")
-            version = 10
+            version = 12
         }
     }
 }

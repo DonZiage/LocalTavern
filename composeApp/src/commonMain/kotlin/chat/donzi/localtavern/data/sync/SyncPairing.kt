@@ -9,10 +9,13 @@ import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.time.Clock
 
@@ -21,10 +24,12 @@ import kotlin.time.Clock
 // client sends a proof computed over it, the host verifies it in constant
 // time and rate-limits attempts per pairing session.
 //
-// The proof is HMAC-SHA256 over PBKDF2-HMAC-SHA256(pin, nonce) with 200k
+// The proof is HMAC-SHA256 over PBKDF2-HMAC-SHA256(pin, nonce) with 600k
 // iterations: the nonce doubles as the KDF salt, so a sniffer who captures a
-// proof cannot brute-force the 6-digit PIN offline without repeating the
-// (intentionally expensive) KDF for every candidate.
+// proof must repeat the (intentionally expensive) KDF for every candidate of
+// the 6-digit space — minutes on dedicated hardware, which meaningfully
+// raises the bar; the out-of-band fingerprint comparison is the primary
+// defense against an active man-in-the-middle.
 class SyncPairing(
     private val crypto: SyncCrypto,
     private val repository: SyncRepository,
@@ -36,24 +41,36 @@ class SyncPairing(
     private val ensureServerRunning: () -> Unit,
     private val noteActivity: () -> Unit
 ) {
-    private var activePin: String? = null
-    private var pinExpiresAt: Long = 0L
-    private var pairingFailures = 0
+    // Pairing session state. The PIN/budget fields live in StateFlows: they
+    // are mutated from the UI thread (startPairing/cancelPairing) and read
+    // from Ktor server threads (handlePairRequest), so the values need
+    // cross-thread visibility on every target — a plain field is not
+    // sufficient in common code.
+    private val activePin = MutableStateFlow<String?>(null)
+    private val pinExpiresAt = MutableStateFlow(0L)
+    private val pairingFailures = MutableStateFlow(0)
 
     // Nonces seen during the CURRENT pairing session, to reject replayed
     // pairing proofs (the PIN proof itself never expires until the PIN does).
-    private val seenPairingNonces = mutableSetOf<String>()
+    // The attempt budget, the replay check and the nonce recording all run
+    // under pairingMutex: pairing requests arrive on Ktor server threads and
+    // can be concurrent with each other AND with UI-thread resets
+    // (startPairing/cancelPairing), so the budget and the replay set are
+    // shared state. UI-side resets swap the set reference instead of clearing
+    // it in place, so a concurrent handler can never corrupt it.
+    private val pairingMutex = Mutex()
+    private var seenPairingNonces = mutableSetOf<String>()
 
     private val identity get() = identityProvider()
 
     /** True while a pairing PIN is still valid (used by the idle watchdog). */
-    fun hasActivePin(now: Long): Boolean = activePin != null && now <= pinExpiresAt
+    fun hasActivePin(now: Long): Boolean = activePin.value != null && now <= pinExpiresAt.value
 
     /** Clears pairing state when the server stops (PINs must not survive). */
     fun resetOnServerStop() {
-        activePin = null
-        pairingFailures = 0
-        seenPairingNonces.clear()
+        activePin.value = null
+        pairingFailures.value = 0
+        seenPairingNonces = mutableSetOf()
         state.update { it.copy(pairingPin = null) }
     }
 
@@ -64,19 +81,19 @@ class SyncPairing(
         noteActivity()
         // Cryptographically secure PIN and nonces: the nonce is the KDF salt
         // of the PIN proof, so it must be unpredictable.
-        activePin = CryptographyRandom.Default.nextInt(0, 1_000_000).toString().padStart(6, '0')
-        pinExpiresAt = Clock.System.now().toEpochMilliseconds() + PAIRING_TTL_MS
-        pairingFailures = 0
-        seenPairingNonces.clear()
+        activePin.value = CryptographyRandom.Default.nextInt(0, 1_000_000).toString().padStart(6, '0')
+        pinExpiresAt.value = Clock.System.now().toEpochMilliseconds() + PAIRING_TTL_MS
+        pairingFailures.value = 0
+        seenPairingNonces = mutableSetOf()
         state.update {
-            it.copy(pairingPin = activePin, pairingExpiresAt = pinExpiresAt, syncError = null, pendingPeerFingerprint = null, pendingPeerName = null, pendingPeerDeviceId = null)
+            it.copy(pairingPin = activePin.value, pairingExpiresAt = pinExpiresAt.value, syncError = null, pendingPeerFingerprint = null, pendingPeerName = null, pendingPeerDeviceId = null)
         }
     }
 
     fun cancelPairing() {
-        activePin = null
-        pairingFailures = 0
-        seenPairingNonces.clear()
+        activePin.value = null
+        pairingFailures.value = 0
+        seenPairingNonces = mutableSetOf()
         state.update { it.copy(pairingPin = null, pairingExpiresAt = null, pendingPeerFingerprint = null, pendingPeerName = null, pendingPeerDeviceId = null) }
     }
 
@@ -124,12 +141,9 @@ class SyncPairing(
     suspend fun handlePairRequest(request: PairRequest, remoteHost: String?): PairResponse {
         noteActivity()
         val now = Clock.System.now().toEpochMilliseconds()
-        val pin = activePin
-        if (pin == null || now > pinExpiresAt) {
+        val pin = activePin.value
+        if (pin == null || now > pinExpiresAt.value) {
             return PairResponse(ok = false, message = "No active pairing session. Start pairing on the other device.")
-        }
-        if (pairingFailures >= MAX_PAIRING_ATTEMPTS) {
-            return PairResponse(ok = false, message = "Too many failed attempts. Restart pairing on the host device.")
         }
         if (request.deviceId == identity.deviceId) {
             return PairResponse(ok = false, message = "Cannot pair a device with itself.")
@@ -141,24 +155,37 @@ class SyncPairing(
             // Malformed payloads count toward the attempt budget too, so an
             // attacker cannot probe the endpoint without exhausting the
             // pairing session.
-            pairingFailures++
+            pairingMutex.withLock { pairingFailures.value += 1 }
             return PairResponse(ok = false, message = "Invalid pairing payload.")
         }
-        if (request.nonce in seenPairingNonces) {
-            // The same nonce + proof cannot be accepted twice: a captured
-            // pairing request must not replay within the same session.
-            pairingFailures++
-            return PairResponse(ok = false, message = "Replayed pairing attempt.")
+        // The attempt budget, the replay check and the nonce recording are one
+        // critical section: concurrent requests must not race the 5-attempt
+        // limit, and a replayed nonce must not slip through between the check
+        // and the recording.
+        val pinOk = pairingMutex.withLock {
+            if (pairingFailures.value >= MAX_PAIRING_ATTEMPTS) {
+                return PairResponse(ok = false, message = "Too many failed attempts. Restart pairing on the host device.")
+            }
+            if (request.nonce in seenPairingNonces) {
+                // The same nonce + proof cannot be accepted twice: a captured
+                // pairing request must not replay within the same session.
+                pairingFailures.value += 1
+                return PairResponse(ok = false, message = "Replayed pairing attempt.")
+            }
+            seenPairingNonces.add(request.nonce)
+            // Constant-time PIN verification; the PIN never crosses the network.
+            val ok = crypto.verifyPairingProof(pin, request.deviceId, peerPublicKey, nonce, proof)
+            pairingFailures.value = if (ok) 0 else pairingFailures.value + 1
+            ok
         }
-        seenPairingNonces.add(request.nonce)
-
-        // Constant-time PIN verification; the PIN never crosses the network.
-        val pinOk = crypto.verifyPairingProof(pin, request.deviceId, peerPublicKey, nonce, proof)
         if (!pinOk) {
-            pairingFailures++
             return PairResponse(ok = false, message = "Invalid PIN.")
         }
-        pairingFailures = 0
+
+        // The peer's display name is at its least-trusted moment during
+        // pairing (the fingerprint is still pending), so it is sanitized like
+        // the authenticated-exchange path before it is stored or displayed.
+        val peerName = DeviceName.sanitize(request.deviceName) ?: "Unknown device"
 
         // Fingerprint over both exchanged keys: the same string must appear
         // on the other device's screen during pairing.
@@ -166,7 +193,7 @@ class SyncPairing(
         repository.upsertPeer(
             SyncPeer(
                 deviceId = request.deviceId,
-                name = request.deviceName,
+                name = peerName,
                 publicKey = peerPublicKey,
                 lastKnownAddress = remoteHost?.let { "$it:$port" },
                 receivedCursor = 0L,
@@ -177,7 +204,7 @@ class SyncPairing(
             )
         )
         state.update {
-            it.copy(pendingPeerFingerprint = fingerprint, pendingPeerName = request.deviceName, pendingPeerDeviceId = request.deviceId)
+            it.copy(pendingPeerFingerprint = fingerprint, pendingPeerName = peerName, pendingPeerDeviceId = request.deviceId)
         }
         return PairResponse(
             ok = true,
@@ -191,7 +218,7 @@ class SyncPairing(
     // ---------- Client side ----------
 
     suspend fun connectToDevice(host: String, port: Int, pin: String): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             val base = "http://$host:$port"
             val hello: HelloResponse = httpClient.get("$base/hello").body()
             if (hello.deviceId == identity.deviceId) error("Cannot pair a device with itself.")
@@ -221,11 +248,15 @@ class SyncPairing(
             val peerKey = decodeBase64(response.publicKey)
             check(peerKey.size == 32) { "Invalid public key from peer." }
 
+            // The peer's name is at its least-trusted moment (fingerprint
+            // pending); sanitize before storing or displaying.
+            val peerName = DeviceName.sanitize(response.deviceName) ?: "Unknown device"
+
             val now = Clock.System.now().toEpochMilliseconds()
             repository.upsertPeer(
                 SyncPeer(
                     deviceId = response.deviceId,
-                    name = response.deviceName,
+                    name = peerName,
                     publicKey = peerKey,
                     lastKnownAddress = "$host:$port",
                     receivedCursor = 0L,
@@ -236,9 +267,13 @@ class SyncPairing(
                 )
             )
             state.update {
-                it.copy(pendingPeerFingerprint = crypto.pairingFingerprint(identity.publicKeyBytes, peerKey), pendingPeerName = response.deviceName, pendingPeerDeviceId = response.deviceId)
+                it.copy(pendingPeerFingerprint = crypto.pairingFingerprint(identity.publicKeyBytes, peerKey), pendingPeerName = peerName, pendingPeerDeviceId = response.deviceId)
             }
-            response.deviceId
+            Result.success(response.deviceId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 }

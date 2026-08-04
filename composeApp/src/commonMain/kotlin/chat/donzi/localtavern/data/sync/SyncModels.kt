@@ -277,6 +277,14 @@ data class HelloResponse(
 
 // ---------- Wire-input validation ----------
 
+// Device ids are embedded (unescaped) into the AEAD associated data of every
+// encrypted payload, so anything outside the generated alphabet must be
+// rejected before it can be echoed back into a security context. Generated
+// ids are 24 lowercase base64url-ish chars (see SyncIdentity.randomDeviceId).
+internal fun isValidDeviceId(deviceId: String): Boolean =
+    deviceId.isNotEmpty() && deviceId.length <= 64 &&
+        deviceId.all { it.isLowerCase() || it.isDigit() || it == '_' || it == '-' }
+
 // Validates a peer-supplied fetch address before it is used to make HTTP
 // requests: an envelope's fetchAddress is attacker-controlled, so it must be
 // a bare "host:port" — no scheme, credentials, path, query or whitespace —

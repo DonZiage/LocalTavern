@@ -2,6 +2,7 @@ package chat.donzi.localtavern.ui.settings
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -10,13 +11,18 @@ import chat.donzi.localtavern.data.security.ApiKeyCipher
 import kotlinx.coroutines.launch
 
 // Security status for API keys at rest. Android/iOS use the OS keystore /
-// keychain automatically (always protected); the desktop build supports an
-// opt-in passphrase with unlock/protect/remove flows.
+// keychain automatically (always protected). On desktop a passphrase is
+// MANDATORY: it is set (and unlocked) through the startup gate, never here.
+// This section offers the remaining maintenance flows: changing the
+// passphrase, removing protection (explicit opt-out), and the idle auto-lock
+// timeout.
 @Composable
 fun SecuritySettingsSection(
     apiKeyCipher: ApiKeyCipher,
     apiSettingsRepository: ApiSettingsRepository,
-    onKeysChanged: () -> Unit
+    onKeysChanged: () -> Unit,
+    autoLockIdleMinutes: Int = 10,
+    onAutoLockIdleMinutesChange: (Int) -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     var refresh by remember { mutableStateOf(0) }
@@ -25,12 +31,14 @@ fun SecuritySettingsSection(
     val isProtected = apiKeyCipher.isProtected
     val isUnlocked = apiKeyCipher.isAvailable
 
-    var showProtectDialog by remember { mutableStateOf(false) }
-    var showUnlockDialog by remember { mutableStateOf(false) }
+    var showChangeDialog by remember { mutableStateOf(false) }
     var showRemoveDialog by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
 
     val backend = apiKeyCipher.backendName
+    val isPassphrase = backend.contains("passphrase", ignoreCase = true)
+
+    val autoLockOptions = listOf(0, 5, 10, 30, 60)
 
     fun runAction(block: suspend () -> Unit, success: String) {
         scope.launch {
@@ -51,39 +59,62 @@ fun SecuritySettingsSection(
         Text(
             text = when {
                 isProtected && isUnlocked -> "API keys are encrypted ($backend)."
-                isProtected -> "API keys are encrypted ($backend). Locked: enter the passphrase to use them."
-                backend.contains("passphrase", ignoreCase = true) ->
-                    "API keys are stored as plaintext. Protect them with a passphrase."
+                isProtected -> "API keys are encrypted ($backend). Locked: enter the passphrase at the unlock screen to use them."
+                isPassphrase ->
+                    "API keys are stored as plaintext. LocalTavern will ask you to set a passphrase on the next launch."
                 else -> "API keys are encrypted by the operating system ($backend)."
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        Spacer(modifier = Modifier.height(10.dp))
+        if (isPassphrase) {
+            Spacer(modifier = Modifier.height(10.dp))
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            when {
-                isProtected && isUnlocked -> {
-                    if (backend.contains("passphrase", ignoreCase = true)) {
-                        OutlinedButton(onClick = { showRemoveDialog = true }) {
-                            Text("Remove Protection")
-                        }
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (isProtected && isUnlocked) {
+                    OutlinedButton(onClick = { showChangeDialog = true }) {
+                        Text("Change Passphrase…")
+                    }
+                    OutlinedButton(onClick = { showRemoveDialog = true }) {
+                        Text("Remove Protection")
                     }
                 }
-                isProtected -> {
-                    if (backend.contains("passphrase", ignoreCase = true)) {
-                        OutlinedButton(onClick = { showUnlockDialog = true }) {
-                            Text("Unlock")
+            }
+        }
+
+        if (isPassphrase) {
+            Spacer(modifier = Modifier.height(14.dp))
+            Text(
+                text = "Auto-lock after inactivity",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = "The passphrase key is forgotten after this much idle time and the app locks. This protects your keys if you step away.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                autoLockOptions.forEach { minutes ->
+                    FilterChip(
+                        selected = autoLockIdleMinutes == minutes,
+                        onClick = { onAutoLockIdleMinutesChange(minutes) },
+                        label = {
+                            Text(
+                                if (minutes == 0) "Off" else
+                                    if (minutes == 60) "60 min" else "$minutes min"
+                            )
                         }
-                    }
-                }
-                else -> {
-                    if (backend.contains("passphrase", ignoreCase = true)) {
-                        OutlinedButton(onClick = { showProtectDialog = true }) {
-                            Text("Protect with Passphrase…")
-                        }
-                    }
+                    )
                 }
             }
         }
@@ -93,7 +124,7 @@ fun SecuritySettingsSection(
             Text(
                 text = message,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (message.contains("failed", ignoreCase = true) || message.contains("does not match", ignoreCase = true)) {
+                color = if (message.contains("failed", ignoreCase = true) || message.contains("does not match", ignoreCase = true) || message.contains("Wrong", ignoreCase = true)) {
                     MaterialTheme.colorScheme.error
                 } else {
                     MaterialTheme.colorScheme.primary
@@ -102,44 +133,26 @@ fun SecuritySettingsSection(
         }
     }
 
-    if (showProtectDialog) {
+    if (showChangeDialog) {
         PassphraseDialog(
-            title = "Protect API Keys",
-            message = "Keys will be encrypted with a passphrase-derived key. Remember the passphrase — without it the keys cannot be recovered.",
-            confirmLabel = "Protect",
+            title = "Change Passphrase",
+            message = "Enter your current passphrase, then choose a new one. All API keys are re-encrypted with the new key; the old passphrase stops working immediately.",
+            confirmLabel = "Change",
             requireConfirmation = true,
-            onDismiss = { showProtectDialog = false },
-            onConfirm = { passphrase ->
-                runAction(
-                    block = {
-                        apiKeyCipher.protect(passphrase)
-                        apiSettingsRepository.reencryptAllApiKeys()
-                    },
-                    success = "API keys are now encrypted."
-                )
-                showProtectDialog = false
-            }
-        )
-    }
-
-    if (showUnlockDialog) {
-        PassphraseDialog(
-            title = "Unlock API Keys",
-            message = "Enter the passphrase to decrypt the stored API keys.",
-            confirmLabel = "Unlock",
-            requireConfirmation = false,
-            onDismiss = { showUnlockDialog = false },
-            onConfirm = { passphrase ->
-                if (apiKeyCipher.unlock(passphrase)) {
-                    runAction(
-                        block = { apiSettingsRepository.reencryptAllApiKeys() },
-                        success = "API keys unlocked."
-                    )
-                } else {
-                    statusMessage = "Wrong passphrase."
+            requireCurrent = true,
+            onDismiss = { showChangeDialog = false },
+            onConfirm = { input ->
+                val current = input.current ?: ""
+                val new = input.value
+                scope.launch {
+                    if (apiSettingsRepository.changePassphrase(current, new)) {
+                        statusMessage = "Passphrase changed."
+                    } else {
+                        statusMessage = "Wrong current passphrase. Passphrase unchanged."
+                    }
+                    refresh++
+                    showChangeDialog = false
                 }
-                refresh++
-                showUnlockDialog = false
             }
         )
     }
@@ -147,12 +160,12 @@ fun SecuritySettingsSection(
     if (showRemoveDialog) {
         PassphraseDialog(
             title = "Remove Protection",
-            message = "Enter the passphrase. All API keys will be stored as plaintext again.",
+            message = "Enter the passphrase. All API keys will be stored as plaintext again, and LocalTavern will require a new passphrase on the next launch.",
             confirmLabel = "Remove",
             requireConfirmation = false,
             onDismiss = { showRemoveDialog = false },
-            onConfirm = { passphrase ->
-                if (apiKeyCipher.unlock(passphrase)) {
+            onConfirm = { input ->
+                if (apiKeyCipher.unlock(input.value)) {
                     runAction(
                         block = {
                             apiSettingsRepository.decryptAllApiKeysToPlaintext()

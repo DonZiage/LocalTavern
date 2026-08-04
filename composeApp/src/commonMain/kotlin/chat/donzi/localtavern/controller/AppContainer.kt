@@ -15,6 +15,7 @@ import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.data.security.ApiKeyCipher
 import chat.donzi.localtavern.data.security.createSecretCrypto
+import chat.donzi.localtavern.data.security.createUserAuthenticator
 import chat.donzi.localtavern.data.sync.SyncCrypto
 import chat.donzi.localtavern.data.sync.DeviceName
 import chat.donzi.localtavern.data.sync.SyncDiscovery
@@ -33,6 +34,7 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,6 +58,9 @@ class AppContainer(driverFactory: DriverFactory) {
     private val databaseDispatcher = Dispatchers.IO.limitedParallelism(1)
     val secretCrypto = createSecretCrypto()
     val apiKeyCipher = ApiKeyCipher(secretCrypto)
+    // Mobile device-unlock prompt (PIN/password/fingerprint) for the startup
+    // gate; desktop returns a no-op (the passphrase gate covers it).
+    val userAuthenticator = createUserAuthenticator()
     // One logical clock shared by every repository: the sync layer advances
     // it with every received timestamp and all local writes stamp from it,
     // keeping LWW immune to wall-clock skew between devices.
@@ -126,8 +131,13 @@ class AppContainer(driverFactory: DriverFactory) {
                 // row that still carries inline images, writes the blobs to the
                 // content-addressed store and replaces the bytes with refs.
                 // Idempotent: rows are processed until none remain, so it is
-                // safe to run on every start.
-                val migratedImages = migrateMessageImagesToBlobStore(database, blobStore, logicalClock)
+                // safe to run on every start. Runs on the database dispatcher
+                // (like every other DB access: the driver opens one connection
+                // per thread) and off the main thread, so a large legacy
+                // database cannot block startup UI.
+                val migratedImages = withContext(databaseDispatcher) {
+                    migrateMessageImagesToBlobStore(database, blobStore, logicalClock)
+                }
                 if (migratedImages > 0) {
                     // Reclaim the freed database pages (the column contents
                     // were the bulk of the file).
@@ -135,10 +145,10 @@ class AppContainer(driverFactory: DriverFactory) {
                 }
                 // Unreferenced blobs (deleted/edited messages) are dropped now
                 // that the store is consistent with the database.
-                runBlobGc(database, blobStore)
+                withContext(databaseDispatcher) { runBlobGc(database, blobStore) }
                 syncRepository = SyncRepository(database, identity, ioDispatcher = databaseDispatcher, apiKeyCipher = apiKeyCipher, clock = logicalClock, blobStore = blobStore)
                 syncService = SyncService(
-                    identity = identity,
+                    initialIdentity = identity,
                     crypto = SyncCrypto(),
                     repository = syncRepository,
                     identityStore = syncIdentityStore,

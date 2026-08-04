@@ -10,6 +10,7 @@ class TestSecretCrypto : SecretCrypto {
     override fun unlock(passphrase: String): Boolean = true
     override fun protect(passphrase: String) = Unit
     override fun removeProtection() = Unit
+    override fun lock() = Unit
 }
 
 // Reversible fake crypto for tests that need genuine encrypt/decrypt
@@ -25,4 +26,5 @@ class ReversibleTestSecretCrypto : SecretCrypto {
     override fun unlock(passphrase: String): Boolean = true
     override fun protect(passphrase: String) = Unit
     override fun removeProtection() = Unit
+    override fun lock() = Unit
 }

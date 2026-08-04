@@ -18,16 +18,22 @@ import dev.whyoleg.cryptography.BinarySize.Companion.bits
 //
 // Forward secrecy: each exchange derives a fresh channel key from BOTH the
 // static shared secret (authentication: only paired devices can derive it)
-// and a per-exchange ephemeral X25519 shared secret (secrecy: the ephemeral
-// private key is discarded after the exchange). Compromising the static
-// identity keys later does not reveal past exchanges.
+// and a per-exchange ephemeral X25519 shared secret. The scheme is
+// static-ephemeral DH, so secrecy is one-sided: compromising the SENDER's
+// static key does not reveal what that sender sent (its ephemeral private key
+// is discarded), but compromising the RECEIVER's static key reveals
+// everything that was sent to it. Compromising either key always reveals
+// everything that device received.
 //
 // Pairing: the PIN never leaves the device in cleartext. The client sends
 // HMAC-SHA256(PBKDF2(pin, nonce), deviceId|publicKey|nonce) instead; the host
 // verifies with the PIN it displayed. A network sniffer cannot replay the
 // proof against a swapped key without the PIN, and the PBKDF2 stretching
-// (200k rounds, nonce as salt) makes offline brute force of the 6-digit PIN
-// from a captured proof prohibitively expensive.
+// (600k rounds, nonce as salt) multiplies the cost of an offline 10^6-candidate
+// brute force of the 6-digit PIN by the full KDF per candidate — minutes on
+// dedicated hardware rather than seconds, which is meaningful but not
+// absolute. The out-of-band fingerprint comparison is the primary defense
+// against an active man-in-the-middle.
 //
 // AES-GCM (not ChaCha20) is used because the JDK ChaCha20-Poly1305 provider
 // rejects re-initializing a pooled cipher with a previously used (key, nonce)
@@ -46,11 +52,12 @@ class SyncCrypto(
 
         private const val PAIRING_CONTEXT = "localtavern-pairing-v1"
 
-        // PBKDF2 cost for the pairing PIN proof. 200k HMAC-SHA256 rounds
-        // takes roughly 0.1-0.3 s on current hardware — imperceptible for one
-        // pairing attempt, but it multiplies every candidate of an offline
-        // 6-digit brute force by that cost.
-        private const val PAIRING_PBKDF2_ITERATIONS = 200_000
+        // PBKDF2 cost for the pairing PIN proof. 600k HMAC-SHA256 rounds
+        // (OWASP's current floor for PBKDF2-SHA256) takes roughly 0.3-1 s on
+        // current hardware — imperceptible for one pairing attempt, but it
+        // multiplies every candidate of an offline 6-digit brute force by
+        // that cost.
+        private const val PAIRING_PBKDF2_ITERATIONS = 600_000
 
         private val HEX_DIGITS = "0123456789abcdef".toCharArray()
     }
@@ -133,8 +140,11 @@ class SyncCrypto(
      *
      * The PIN is stretched with PBKDF2-HMAC-SHA256 ([PAIRING_PBKDF2_ITERATIONS]
      * rounds, the nonce as salt) before the outer HMAC, so a sniffer who
-     * captures a proof cannot brute-force the 6-digit PIN offline: every
-     * candidate requires the full KDF, and the salt is unique per attempt.
+     * captures a proof must repeat the full KDF for every candidate PIN —
+     * the 600k-round stretch plus the unique per-attempt salt makes the
+     * offline search of the 6-digit space expensive (minutes on dedicated
+     * hardware), though not impossible; the out-of-band fingerprint
+     * comparison remains the primary MITM defense.
      */
     suspend fun pairingProof(pin: String, deviceId: String, publicKey: ByteArray, nonce: ByteArray): ByteArray {
         val stretchedPin = stretchPin(pin, nonce)
@@ -151,7 +161,7 @@ class SyncCrypto(
     // PBKDF2-HMAC-SHA256 with the pairing nonce as the salt: the derivation
     // is per-attempt unique (fresh nonce) and deliberately expensive, which
     // is what turns the offline 10^6-candidate space of a 6-digit PIN into a
-    // prohibitive brute-force target.
+    // costly brute-force target (see the class comment for the honest math).
     private suspend fun stretchPin(pin: String, nonce: ByteArray): ByteArray {
         return provider.get(PBKDF2).secretDerivation(
             digest = SHA256,

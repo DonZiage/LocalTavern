@@ -9,6 +9,7 @@ import platform.Foundation.NSData
 import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSURL
+import platform.Foundation.NSURLIsExcludedFromBackupKey
 import platform.Foundation.NSUserDomainMask
 import platform.Foundation.dataWithBytes
 import platform.Foundation.dataWithContentsOfURL
@@ -16,7 +17,9 @@ import platform.Foundation.writeToURL
 import platform.posix.memcpy
 
 // Message images live in the app's private Documents/blobs folder. Same
-// content-addressed keys as the other platforms.
+// content-addressed keys as the other platforms. Everything is marked
+// NSURLIsExcludedFromBackupKey: chat images are private user content and must
+// never leave the device via iCloud backup.
 actual fun createBlobStore(): BlobStore = IosBlobStore()
 
 @OptIn(ExperimentalForeignApi::class)
@@ -29,6 +32,8 @@ private class IosBlobStore : BlobStore {
         ).firstOrNull() as? NSURL ?: return null
         val dir = documents.URLByAppendingPathComponent("blobs", isDirectory = true) as NSURL
         NSFileManager.defaultManager.createDirectoryAtURL(dir, withIntermediateDirectories = true, attributes = null, error = null)
+        // Applies to the directory itself; every written file is also marked.
+        dir.setResourceValue(true, forKey = NSURLIsExcludedFromBackupKey, error = null)
         return dir
     }
 
@@ -47,6 +52,7 @@ private class IosBlobStore : BlobStore {
                 NSData.dataWithBytes(bytes = pinned.addressOf(0), length = bytes.size.toULong())
             }
             data.writeToURL(url, atomically = true)
+            url.setResourceValue(true, forKey = NSURLIsExcludedFromBackupKey, error = null)
         }
     }
 

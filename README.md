@@ -90,9 +90,11 @@ The project exists to solve the "service complexity" problem: most LLM interface
 
 | Platform | Mechanism |
 |---|---|
-| Android | AndroidKeyStore (non-exportable AES key) |
-| iOS | Keychain-held EC key with ECIES/AES-GCM |
-| Desktop | Opt-in passphrase (PBKDF2 + AES-256-GCM) |
+| Android | AndroidKeyStore (non-exportable AES key) + **device-unlock gate** (the app asks for the phone's PIN/password/fingerprint via the OS prompt before opening) |
+| iOS | Keychain-held EC key with ECIES/AES-GCM + **device-unlock gate** (Face ID / Touch ID / device passcode before opening) |
+| Desktop | **Mandatory passphrase gate** (PBKDF2-SHA256 @ 600k + AES-256-GCM): a passphrase must be set before the main UI is shown, and re-entered after every launch or idle auto-lock. Wrong guesses are rate-limited (5 per session, then the gate locks until restart); the derived key lives only in process memory. Removing protection is an explicit opt-out. |
+
+Mobile devices without any unlock method (no PIN, password or fingerprint) open directly — nothing can be prompted with — and the first launch shows a one-time recommendation to set a screen lock. Like every local credential, the unlock prompt protects data **at rest** (stolen phone, idle unlocked session) but cannot stop malware running in the same user context.
 
 **In transit (P2P sync)** — no intermediary servers:
 
@@ -113,7 +115,7 @@ The project exists to solve the "service complexity" problem: most LLM interface
 | Layer | Choice |
 |---|---|
 | Framework | Compose Multiplatform (Kotlin 2.3.x, Compose 1.10.x, Material3) |
-| Database | SQLDelight (type-safe, cross-platform SQL, schema v10) |
+| Database | SQLDelight (type-safe, cross-platform SQL, schema v12) |
 | Networking | Ktor 3.x (client for API calls; embedded CIO server + UDP discovery for sync) |
 | Image loading | Coil3 |
 | Serialization | kotlinx-serialization (JSON), kotlinx-datetime, kotlinx-coroutines |
@@ -175,6 +177,7 @@ composeApp/
 - **Message images live in a platform blob store** (content-addressed files, never in SQLite). They travel out of band during sync: rows carry SHA-256 refs and the bytes are pulled chunked from the peer. A blob the peer cannot serve shows a "pending sync" placeholder (re-attempted after an app restart); a blob fetch that fails mid-transfer is retried on the next sync.
 - **The legacy `imageData` column remains in schema v10** (unused, emptied by the startup extraction pass). It will be dropped by a later migration once the blob offload has been live for at least one release — a device jumping straight past the extraction would lose its inline images, so the drop is deliberately deferred.
 - **The tokenizer is a heuristic, not a true BPE tokenizer:** it estimates ~4 characters per token for Latin text and 1 token per CJK character. Accurate enough for context budgeting, cost estimates, and editor token counters, but it will not match a model's exact tokenizer.
+- **Desktop API keys are passphrase-encrypted by default** — a passphrase setup screen blocks the main UI on first launch (and after the passphrase is explicitly removed). The passphrase is never stored; a forgotten passphrase means encrypted keys are unrecoverable by design. Like every passphrase scheme, it protects keys **at rest** (stolen disk, idle unlocked session via auto-lock) but cannot stop malware running as the same user on an unlocked machine.
 - **The hand-rolled markdown renderer is deliberately conservative:** no raw HTML, links render as non-clickable labels, and inline spans are strict-format only — malformed LLM output degrades to plain text instead of misrendering.
 
 ---

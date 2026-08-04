@@ -234,8 +234,13 @@ class ChatScreenState(
 
         // Guard again after the DB round-trips above: a fast double send can still
         // pass the UI-level isGenerating check, and inserting a second user
-        // message would orphan it without a response.
-        if (chatController.state.value.isGenerating) return
+        // message would orphan it without a response. The send was already
+        // accepted (draft cleared), so the user must not be left with a message
+        // that silently vanished: surface it instead of returning quietly.
+        if (chatController.state.value.isGenerating) {
+            chatController.reportError("A response is still generating — stop it or wait before sending.")
+            return
+        }
 
         val sessionId = sessionRepository.getOrCreateSession(currentActiveCharacter.id, activePersonaId)
         onActiveSessionIdChange(sessionId)

@@ -1,13 +1,16 @@
 package chat.donzi.localtavern.data.sync
 
-// Per-exchange forward-secret channel key. The static shared secret provides
-// authentication (only paired devices can derive it); a fresh ephemeral
-// X25519 key provides per-exchange secrecy — each exchange encrypts under a
-// key that exists for exactly one round trip, and the sender's ephemeral
-// private key is discarded immediately, so payloads a device SENT cannot be
-// decrypted later even with its long-term keys. Rotating the identity key
-// (see SyncService.rotateIdentityKey) additionally invalidates the static
-// secrets entirely.
+// Per-exchange channel key with one-sided forward secrecy. The static shared
+// secret provides authentication (only paired devices can derive it); a fresh
+// ephemeral X25519 key provides per-exchange secrecy — each exchange encrypts
+// under a key that exists for exactly one round trip, and the sender's
+// ephemeral private key is discarded immediately, so payloads a device SENT
+// cannot be decrypted later even with its long-term keys. This protection is
+// one-sided (static-ephemeral DH): what a device RECEIVED remains decryptable
+// if its own static key is later compromised, because the peer's ephemeral
+// public key is shipped in cleartext. Rotating the identity key (see
+// SyncService.rotateIdentityKey) additionally invalidates the static secrets
+// entirely.
 class SyncChannelKeys(
     private val crypto: SyncCrypto,
     private val identityProvider: () -> SyncIdentity

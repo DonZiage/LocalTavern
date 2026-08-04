@@ -55,6 +55,10 @@ actual fun convertToPng(bytes: ByteArray): ByteArray {
 
 actual val isDesktop: Boolean = true
 
+actual val isAndroid: Boolean = false
+
+actual fun openDeviceSecuritySettings() = Unit
+
 // The packaged desktop jar carries the version in its manifest
 // (packageVersion); dev runs from the IDE have no manifest version.
 private object AppInfo

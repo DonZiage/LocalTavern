@@ -8,6 +8,7 @@ import io.ktor.client.request.setBody
 import io.ktor.client.request.header
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -51,26 +52,30 @@ class SyncExchange(
     private val seenExchangeIds = LinkedHashMap<String, Long>()
     private val seenMutex = Mutex()
 
-    private suspend fun markExchangeSeen(peerId: String, exchangeId: String) {
+    /**
+     * Records [exchangeId] from [peerId] and reports whether it is NEW. The
+     * check and the recording are one critical section, so two concurrent
+     * submissions of the same id cannot both pass and both be applied.
+     * Returns false for a replay (the id was already seen within the window).
+     */
+    private suspend fun checkAndMarkExchangeSeen(peerId: String, exchangeId: String): Boolean =
         seenMutex.withLock {
             val now = Clock.System.now().toEpochMilliseconds()
             seenExchangeIds.entries.removeAll { it.value < now - REPLAY_WINDOW_MS }
-            if (seenExchangeIds.size >= MAX_SEEN_EXCHANGES) {
-                seenExchangeIds.remove(seenExchangeIds.entries.first().key)
+            val key = "$peerId:$exchangeId"
+            if (seenExchangeIds.containsKey(key)) {
+                false
+            } else {
+                if (seenExchangeIds.size >= MAX_SEEN_EXCHANGES) {
+                    seenExchangeIds.remove(seenExchangeIds.entries.first().key)
+                }
+                seenExchangeIds[key] = now
+                true
             }
-            seenExchangeIds["$peerId:$exchangeId"] = now
-        }
-    }
-
-    private suspend fun isExchangeReplay(peerId: String, exchangeId: String): Boolean =
-        seenMutex.withLock {
-            val now = Clock.System.now().toEpochMilliseconds()
-            seenExchangeIds.entries.removeAll { it.value < now - REPLAY_WINDOW_MS }
-            seenExchangeIds.containsKey("$peerId:$exchangeId")
         }
 
     suspend fun syncNow(peerId: String): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             noteActivity()
             val peer = repository.getPeer(peerId) ?: error("Peer not found.")
             val address = peer.lastKnownAddress ?: error("Peer has no address; reconnect or re-pair.")
@@ -148,15 +153,25 @@ class SyncExchange(
                 receivedCursor = newReceivedCursor,
                 peerReceivedCursor = responseEnvelope.cursor
             )
-            "Synced with ${peer.name}."
+            Result.success("Synced with ${peer.name}.")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 
     suspend fun handleExchange(fromDeviceId: String, encryptedPayload: String, requestEphemeralKey: String, exchangeId: String): ExchangeResponse {
         noteActivity()
-        return runCatching {
+        try {
             if (exchangeId.isBlank()) {
                 return ExchangeResponse(ok = false, message = "Missing exchange id.")
+            }
+            if (!isValidDeviceId(fromDeviceId)) {
+                // deviceIds are embedded (unescaped) in the AEAD associated
+                // data, so anything outside the generated alphabet must be
+                // rejected at the door.
+                return ExchangeResponse(ok = false, message = "Invalid device id.")
             }
             if (unconfirmedPeerDeviceId() == fromDeviceId) {
                 return ExchangeResponse(ok = false, message = "Confirm the pairing fingerprint on this device before syncing.")
@@ -176,7 +191,11 @@ class SyncExchange(
             if (envelope.fromDeviceId != fromDeviceId) {
                 return ExchangeResponse(ok = false, message = "Sender mismatch.")
             }
-            if (isExchangeReplay(fromDeviceId, exchangeId)) {
+            // Check-and-mark is atomic: two concurrent submissions of the
+            // same exchange id cannot both be applied. Marking happens right
+            // after authentication (a peer retrying after a failed apply uses
+            // a fresh exchange id, so this only ever blocks verbatim replays).
+            if (!checkAndMarkExchangeSeen(fromDeviceId, exchangeId)) {
                 return ExchangeResponse(ok = false, message = "Replayed exchange.")
             }
             // Authenticated display-name update (see syncNow): never touches
@@ -208,7 +227,6 @@ class SyncExchange(
                 receivedCursor = newReceivedCursor,
                 peerReceivedCursor = envelope.cursor
             )
-            markExchangeSeen(fromDeviceId, exchangeId)
 
             val myChanges = repository.collectDelta(envelope.cursor)
             val myExchangeKey = channelKeys.outboundChannelKey(peerKey)
@@ -222,14 +240,16 @@ class SyncExchange(
             val responsePayload = encodeBase64(
                 crypto.encrypt(myExchangeKey.key, aad(from = identity.deviceId, to = fromDeviceId, exchangeId = exchangeId), encodeEnvelope(responseEnvelope))
             )
-            ExchangeResponse(
+            return ExchangeResponse(
                 ok = true,
                 exchangeId = exchangeId,
                 payload = responsePayload,
                 ephemeralPublicKey = encodeBase64(myExchangeKey.ephemeralPublicKey)
             )
-        }.getOrElse { error ->
-            ExchangeResponse(ok = false, message = error.message ?: "Sync failed.")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return ExchangeResponse(ok = false, message = e.message ?: "Sync failed.")
         }
     }
 

@@ -31,6 +31,8 @@ fun MainScreen(
     onSendWithCtrlEnterChange: (Boolean) -> Unit,
     confirmBeforeDelete: Boolean,
     onConfirmBeforeDeleteChange: (Boolean) -> Unit,
+    autoLockIdleMinutes: Int,
+    onAutoLockIdleMinutesChange: (Int) -> Unit,
     activeDrawer: ActiveDrawer,
     onActiveDrawerChange: (ActiveDrawer) -> Unit,
     onPersonaSelect: (String) -> Unit,
@@ -143,6 +145,8 @@ fun MainScreen(
                     onSendWithCtrlEnterChange = onSendWithCtrlEnterChange,
                     confirmBeforeDelete = confirmBeforeDelete,
                     onConfirmBeforeDeleteChange = onConfirmBeforeDeleteChange,
+                    autoLockIdleMinutes = autoLockIdleMinutes,
+                    onAutoLockIdleMinutesChange = onAutoLockIdleMinutesChange,
                     drawerWidth = drawerWidth
                 )
             }
@@ -199,6 +203,8 @@ fun MainScreen(
                 onSendWithCtrlEnterChange = onSendWithCtrlEnterChange,
                 confirmBeforeDelete = confirmBeforeDelete,
                 onConfirmBeforeDeleteChange = onConfirmBeforeDeleteChange,
+                autoLockIdleMinutes = autoLockIdleMinutes,
+                onAutoLockIdleMinutesChange = onAutoLockIdleMinutesChange,
                 onActiveDrawerChange = onActiveDrawerChange,
                 onPersonaSelect = onPersonaSelect,
                 onPersonaAdd = onPersonaAdd,

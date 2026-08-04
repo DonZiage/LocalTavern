@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Environment
+import android.provider.Settings
 import java.io.File
 import java.lang.ref.WeakReference
 import android.content.Intent
@@ -179,6 +180,21 @@ actual fun convertToPng(bytes: ByteArray): ByteArray {
 }
 
 actual val isDesktop: Boolean = false
+
+actual val isAndroid: Boolean = true
+
+actual fun openDeviceSecuritySettings() {
+    val context = AndroidAppContext.getContext() ?: return
+    try {
+        context.startActivity(
+            Intent(Settings.ACTION_SECURITY_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        )
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+}
 
 actual fun appVersionName(): String {
     val context = AndroidAppContext.getContext() ?: return "dev build"

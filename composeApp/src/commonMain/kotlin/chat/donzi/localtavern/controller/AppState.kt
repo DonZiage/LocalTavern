@@ -42,6 +42,17 @@ class AppState(
     private val _confirmBeforeDelete = MutableStateFlow(true)
     val confirmBeforeDelete: StateFlow<Boolean> = _confirmBeforeDelete.asStateFlow()
 
+    // Desktop idle auto-lock in minutes; 0 = disabled. Only meaningful on the
+    // passphrase backend, but harmless (and consistent) on every platform.
+    private val _autoLockIdleMinutes = MutableStateFlow(10)
+    val autoLockIdleMinutes: StateFlow<Int> = _autoLockIdleMinutes.asStateFlow()
+
+    // Mobile: whether the first-launch "set a device screen lock"
+    // recommendation has been dismissed. Loaded during init so the dialog
+    // never flashes for returning users.
+    private val _lockRecommendationShown = MutableStateFlow(false)
+    val lockRecommendationShown: StateFlow<Boolean> = _lockRecommendationShown.asStateFlow()
+
     private val _isInitialized = MutableStateFlow(false)
     val isInitialized: StateFlow<Boolean> = _isInitialized.asStateFlow()
 
@@ -76,6 +87,8 @@ class AppState(
                 _sendWithCtrlEnter.value = settings.sendWithCtrlEnter != 0L
                 _autoSyncOnLaunch.value = settings.autoSyncOnLaunch != 0L
                 _confirmBeforeDelete.value = settings.confirmBeforeDelete != 0L
+                _autoLockIdleMinutes.value = settings.autoLockIdleMinutes.toInt()
+                _lockRecommendationShown.value = settings.lockRecommendationShown != 0L
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -149,5 +162,16 @@ class AppState(
     fun setConfirmBeforeDelete(enabled: Boolean) {
         _confirmBeforeDelete.value = enabled
         scope.launch { apiSettingsRepository.updateConfirmBeforeDelete(enabled) }
+    }
+
+    fun setAutoLockIdleMinutes(minutes: Int) {
+        _autoLockIdleMinutes.value = minutes
+        scope.launch { apiSettingsRepository.updateAutoLockIdleMinutes(minutes) }
+    }
+
+    fun setLockRecommendationShown() {
+        if (_lockRecommendationShown.value) return
+        _lockRecommendationShown.value = true
+        scope.launch { apiSettingsRepository.updateLockRecommendationShown(true) }
     }
 }

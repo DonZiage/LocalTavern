@@ -34,6 +34,11 @@ interface SecretCrypto {
 
     /** Desktop only: forgets the key and deletes the persisted config. */
     fun removeProtection()
+
+    /** Desktop only: forgets the derived key so secrets are locked again
+     *  until unlock() succeeds (idle auto-lock, app exit). No-op on
+     *  platforms whose backend is always available. */
+    fun lock()
 }
 
 expect fun createSecretCrypto(): SecretCrypto
@@ -52,6 +57,7 @@ class ApiKeyCipher(private val crypto: SecretCrypto) {
     fun unlock(passphrase: String): Boolean = crypto.unlock(passphrase)
     fun protect(passphrase: String) = crypto.protect(passphrase)
     fun removeProtection() = crypto.removeProtection()
+    fun lock() = crypto.lock()
 
     /**
      * Encrypts a key for storage; blank keys stay blank.

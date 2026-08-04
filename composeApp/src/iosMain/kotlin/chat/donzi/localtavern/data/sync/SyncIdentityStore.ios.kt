@@ -8,14 +8,18 @@ import platform.Foundation.NSData
 import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSURL
+import platform.Foundation.NSURLIsExcludedFromBackupKey
 import platform.Foundation.NSUserDomainMask
 import platform.Foundation.dataWithBytes
 import platform.Foundation.dataWithContentsOfURL
 import platform.Foundation.writeToURL
 import platform.posix.memcpy
 
-// The device identity is stored in the app's private documents directory on
-// iOS.
+// The device identity (deviceId + X25519 private key, the root of all pairing
+// trust) is stored in the app's private documents directory on iOS, marked
+// NSURLIsExcludedFromBackupKey so it never leaves the device via iCloud
+// backup. (A Keychain-backed store would be stronger; the exclusion flag is
+// the minimal fix and keeps the file format shared with desktop.)
 @OptIn(ExperimentalForeignApi::class)
 actual fun createSyncIdentityStore(): SyncIdentityStore = IosSyncIdentityStore()
 
@@ -42,6 +46,7 @@ private class IosSyncIdentityStore : SyncIdentityStore {
                 NSData.dataWithBytes(bytes = pinned.addressOf(0), length = bytes.size.toULong())
             }
             data.writeToURL(url, atomically = true)
+            url.setResourceValue(true, forKey = NSURLIsExcludedFromBackupKey, error = null)
         }
     }
 }

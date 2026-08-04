@@ -23,6 +23,9 @@ private class FakeCrypto(
     override fun unlock(passphrase: String): Boolean = true
     override fun protect(passphrase: String) = Unit
     override fun removeProtection() = Unit
+    override fun lock() {
+        isAvailable = false
+    }
 }
 
 class ApiKeyCipherTest {
@@ -147,5 +150,101 @@ class DesktopPassphraseSecretCryptoTest {
         } finally {
             dir.deleteRecursively()
         }
+    }
+
+    @Test
+    fun protectionFile_storedWithOwnerOnlyPermissions() {
+        val dir = tempDir()
+        try {
+            val crypto = DesktopPassphraseSecretCrypto(dir)
+            crypto.protect("pass")
+            val path = java.io.File(dir, "secret.v1").toPath()
+            val perms = java.nio.file.Files.getPosixFilePermissions(path)
+            // No permissions for group or others: the salt/verifier blob must
+            // not be readable by other local users.
+            assertFalse(perms.contains(java.nio.file.attribute.PosixFilePermission.GROUP_READ))
+            assertFalse(perms.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_READ))
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_READ))
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_WRITE))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun legacyV1File_stillUnlocks() {
+        // Simulate a pre-format-versioning protection file: salt | iv |
+        // ciphertext with 200k iterations, no "ltv2:" header. Upgrading must
+        // not lock users out of their existing passphrase.
+        val dir = tempDir()
+        try {
+            val legacy = java.security.SecureRandom()
+            val salt = ByteArray(16).also { legacy.nextBytes(it) }
+            val iv = ByteArray(12).also { legacy.nextBytes(it) }
+            val key = deriveLegacyKey("pass", salt)
+            val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, key, javax.crypto.spec.GCMParameterSpec(128, iv))
+            val ciphertext = cipher.doFinal("LocalTavernKeyV1".toByteArray())
+            java.io.File(dir, "secret.v1").writeBytes(salt + iv + ciphertext)
+
+            val crypto = DesktopPassphraseSecretCrypto(dir)
+            assertTrue(crypto.unlock("pass"), "A legacy v1 file must unlock after the format upgrade")
+            val blob = crypto.encrypt("sk")!!
+            assertEquals("sk", crypto.decrypt(blob), "An unlocked legacy backend must encrypt and decrypt")
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun newFormatFile_storesIterationCountAndRoundTrips() {
+        val dir = tempDir()
+        try {
+            val crypto = DesktopPassphraseSecretCrypto(dir)
+            crypto.protect("pass")
+            val bytes = java.io.File(dir, "secret.v1").readBytes()
+            val magic = "ltv2:".encodeToByteArray()
+            assertTrue(bytes.size >= magic.size + 4, "New-format file must carry the ltv2: header")
+            assertTrue(bytes.copyOfRange(0, magic.size).contentEquals(magic), "New-format file must be marked with ltv2:")
+            val iters = ((bytes[magic.size].toInt() and 0xFF) shl 24) or
+                ((bytes[magic.size + 1].toInt() and 0xFF) shl 16) or
+                ((bytes[magic.size + 2].toInt() and 0xFF) shl 8) or
+                (bytes[magic.size + 3].toInt() and 0xFF)
+            assertEquals(600_000, iters, "New files must store the current iteration count")
+
+            // A fresh instance must unlock using the count stored in the file.
+            val locked = DesktopPassphraseSecretCrypto(dir)
+            assertTrue(locked.unlock("pass"))
+            val blob = locked.encrypt("sk")!!
+            assertEquals("sk", locked.decrypt(blob), "The stored iteration count must derive the same key")
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun lock_forgetsKeyWithoutDeletingProtection() {
+        val dir = tempDir()
+        try {
+            val crypto = DesktopPassphraseSecretCrypto(dir)
+            crypto.protect("pass")
+            val encrypted = crypto.encrypt("secret")!!
+
+            crypto.lock()
+            assertFalse(crypto.isAvailable, "lock() must drop the derived key")
+            assertTrue(crypto.isProtected, "lock() must keep the protection file")
+            assertEquals(encrypted, crypto.decrypt(encrypted), "A locked backend must not decrypt")
+            assertFalse(crypto.unlock("wrong"), "Wrong passphrase stays wrong after a lock")
+            assertTrue(crypto.unlock("pass"), "The correct passphrase re-unlocks after a lock")
+            assertEquals("secret", crypto.decrypt(encrypted), "Blobs encrypted before the lock decrypt after re-unlock")
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    private fun deriveLegacyKey(passphrase: String, salt: ByteArray): javax.crypto.SecretKey {
+        val spec = javax.crypto.spec.PBEKeySpec(passphrase.toCharArray(), salt, 200_000, 256)
+        val factory = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+        return javax.crypto.spec.SecretKeySpec(factory.generateSecret(spec).encoded, "AES")
     }
 }

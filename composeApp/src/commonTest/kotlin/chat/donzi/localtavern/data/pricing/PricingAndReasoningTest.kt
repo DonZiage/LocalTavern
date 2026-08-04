@@ -45,6 +45,33 @@ class PricingCatalogTest {
     }
 
     @Test
+    fun lookup_matchesDateSuffixedModelIds() {
+        // Real API model ids carry date/version suffixes; the catalog pattern
+        // is a prefix, so these must resolve instead of silently returning null.
+        val gptMini = PricingCatalog.lookup("OpenAI", "gpt-4o-mini-2024-07-18")
+        assertEquals(0.15, gptMini?.inputPerMillion)
+        val sonnet = PricingCatalog.lookup("Anthropic", "claude-3-5-sonnet-20241022")
+        assertEquals(3.0, sonnet?.inputPerMillion)
+    }
+
+    @Test
+    fun lookup_prefixMatchStillSelectsLongestPattern() {
+        // A name that is a prefix of TWO catalog entries picks the longest
+        // (most specific) pattern, not the shortest.
+        val price = PricingCatalog.lookup("OpenAI", "gpt-4o-mini-2024-07-18")
+        assertEquals(0.15, price?.inputPerMillion)
+        // And a bare "gpt-4o" must still NOT match the mini entry.
+        assertEquals(2.5, PricingCatalog.lookup("OpenAI", "gpt-4o")?.inputPerMillion)
+    }
+
+    @Test
+    fun lookup_suffixOnlyDoesNotMatch() {
+        // The prefix anchor must not match mid-name: "o-mini-2024" is not a
+        // "gpt-4o-mini" model.
+        assertNull(PricingCatalog.lookup("OpenAI", "not-gpt-4o-mini-2024-07-18"))
+    }
+
+    @Test
     fun resolve_overrideWinsOverCatalog() {
         val override = chat.donzi.localtavern.data.database.ModelPricing("OpenAI", "gpt-4o", 9.9, 9.9, "USD")
         val resolved = PricingCatalog.resolve("OpenAI", "gpt-4o", override)

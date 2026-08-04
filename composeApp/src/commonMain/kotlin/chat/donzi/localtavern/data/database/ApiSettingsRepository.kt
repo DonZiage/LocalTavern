@@ -179,6 +179,34 @@ class ApiSettingsRepository(
         }
     }
 
+    // Desktop "change passphrase": verifies the current passphrase, decrypts
+    // every key IN MEMORY with the old derived key, then protects under the
+    // new passphrase and re-encrypts each key with the new derived key.
+    // Plaintext never touches the database, and the old passphrase stops
+    // working the moment the protection file is replaced.
+    // Returns false (and changes nothing) when `currentPassphrase` is wrong.
+    // Runs on the database dispatcher like every other repository method (the
+    // JVM driver opens one SQLite connection per thread).
+    suspend fun changePassphrase(currentPassphrase: String, newPassphrase: String): Boolean =
+        withContext(ioDispatcher) {
+            if (!apiKeyCipher.unlock(currentPassphrase)) return@withContext false
+            // Old key is now in memory: read every key, decrypting in memory only.
+            val decryptedKeys = queries.selectAllApiConnections().executeAsList().map { row ->
+                row.id to apiKeyCipher.decryptFromStorage(row.apiKey)
+            }
+            apiKeyCipher.protect(newPassphrase)
+            val ts = nextTimestamp()
+            database.transaction {
+                decryptedKeys.forEach { (id, key) ->
+                    val reEncrypted = apiKeyCipher.encryptForStorage(key)
+                    if (reEncrypted != null) {
+                        queries.updateApiConnectionApiKey(apiKey = reEncrypted, updatedAt = ts, syncSeq = nextSyncSeq(), id = id)
+                    }
+                }
+            }
+            true
+        }
+
     private fun ApiConfig.withDecryptedKey(): ApiConfig =
         if (apiKey == null) this else copy(apiKey = apiKeyCipher.decryptFromStorage(apiKey))
 
@@ -261,6 +289,24 @@ class ApiSettingsRepository(
         database.transaction {
             queries.insertDefaultSettings()
             queries.updateConfirmBeforeDelete(if (enabled) 1L else 0L)
+        }
+    }
+
+    // Desktop idle auto-lock: minutes of inactivity before the passphrase key
+    // is forgotten. 0 disables auto-lock. Per-device, never synced.
+    suspend fun updateAutoLockIdleMinutes(minutes: Int) = withContext(ioDispatcher) {
+        database.transaction {
+            queries.insertDefaultSettings()
+            queries.updateAutoLockIdleMinutes(minutes.toLong())
+        }
+    }
+
+    // Mobile first-launch "set a device screen lock" recommendation.
+    // Per-device, never synced.
+    suspend fun updateLockRecommendationShown(shown: Boolean) = withContext(ioDispatcher) {
+        database.transaction {
+            queries.insertDefaultSettings()
+            queries.updateLockRecommendationShown(if (shown) 1L else 0L)
         }
     }
 

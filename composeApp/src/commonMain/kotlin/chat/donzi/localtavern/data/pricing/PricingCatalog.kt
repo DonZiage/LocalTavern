@@ -3,9 +3,10 @@ package chat.donzi.localtavern.data.pricing
 import chat.donzi.localtavern.data.database.ModelPricing
 
 // Bundled price list (USD per 1M tokens) for common cloud models. Patterns are
-// matched against model names with Regex.matches; the most specific (longest)
-// pattern wins. Prices are approximate list prices and are meant for
-// estimation only; users can override any entry via the ModelPricing table.
+// matched as anchored PREFIXES of model names (real ids carry date/version
+// suffixes); the most specific (longest) pattern wins. Prices are approximate
+// list prices and are meant for estimation only; users can override any entry
+// via the ModelPricing table.
 object PricingCatalog {
 
     // All bundled prices are USD; a helper keeps the table above readable.
@@ -109,12 +110,15 @@ object PricingCatalog {
             return ModelPricing(trimmedProvider, trimmedModel, 0.0, 0.0, "USD")
         }
 
-        // Longest matching pattern wins (most specific model first).
+        // Longest matching pattern wins (most specific model first). Patterns
+        // are anchored PREFIX matches: real model ids carry date/version
+        // suffixes ("claude-3-5-sonnet-20241022", "gpt-4o-mini-2024-07-18"),
+        // so a full-string match would never hit any catalog entry.
         val providerEntries = entries.filter { it.provider.equals(trimmedProvider, ignoreCase = true) }
         val matches = providerEntries
             .mapNotNull { entry ->
                 val pattern = Regex(entry.modelPattern.replace(".", "\\."), RegexOption.IGNORE_CASE)
-                if (pattern.matches(trimmedModel)) entry else null
+                if (pattern.matchAt(trimmedModel, 0) != null) entry else null
             }
             .sortedByDescending { it.modelPattern.length }
         return matches.firstOrNull()

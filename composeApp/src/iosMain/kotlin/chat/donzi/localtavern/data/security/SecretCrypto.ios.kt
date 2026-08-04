@@ -155,6 +155,7 @@ class IosKeychainSecretCrypto : SecretCrypto {
     override fun unlock(passphrase: String): Boolean = true
     override fun protect(passphrase: String) = Unit
     override fun removeProtection() = Unit
+    override fun lock() = Unit
 }
 
 @OptIn(ExperimentalForeignApi::class)

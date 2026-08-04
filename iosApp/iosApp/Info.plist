@@ -17,5 +17,7 @@
 	<string>LocalTavern syncs with your other devices over the local network (QR pairing, device discovery and encrypted data exchange).</string>
 	<key>NSCameraUsageDescription</key>
 	<string>LocalTavern uses the camera to scan the QR code shown by the host device during pairing.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>LocalTavern uses Face ID to verify it is you before opening.</string>
 </dict>
 </plist>

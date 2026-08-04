@@ -1,0 +1,7 @@
+-- v11 -> v12: mobile screen-lock recommendation.
+--
+-- One-time flag (per-device, never synced): whether the first-launch dialog
+-- recommending a device screen lock (PIN/password/fingerprint) has already
+-- been dismissed. The unlock gate itself needs no flag: it derives from
+-- whether the device actually has a lock method configured.
+ALTER TABLE AppSettings ADD COLUMN lockRecommendationShown INTEGER NOT NULL DEFAULT 0;

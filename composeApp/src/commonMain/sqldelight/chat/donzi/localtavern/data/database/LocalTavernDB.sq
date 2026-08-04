@@ -151,7 +151,14 @@ CREATE TABLE AppSettings (
     -- past it (a row "arriving late" from a lagging peer always gets a
     -- sequence newer than every previously delivered row). Cursors are exact
     -- with no boundary/equality cases.
-    lastSyncSeq INTEGER NOT NULL DEFAULT 0
+    lastSyncSeq INTEGER NOT NULL DEFAULT 0,
+    -- Desktop only: minutes of inactivity before the passphrase-derived key
+    -- is forgotten (unlock gate re-shown). 0 = never auto-lock. Per-device
+    -- preference, never synced.
+    autoLockIdleMinutes INTEGER NOT NULL DEFAULT 10,
+    -- Mobile only: whether the first-launch "set a device screen lock"
+    -- recommendation has been dismissed. Per-device, never synced.
+    lockRecommendationShown INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE PromptBlockEntity (
@@ -201,7 +208,9 @@ selectAllApiConnections:
 SELECT * FROM ApiConnection WHERE isDeleted = 0 ORDER BY displayOrder ASC;
 
 selectActiveApiConnection:
-SELECT * FROM ApiConnection WHERE isActive = 1 AND isDeleted = 0 LIMIT 1;
+-- displayOrder makes the pick deterministic if the "exactly one active row"
+-- invariant is ever violated (e.g. by an older sync merge).
+SELECT * FROM ApiConnection WHERE isActive = 1 AND isDeleted = 0 ORDER BY displayOrder ASC LIMIT 1;
 
 selectApiConnectionById:
 SELECT * FROM ApiConnection WHERE id = ? AND isDeleted = 0 LIMIT 1;
@@ -370,6 +379,12 @@ UPDATE AppSettings SET autoSyncOnLaunch = ? WHERE id = 1;
 
 updateConfirmBeforeDelete:
 UPDATE AppSettings SET confirmBeforeDelete = ? WHERE id = 1;
+
+updateAutoLockIdleMinutes:
+UPDATE AppSettings SET autoLockIdleMinutes = ? WHERE id = 1;
+
+updateLockRecommendationShown:
+UPDATE AppSettings SET lockRecommendationShown = ? WHERE id = 1;
 
 insertDefaultSettings:
 INSERT OR IGNORE INTO AppSettings(id, isDarkMode, activePersonaId) VALUES (1, 1, NULL);

@@ -65,7 +65,7 @@ class SyncProtocolTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
         val service = SyncService(
-            identity = identity,
+            initialIdentity = identity,
             crypto = crypto,
             repository = repository,
             identityStore = FakeIdentityStore(),
@@ -751,6 +751,77 @@ class SyncProtocolTest {
             val refs = chat.donzi.localtavern.utils.deserializeImageRefs(row.imageRefs)
             assertEquals(1, refs.size, "The path-traversal ref must be dropped")
             assertEquals(validHash, refs[0].sha256)
+        } finally {
+            host.stop()
+            guest.stop()
+        }
+    }
+
+    @Test
+    fun pairing_sanitizesHostileDeviceNames() = runTest {
+        val hostPort = freePort()
+        val host = Device("host-device", "Host", hostPort)
+        // A name carrying a bidi-override control character: pairing is the
+        // least-trusted moment, so it must be sanitized on the receiving side
+        // before it is stored or displayed (like authenticated names are).
+        val guest = Device("guest-device", "Evil\u202Eguest", hostPort + 1)
+        try {
+            host.start()
+            guest.start()
+
+            host.service.startPairing()
+            val pin = host.service.state.value.pairingPin!!
+            guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+
+            assertEquals("Evilguest", host.repository.getPeer("guest-device")!!.name, "The hostile name must be sanitized before storage")
+            assertEquals("Evilguest", host.service.state.value.pendingPeerName, "The pending-peer name must be sanitized too")
+            assertEquals("Host", guest.repository.getPeer("host-device")!!.name, "The client side sanitizes the host's name as well")
+        } finally {
+            host.stop()
+            guest.stop()
+        }
+    }
+
+    @Test
+    fun hostileBlob_whoseContentDoesNotMatchItsRef_isNotStored() = runTest {
+        val hostPort = freePort()
+        val host = Device("host-device", "Host", hostPort)
+        val guest = Device("guest-device", "Guest", hostPort + 1)
+        try {
+            host.start()
+            guest.start()
+            host.service.startPairing()
+            val pin = host.service.state.value.pairingPin!!
+            guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+            host.service.confirmFingerprint()
+            guest.service.confirmFingerprint()
+
+            // A malicious (or buggy) peer stores arbitrary bytes under a ref
+            // whose SHA-256 they do not match. Content addressing is only
+            // trustworthy when the address is verified on reassembly.
+            val refHash = runBlocking { chat.donzi.localtavern.utils.Hashing.sha256Hex(ByteArray(32) { 5 }) }
+            val wrongContent = ByteArray(300) { 9 }
+            runBlocking { host.blobStore.write(refHash, wrongContent) }
+            host.repository.applyChanges(
+                SyncChanges(messages = listOf(
+                    SyncMessage(
+                        id = "m1", sessionId = "s1", role = "assistant", content = "Hello",
+                        timestamp = 1L, parentId = null, isActivePath = 1L,
+                        updatedAt = 1000L, isDeleted = 0L,
+                        imageRefs = listOf(SyncImageRef(refHash, wrongContent.size.toLong())),
+                        reasoningText = null, costEstimate = null
+                    )
+                )),
+                peerDeviceId = "device-p"
+            )
+
+            val syncResult = guest.service.syncNow("host-device")
+            assertTrue(syncResult.isSuccess, "Sync must succeed: ${syncResult.exceptionOrNull()}")
+
+            assertNull(
+                guest.blobStore.read(refHash),
+                "Blob content that does not hash to its ref must never be stored (the store must not be poisonable)"
+            )
         } finally {
             host.stop()
             guest.stop()

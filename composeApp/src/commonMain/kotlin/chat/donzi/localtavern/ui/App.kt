@@ -17,11 +17,19 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.controller.AppContainer
 import chat.donzi.localtavern.data.database.DriverFactory
+import chat.donzi.localtavern.isDesktop
 import chat.donzi.localtavern.ui.theme.LocalTavernTheme
 import chat.donzi.localtavern.ui.theme.ThemeTransition
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.TimeSource
+import kotlinx.coroutines.delay
 
 @Composable
 fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
@@ -53,7 +61,32 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
     val systemDark = isSystemInDarkTheme()
     var activeDrawer by remember { mutableStateOf(ActiveDrawer.None) }
 
-    if (!isInitialized || !syncReady) {
+    // Unlock gate: rendered BEFORE the loading spinner and the main screen.
+    // Desktop: API keys are plaintext until the passphrase is set, so the
+    // setup step is obligatory. Mobile: the device's own unlock method
+    // (PIN/password/fingerprint) is asked for via the OS prompt; devices
+    // without any unlock method open directly (a one-time recommendation
+    // dialog is shown over the main UI instead).
+    val secretGate = remember {
+        SecretGateState(
+            apiKeyCipher = container.apiKeyCipher,
+            userAuthenticator = container.userAuthenticator,
+            onProtected = { container.apiSettingsRepository.reencryptAllApiKeys() }
+        )
+    }
+
+    when {
+        secretGate.mode != SecretGateMode.Open -> {
+            LocalTavernTheme(darkTheme = systemDark) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    SecretGate(secretGate)
+                }
+            }
+        }
+        !isInitialized || !syncReady -> {
         LocalTavernTheme(darkTheme = systemDark) {
             Surface(
                 modifier = Modifier.fillMaxSize(),
@@ -96,7 +129,55 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
                 }
             }
         }
-    } else {
+        } else -> {
+        // Idle auto-lock (desktop): after autoLockIdleMinutes of inactivity
+        // the derived passphrase key is forgotten and the unlock gate
+        // reappears. Activity = any pointer event or key press anywhere in
+        // the app. 0 disables auto-lock.
+        val autoLockMinutes by appState.autoLockIdleMinutes.collectAsState()
+        var lastActivity by remember {
+            mutableStateOf(TimeSource.Monotonic.markNow())
+        }
+        // Mobile first-launch screen-lock recommendation: only when the
+        // device has no unlock method and the dialog has not been dismissed
+        // yet. Checked here (after init) so the persisted flag is already
+        // loaded and returning users never see it flash.
+        val lockRecommendationShown by appState.lockRecommendationShown.collectAsState()
+        if (!isDesktop && !container.userAuthenticator.isLockConfigured && !lockRecommendationShown) {
+            DeviceLockRecommendationDialog(
+                onContinue = { appState.setLockRecommendationShown() }
+            )
+        }
+        LaunchedEffect(secretGate.mode, autoLockMinutes) {
+            if (secretGate.mode == SecretGateMode.Open && autoLockMinutes > 0) {
+                while (true) {
+                    delay(30_000)
+                    val idle = TimeSource.Monotonic.markNow() - lastActivity
+                    if (idle >= autoLockMinutes.minutes) {
+                        secretGate.lock()
+                        break
+                    }
+                }
+            }
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            awaitPointerEvent()
+                            lastActivity = TimeSource.Monotonic.markNow()
+                        }
+                    }
+                }
+                .onPreviewKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown) {
+                        lastActivity = TimeSource.Monotonic.markNow()
+                    }
+                    false
+                }
+        ) {
         ThemeTransition(
             initialThemeIsDark = darkModeFromDb,
             onThemeSaved = { darkMode ->
@@ -134,6 +215,8 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
                 onSendWithCtrlEnterChange = { appState.setSendWithCtrlEnter(it) },
                 confirmBeforeDelete = confirmBeforeDelete,
                 onConfirmBeforeDeleteChange = { appState.setConfirmBeforeDelete(it) },
+                autoLockIdleMinutes = autoLockMinutes,
+                onAutoLockIdleMinutesChange = { appState.setAutoLockIdleMinutes(it) },
                 activeDrawer = activeDrawer,
                 onActiveDrawerChange = { activeDrawer = it },
                 onPersonaSelect = { personaId ->
@@ -158,6 +241,8 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
                     appState.createCharacter(name)
                 }
             )
+        }
+        }
         }
     }
 }

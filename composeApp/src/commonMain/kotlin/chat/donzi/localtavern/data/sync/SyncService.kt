@@ -3,6 +3,7 @@ package chat.donzi.localtavern.data.sync
 import chat.donzi.localtavern.data.blob.BlobStore
 import chat.donzi.localtavern.data.database.SyncPeer
 import io.ktor.client.HttpClient
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -60,7 +61,12 @@ private const val IDLE_WATCHDOG_INTERVAL_MS = 30_000L
 // SyncExchange (delta round trips) and SyncBlobTransfer (out-of-band image
 // blobs); this class wires them together and exposes the SyncUiState.
 class SyncService(
-    var identity: SyncIdentity,
+    // NOTE: the parameter is deliberately NOT named `identity`: a constructor
+    // parameter with the same name as this class's `identity` property would
+    // shadow it inside the class-body lambdas (pairing/exchange/channelKeys
+    // providers), which would then capture the initial value forever and
+    // renames would never reach outbound envelopes.
+    initialIdentity: SyncIdentity,
     private val crypto: SyncCrypto,
     private val repository: SyncRepository,
     private val identityStore: SyncIdentityStore,
@@ -74,6 +80,16 @@ class SyncService(
     // envelope refs still sync, but no bytes move.
     private val blobStore: BlobStore? = null
 ) {
+    // The identity is mutated by renameDevice/rotateIdentityKey on
+    // Dispatchers.IO while server handler threads and the discovery
+    // deviceNameProvider read it. It lives in a StateFlow (not a plain var):
+    // MutableStateFlow.value is safe to read/write from any thread on every
+    // target, which a plain field would not be in common code.
+    private val identityFlow = MutableStateFlow(initialIdentity)
+    var identity: SyncIdentity
+        get() = identityFlow.value
+        private set(value) { identityFlow.value = value }
+
     private val _state = MutableStateFlow(SyncUiState())
     val state: StateFlow<SyncUiState> = _state.asStateFlow()
 
@@ -222,16 +238,19 @@ class SyncService(
      * announcement and the pairing QR always reflect it immediately.
      */
     suspend fun renameDevice(newName: String): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             val sanitized = DeviceName.sanitize(newName) ?: error("Name must not be empty.")
             val renamed = identity.withName(sanitized)
             identityStore.save(SyncIdentity.serialize(renamed))
             identity = renamed
             _deviceName.value = sanitized
             _state.update { it.copy(statusMessage = "Device renamed to \"$sanitized\".", syncError = null) }
-            sanitized
-        }.onFailure { error ->
-            _state.update { it.copy(syncError = error.message, statusMessage = null) }
+            Result.success(sanitized)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _state.update { it.copy(syncError = e.message, statusMessage = null) }
+            Result.failure(e)
         }
     }
 
@@ -243,7 +262,7 @@ class SyncService(
      * re-paired afterwards; old pairings can no longer authenticate.
      */
     suspend fun rotateIdentityKey(): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             val newIdentity = SyncIdentity.create(deviceName = identity.deviceName, crypto = crypto, deviceId = identity.deviceId)
             identityStore.save(SyncIdentity.serialize(newIdentity))
             identity = newIdentity
@@ -259,22 +278,30 @@ class SyncService(
                     pendingPeerDeviceId = null
                 )
             }
-            "Sync key rotated. Re-pair your devices."
-        }.onFailure { error ->
-            _state.update { it.copy(syncError = error.message, statusMessage = null) }
+            Result.success("Sync key rotated. Re-pair your devices.")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _state.update { it.copy(syncError = e.message, statusMessage = null) }
+            Result.failure(e)
         }
     }
 
     fun syncNowAsync(peerId: String) {
         scope.launch {
             _state.update { it.copy(isSyncing = true, syncError = null) }
-            val result = syncNow(peerId)
-            _state.update {
-                it.copy(
-                    isSyncing = false,
-                    statusMessage = result.getOrNull() ?: "Sync failed.",
-                    syncError = result.exceptionOrNull()?.message
-                )
+            try {
+                val result = syncNow(peerId)
+                _state.update {
+                    it.copy(
+                        statusMessage = result.getOrNull() ?: "Sync failed.",
+                        syncError = result.exceptionOrNull()?.message
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } finally {
+                _state.update { it.copy(isSyncing = false) }
             }
         }
     }
@@ -282,15 +309,20 @@ class SyncService(
     fun syncAllPeersAsync() {
         scope.launch {
             _state.update { it.copy(isSyncing = true, syncError = null) }
-            val peers = repository.getPeers()
-            val results = peers.map { peer -> peer.deviceId to syncNow(peer.deviceId) }
-            val failures = results.filter { it.second.isFailure }
-            _state.update {
-                it.copy(
-                    isSyncing = false,
-                    statusMessage = if (failures.isEmpty()) "All devices synced." else "Synced ${results.size - failures.size}/${results.size} devices.",
-                    syncError = failures.firstOrNull()?.second?.exceptionOrNull()?.message
-                )
+            try {
+                val peers = repository.getPeers()
+                val results = peers.map { peer -> peer.deviceId to syncNow(peer.deviceId) }
+                val failures = results.filter { it.second.isFailure }
+                _state.update {
+                    it.copy(
+                        statusMessage = if (failures.isEmpty()) "All devices synced." else "Synced ${results.size - failures.size}/${results.size} devices.",
+                        syncError = failures.firstOrNull()?.second?.exceptionOrNull()?.message
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } finally {
+                _state.update { it.copy(isSyncing = false) }
             }
         }
     }

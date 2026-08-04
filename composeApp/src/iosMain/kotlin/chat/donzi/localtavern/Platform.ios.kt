@@ -81,6 +81,10 @@ actual fun convertToPng(bytes: ByteArray): ByteArray {
 
 actual val isDesktop: Boolean = false
 
+actual val isAndroid: Boolean = false
+
+actual fun openDeviceSecuritySettings() = Unit
+
 actual fun appVersionName(): String {
     val info = NSBundle.mainBundle.infoDictionary
     return (info?.objectForKey("CFBundleShortVersionString") as? String) ?: "dev build"

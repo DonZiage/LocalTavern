@@ -9,6 +9,7 @@ import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
@@ -154,7 +155,17 @@ class SyncBlobTransfer(
                         continue
                     }
                     if (result.data.isNotEmpty()) {
-                        builder.add(decodeBase64(result.data))
+                        // Chunks are addressed by fixed offsets, so a chunk
+                        // larger than CHUNK_BYTES (or of unexpected size) is a
+                        // protocol violation: a peer on a different chunk size
+                        // would silently shift every subsequent offset. Refuse
+                        // the transfer instead of reassembling garbage.
+                        val chunk = runCatching { decodeBase64(result.data) }.getOrNull()
+                        if (chunk == null || chunk.size > CHUNK_BYTES) {
+                            refIndex = pending.size
+                            break
+                        }
+                        builder.add(chunk)
                         finalSize = result.total
                         chunkCount++
                     } else if (!result.hasMore) {
@@ -179,13 +190,18 @@ class SyncBlobTransfer(
                     }
                     if (!result.hasMore) {
                         // Ref complete: store the reassembled blob — only when
-                        // the reassembly exactly matches the advertised total,
-                        // so a truncated reassembly never poisons future
-                        // fetches of the same ref.
+                        // the reassembly exactly matches the advertised total
+                        // AND its content hash matches the ref. Content
+                        // addressing is only trustworthy when the address is
+                        // verified: without the hash check a malicious (or
+                        // buggy) peer could poison the store, and the garbage
+                        // would then propagate to every other device that
+                        // fetches (or is served) the same ref.
                         val combined = ByteArray(builder.sumOf { it.size })
                         var pos = 0
                         builder.forEach { part -> part.copyInto(combined, pos); pos += part.size }
-                        if (combined.size == finalSize && store.read(ref.sha256) == null) store.write(ref.sha256, combined)
+                        val hashMatches = Hashing.sha256Hex(combined) == ref.sha256
+                        if (hashMatches && combined.size == finalSize && store.read(ref.sha256) == null) store.write(ref.sha256, combined)
                         refIndex++
                         refComplete = true
                     }
@@ -202,9 +218,14 @@ class SyncBlobTransfer(
     // advances to the next ref itself.
     suspend fun handleBlobFetch(fromDeviceId: String, encryptedPayload: String, requestEphemeralKey: String, exchangeId: String): BlobFetchResponse {
         noteActivity()
-        return runCatching {
+        try {
             if (exchangeId.isBlank()) {
                 return BlobFetchResponse(ok = false, message = "Missing exchange id.")
+            }
+            if (!isValidDeviceId(fromDeviceId)) {
+                // deviceIds are embedded (unescaped) in the AEAD associated
+                // data; reject anything outside the generated alphabet.
+                return BlobFetchResponse(ok = false, message = "Invalid device id.")
             }
             val peer = repository.getPeer(fromDeviceId)
                 ?: return BlobFetchResponse(ok = false, message = "Not paired.")
@@ -261,9 +282,11 @@ class SyncBlobTransfer(
             val responsePayload = encodeBase64(
                 crypto.encrypt(outbound.key, aad(from = identity.deviceId, to = fromDeviceId, exchangeId = exchangeId), encodeBlobResult(result))
             )
-            BlobFetchResponse(ok = true, exchangeId = exchangeId, payload = responsePayload, ephemeralPublicKey = encodeBase64(outbound.ephemeralPublicKey))
-        }.getOrElse { error ->
-            BlobFetchResponse(ok = false, message = error.message ?: "Blob fetch failed.")
+            return BlobFetchResponse(ok = true, exchangeId = exchangeId, payload = responsePayload, ephemeralPublicKey = encodeBase64(outbound.ephemeralPublicKey))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return BlobFetchResponse(ok = false, message = e.message ?: "Blob fetch failed.")
         }
     }
 

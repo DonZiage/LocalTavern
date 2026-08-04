@@ -30,6 +30,7 @@ import chat.donzi.localtavern.data.security.ApiKeyCipher
 import chat.donzi.localtavern.data.sync.SyncDiscovery
 import chat.donzi.localtavern.data.sync.SyncRepository
 import chat.donzi.localtavern.data.sync.SyncService
+import chat.donzi.localtavern.isDesktop
 import kotlinx.coroutines.launch
 
 @Composable
@@ -51,6 +52,8 @@ fun SettingsPanelContent(
     onSendWithCtrlEnterChange: (Boolean) -> Unit,
     confirmBeforeDelete: Boolean,
     onConfirmBeforeDeleteChange: (Boolean) -> Unit,
+    autoLockIdleMinutes: Int = 10,
+    onAutoLockIdleMinutesChange: (Int) -> Unit = {},
     apiSectionExpanded: Boolean,
     onApiSectionExpandedChange: (Boolean) -> Unit,
     syncSectionExpanded: Boolean = false,
@@ -135,16 +138,24 @@ fun SettingsPanelContent(
                     )
                 }
 
-                CollapsibleSettingsSection(
-                    title = "API Key Security",
-                    expanded = securitySectionExpanded,
-                    onExpandedChange = onSecuritySectionExpandedChange
-                ) {
-                    SecuritySettingsSection(
-                        apiKeyCipher = apiKeyCipher,
-                        apiSettingsRepository = apiSettingsRepository,
-                        onKeysChanged = onApiChanged
-                    )
+                // Desktop-only: mobile keys live in the OS keystore/keychain
+                // (no passphrase, no auto-lock UI), so this section is purely
+                // informational there — device security is handled by the
+                // unlock gate and the one-time lock recommendation instead.
+                if (isDesktop) {
+                    CollapsibleSettingsSection(
+                        title = "API Key Security",
+                        expanded = securitySectionExpanded,
+                        onExpandedChange = onSecuritySectionExpandedChange
+                    ) {
+                        SecuritySettingsSection(
+                            apiKeyCipher = apiKeyCipher,
+                            apiSettingsRepository = apiSettingsRepository,
+                            onKeysChanged = onApiChanged,
+                            autoLockIdleMinutes = autoLockIdleMinutes,
+                            onAutoLockIdleMinutesChange = onAutoLockIdleMinutesChange
+                        )
+                    }
                 }
             }
         }

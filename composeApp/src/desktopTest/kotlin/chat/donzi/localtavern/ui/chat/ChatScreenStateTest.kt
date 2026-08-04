@@ -24,6 +24,8 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.ByteChannel
+import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
@@ -75,7 +77,11 @@ class ChatScreenStateTest {
     }
 
     private suspend fun TestScope.newHarness(
-        streamChunks: Array<String> = arrayOf("""{"choices":[{"delta":{"content":"Reply"}}]}""", "[DONE]")
+        streamChunks: Array<String> = arrayOf("""{"choices":[{"delta":{"content":"Reply"}}]}""", "[DONE]"),
+        // When false the mocked stream never reaches EOF: it delivers its
+        // chunks and then stays open, so an in-flight generation never
+        // completes (used to exercise race guards deterministically).
+        closeStream: Boolean = true
     ): Harness {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val db = TestDb()
@@ -93,8 +99,17 @@ class ChatScreenStateTest {
                     MockEngineConfig().apply {
                         dispatcher = testDispatcher
                         addHandler {
+                            val body = streamChunks.joinToString("\n\n") { "data: $it" } + "\n\n"
+                            val channel = if (closeStream) {
+                                ByteReadChannel(body)
+                            } else {
+                                ByteChannel().also { ch ->
+                                    ch.writeFully(body.encodeToByteArray())
+                                    ch.flush()
+                                }
+                            }
                             respond(
-                                content = ByteReadChannel(streamChunks.joinToString("\n\n") { "data: $it" } + "\n\n"),
+                                content = channel,
                                 status = HttpStatusCode.OK,
                                 headers = headersOf(HttpHeaders.ContentType, "text/event-stream")
                             )
@@ -234,6 +249,49 @@ class ChatScreenStateTest {
         testScheduler.advanceUntilIdle()
         val messages = h.messageRepository.getMessagesForSession(h.activeSessionId!!)
         assertEquals(1, messages.count { it.role == "user" }, "Only one user message may be committed")
+    }
+
+    @Test
+    fun send_whileGenerationAlreadyRunning_isNotSilentlyDropped() = runTest {
+        // The stream delivers one token and then stays open forever: the
+        // in-flight generation cannot complete, which is exactly the state
+        // the second isGenerating guard in commitUserMessage protects against.
+        val h = newHarness(streamChunks = arrayOf("""{"choices":[{"delta":{"content":"Slow"}}]}"""), closeStream = false)
+        h.characterRepository.createCharacter(CHARACTER_A.name)
+        val char = h.characterRepository.getAllCharacters().single()
+        h.onActiveCharacterChange(char)
+        val sessionId = h.sessionRepository.getOrCreateSession(char.id, PERSONA.id)
+
+        // A generation started after the UI read its last isGenerating value:
+        // the controller is generating, but the send's UI-level check still
+        // sees the stale false and accepts the send.
+        h.chatController.requestAiResponse(sessionId, char, PERSONA)
+        assertTrue(h.chatController.state.value.isGenerating)
+
+        val accepted = h.state.trySendMessage(
+            userMessage = "hi", imageList = emptyList(), activePersonaId = PERSONA.id,
+            activePersona = PERSONA, activeApiConnection = chat.donzi.localtavern.domain.ApiConfig(
+                id = "c1", provider = "test", name = "Test", baseUrl = "https://example.com",
+                apiKey = "key", model = "model", isActive = true, isChatCompletion = true,
+                lastUsed = 0L, temperature = 1.0, topP = 1.0, topK = 0L,
+                presencePenalty = 0.0, frequencyPenalty = 0.0, contextLimit = 4096L,
+                responseLimit = 0L, displayOrder = 0L, timeoutLimit = 60L
+            ),
+            isGenerating = false
+        )
+        assertTrue(accepted, "The UI-level check must accept the send (stale isGenerating)")
+        testScheduler.runCurrent()
+
+        assertTrue(
+            h.chatController.state.value.errorMessage?.contains("still generating") == true,
+            "A dropped send must surface an error instead of vanishing silently"
+        )
+        val messages = h.messageRepository.getMessagesForSession(sessionId)
+        assertTrue(messages.none { it.role == "user" }, "No user message may be committed while a generation is in flight")
+
+        // Drain the hung stream so the test scheduler ends cleanly.
+        h.chatController.stopGeneration()
+        testScheduler.advanceUntilIdle()
     }
 
     @Test
