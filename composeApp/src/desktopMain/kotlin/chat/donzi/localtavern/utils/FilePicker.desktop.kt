@@ -54,3 +54,44 @@ actual fun rememberCharacterCardPickerLauncher(
         }
     }
 }
+
+@Composable
+actual fun rememberLorebookPickerLauncher(
+    onPicked: (List<PickedFile>) -> Unit
+): () -> Unit {
+    val scope = rememberCoroutineScope()
+    val currentOnPicked by rememberUpdatedState(onPicked)
+    return remember {
+        {
+            try {
+                UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName())
+            } catch (e: Exception) {
+            }
+
+            val chooser = JFileChooser().apply {
+                isMultiSelectionEnabled = false
+                fileFilter = FileNameExtensionFilter("Lorebook (World Info)", "json")
+                dialogTitle = "Select a Lorebook File"
+            }
+
+            val result = chooser.showOpenDialog(null)
+            if (result == JFileChooser.APPROVE_OPTION) {
+                val file = chooser.selectedFile
+                if (file != null) {
+                    scope.launch {
+                        val picked = withContext(Dispatchers.IO) {
+                            try {
+                                listOf(PickedFile(file.name, file.readBytes()))
+                            } catch (e: Exception) {
+                                emptyList()
+                            }
+                        }
+                        if (picked.isNotEmpty()) {
+                            currentOnPicked(picked)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

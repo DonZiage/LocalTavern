@@ -280,7 +280,8 @@ fun CharacterDefinitionEditor(
         LorebookEditorDialog(
             characterBook = character.characterBook,
             onSave = { bookJson -> onLorebookSave(bookJson) },
-            onDismiss = { showLorebookEditor = false }
+            onDismiss = { showLorebookEditor = false },
+            fileNameHint = character.name
         )
     }
 

@@ -83,6 +83,49 @@ class LorebookParserTest {
         assertTrue(book.entries.first().selective)
     }
 
+    @Test
+    fun toWorldInfoJson_roundTripsThroughParseWorldInfo() {
+        val original = Lorebook(
+            name = "World Lore",
+            description = "Settings",
+            entries = listOf(
+                LorebookEntry(name = "The Tavern", keys = listOf("tavern", "inn"), content = "Run by dwarves.", constant = false),
+                LorebookEntry(name = "Sword", keys = listOf("sword"), content = "Family heirloom.", constant = true, selective = true, secondaryKeys = listOf("legendary"))
+            )
+        )
+        val json = LorebookParser.toWorldInfoJson(original)
+        val reparsed = LorebookParser.parseWorldInfo(json.toString())
+
+        assertEquals(original, reparsed)
+    }
+
+    @Test
+    fun parseWorldInfo_acceptsCharacterBookWrapper() {
+        val raw = """{"characterBook":{"name":"Wrapped","entries":[{"name":"E","keys":["k"],"content":"c"}]}}"""
+        val book = LorebookParser.parseWorldInfo(raw)
+        assertEquals("Wrapped", book?.name)
+        assertEquals(1, book?.entries?.size)
+    }
+
+    @Test
+    fun parseWorldInfo_rejectsNonLorebookJson() {
+        assertEquals(null, LorebookParser.parseWorldInfo("""{"foo": 1}"""))
+        assertEquals(null, LorebookParser.parseWorldInfo("""{"entries": []}"""))
+        assertEquals(null, LorebookParser.parseWorldInfo("not json"))
+        assertEquals(null, LorebookParser.parseWorldInfo(null))
+    }
+
+    @Test
+    fun worldInfoToJsonString_isPrettyPrintedAndParseable() {
+        val original = Lorebook(
+            name = "B",
+            entries = listOf(LorebookEntry(name = "E", keys = listOf("k"), content = "c"))
+        )
+        val raw = LorebookParser.worldInfoToJsonString(original)
+        assertTrue(raw.contains("\n"), "Export must be pretty-printed for hand editing")
+        assertEquals(original, LorebookParser.parseWorldInfo(raw))
+    }
+
     companion object {
         fun sampleBook(): JsonObject = Json.parseToJsonElement(
             """

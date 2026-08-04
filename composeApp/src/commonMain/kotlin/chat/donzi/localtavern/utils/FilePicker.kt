@@ -9,3 +9,9 @@ import androidx.compose.runtime.Composable
 expect fun rememberCharacterCardPickerLauncher(
     onPicked: (List<PickedFile>) -> Unit
 ): () -> Unit
+
+// Picks a single standalone lorebook (world info) JSON file.
+@Composable
+expect fun rememberLorebookPickerLauncher(
+    onPicked: (List<PickedFile>) -> Unit
+): () -> Unit

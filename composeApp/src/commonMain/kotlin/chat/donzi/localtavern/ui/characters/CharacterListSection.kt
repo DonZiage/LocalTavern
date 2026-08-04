@@ -275,23 +275,35 @@ private fun CharacterSelectionBar(
     onExport: () -> Unit,
     onDelete: () -> Unit
 ) {
-    Row(
+    // The side panel is only ~300dp wide: one row cannot hold the count text
+    // plus four buttons without squeezing them, which wraps their labels and
+    // renders the icon buttons vertically. Two rows keep every button at its
+    // natural (horizontal) size.
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
+            .padding(horizontal = 12.dp, vertical = 4.dp)
     ) {
-        Text(
-            "$selectedCount selected",
-            style = MaterialTheme.typography.labelLarge
-        )
-        Row {
-            TextButton(onClick = onCancel) { Text("Cancel") }
-            TextButton(onClick = onToggleSelectAll) {
-                Text(if (allSelected) "Clear all" else "Select all")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                "$selectedCount selected",
+                style = MaterialTheme.typography.labelLarge
+            )
+            Row {
+                TextButton(onClick = onCancel) { Text("Cancel") }
+                TextButton(onClick = onToggleSelectAll) {
+                    Text(if (allSelected) "Clear all" else "Select all")
+                }
             }
-
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
+        ) {
             TextButton(
                 enabled = selectedCount > 0,
                 onClick = onExport

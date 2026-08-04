@@ -6,7 +6,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -15,23 +17,63 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.domain.Lorebook
 import chat.donzi.localtavern.domain.LorebookEntry
+import chat.donzi.localtavern.saveFile
 import chat.donzi.localtavern.utils.DefaultTokenizer
 import chat.donzi.localtavern.utils.LorebookParser
+import chat.donzi.localtavern.utils.rememberLorebookPickerLauncher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 
 // Edits the SillyTavern-compatible characterBook (World Info / lorebook) of a
 // character. Entries with keys are triggered by matching chat content; constant
-// entries are always injected into the prompt.
+// entries are always injected into the prompt. Lorebooks can be imported from
+// and exported to standalone world-info JSON files.
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LorebookEditorDialog(
     characterBook: JsonObject?,
     onSave: (JsonObject?) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    fileNameHint: String? = null
 ) {
     var book by remember(characterBook) { mutableStateOf(LorebookParser.parse(characterBook)) }
     var editingEntry by remember { mutableStateOf<LorebookEntry?>(null) }
     var isNewEntry by remember { mutableStateOf(false) }
+    var importError by remember { mutableStateOf<String?>(null) }
+    var exportMessage by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    val pickLorebook = rememberLorebookPickerLauncher { pickedFiles ->
+        val file = pickedFiles.firstOrNull() ?: return@rememberLorebookPickerLauncher
+        val parsed = LorebookParser.parseWorldInfo(file.bytes.decodeToString())
+        if (parsed != null) {
+            book = parsed
+            importError = null
+        } else {
+            importError = "Could not read \"${file.name}\" as a lorebook file."
+        }
+    }
+
+    val exportLorebook: () -> Unit = {
+        val baseName = (book.name ?: fileNameHint ?: "lorebook")
+            .replace(Regex("""[\\/:*?"<>|]"""), "_")
+            .trim()
+            .ifBlank { "lorebook" }
+            .take(80)
+        val fileName = "$baseName.json"
+        scope.launch {
+            val bytes = withContext(Dispatchers.Default) {
+                LorebookParser.worldInfoToJsonString(book).encodeToByteArray()
+            }
+            exportMessage = if (saveFile(fileName, bytes) != null) {
+                "Exported as $fileName"
+            } else {
+                "Export failed: could not save the file"
+            }
+        }
+    }
 
     val saveAndClose = {
         // No entries left: clear the character book so nothing is injected.
@@ -112,6 +154,43 @@ fun LorebookEditorDialog(
                     Icon(Icons.Default.Add, contentDescription = null)
                     Spacer(Modifier.width(4.dp))
                     Text("Add Entry")
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = pickLorebook,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.FileOpen, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Import")
+                    }
+                    OutlinedButton(
+                        onClick = exportLorebook,
+                        enabled = book.entries.isNotEmpty(),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Download, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Export")
+                    }
+                }
+                importError?.let {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                exportMessage?.let {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         },

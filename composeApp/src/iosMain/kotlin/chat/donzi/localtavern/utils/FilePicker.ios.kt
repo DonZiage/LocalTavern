@@ -94,3 +94,61 @@ actual fun rememberCharacterCardPickerLauncher(
         }
     }
 }
+
+@OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
+@Composable
+actual fun rememberLorebookPickerLauncher(
+    onPicked: (List<PickedFile>) -> Unit
+): () -> Unit {
+    val currentOnPicked by rememberUpdatedState(onPicked)
+
+    val delegate = remember {
+        object : NSObject(), UIDocumentPickerDelegateProtocol {
+            override fun documentPicker(
+                controller: UIDocumentPickerViewController,
+                didPickDocumentsAtURLs: List<*>
+            ) {
+                val url = didPickDocumentsAtURLs.filterIsInstance<NSURL>().firstOrNull()
+                    ?: return
+
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT.toLong(), 0uL)) {
+                    val data = NSData.dataWithContentsOfURL(url)
+                    val picked = if (data == null || data.length == 0uL) {
+                        null
+                    } else {
+                        PickedFile(url.lastPathComponent ?: "lorebook.json", data.toByteArray())
+                    }
+                    dispatch_async(dispatch_get_main_queue()) {
+                        if (picked != null) {
+                            currentOnPicked(listOf(picked))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    var pickerReference by remember { mutableStateOf<UIDocumentPickerViewController?>(null) }
+
+    return remember {
+        {
+            val picker = UIDocumentPickerViewController(
+                forOpeningContentTypes = listOf(UTTypeJSON.identifier, UTTypeData.identifier),
+                asCopy = true
+            )
+            picker.allowsMultipleSelection = false
+            picker.delegate = delegate
+            pickerReference = picker
+
+            val windows = UIApplication.sharedApplication.windows.filterIsInstance<UIWindow>()
+            val rootViewController = windows.firstOrNull { it.isKeyWindow() }
+                ?.rootViewController
+                ?: windows.lastOrNull()?.rootViewController
+            rootViewController?.presentViewController(
+                picker,
+                animated = true,
+                completion = null
+            )
+        }
+    }
+}

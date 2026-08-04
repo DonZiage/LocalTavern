@@ -58,7 +58,29 @@ object LorebookParser {
 
     /** Serializes a [Lorebook] back into the SillyTavern characterBook shape. */
     fun toJson(book: Lorebook): JsonObject {
-        val entries = JsonArray(book.entries.map { entry ->
+        return JsonObject(
+            buildMap {
+                book.name?.let { put("name", JsonPrimitive(it)) }
+                book.description?.let { put("description", JsonPrimitive(it)) }
+                put("entries", toEntriesJson(book.entries))
+            }
+        )
+    }
+
+    // The standalone world-info (lorebook) file format shares the entry shape
+    // with characterBook; only the top-level shape differs.
+    fun toWorldInfoJson(book: Lorebook): JsonObject {
+        return JsonObject(
+            buildMap {
+                book.name?.let { put("name", JsonPrimitive(it)) }
+                book.description?.let { put("description", JsonPrimitive(it)) }
+                put("entries", toEntriesJson(book.entries))
+            }
+        )
+    }
+
+    private fun toEntriesJson(entries: List<LorebookEntry>): JsonArray {
+        return JsonArray(entries.map { entry ->
             JsonObject(
                 buildMap {
                     entry.id?.let { put("id", JsonPrimitive(it)) }
@@ -77,17 +99,38 @@ object LorebookParser {
                 }
             )
         })
-        return JsonObject(
-            buildMap {
-                book.name?.let { put("name", JsonPrimitive(it)) }
-                book.description?.let { put("description", JsonPrimitive(it)) }
-                put("entries", entries)
-            }
-        )
     }
 
     fun parseJson(raw: String?): Lorebook {
         if (raw.isNullOrBlank()) return Lorebook()
         return runCatching { parse(json.parseToJsonElement(raw) as? JsonObject) }.getOrElse { Lorebook() }
+    }
+
+    /** Pretty-printed standalone world-info JSON for lorebook file exports. */
+    fun worldInfoToJsonString(book: Lorebook): String {
+        return exportJson.encodeToString(toWorldInfoJson(book))
+    }
+
+    // Parses a standalone lorebook file: a SillyTavern world-info object
+    // ({"entries": [...]}) or a {"characterBook": {...}} wrapper. Returns null
+    // when the file does not look like a lorebook.
+    fun parseWorldInfo(raw: String?): Lorebook? {
+        if (raw.isNullOrBlank()) return null
+        return runCatching {
+            val element = json.parseToJsonElement(raw)
+            val obj = element as? JsonObject ?: return null
+            val bookJson = when {
+                obj.containsKey("entries") -> obj
+                obj["characterBook"] is JsonObject -> obj["characterBook"] as JsonObject
+                else -> return null
+            }
+            val book = parse(bookJson)
+            if (book.entries.isEmpty()) null else book
+        }.getOrNull()
+    }
+
+    private val exportJson = Json {
+        prettyPrint = true
+        encodeDefaults = true
     }
 }

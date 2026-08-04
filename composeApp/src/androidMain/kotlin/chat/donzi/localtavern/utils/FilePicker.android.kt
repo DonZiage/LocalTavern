@@ -65,6 +65,42 @@ actual fun rememberCharacterCardPickerLauncher(
     }
 }
 
+// Single-document SAF picker for standalone lorebook (world info) JSON files.
+@Composable
+actual fun rememberLorebookPickerLauncher(
+    onPicked: (List<PickedFile>) -> Unit
+): () -> Unit {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val currentOnPicked by rememberUpdatedState(onPicked)
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val picked = withContext(Dispatchers.IO) {
+                try {
+                    val name = queryDisplayName(context, uri) ?: "lorebook.json"
+                    val bytes = context.contentResolver.openInputStream(uri)
+                        ?.use { it.readBytes() } ?: return@withContext null
+                    PickedFile(name, bytes)
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            if (picked != null) {
+                currentOnPicked(listOf(picked))
+            }
+        }
+    }
+
+    return remember {
+        {
+            launcher.launch(arrayOf("application/json", "application/octet-stream"))
+        }
+    }
+}
+
 private fun queryDisplayName(context: Context, uri: Uri): String? {
     return runCatching {
         context.contentResolver.query(
