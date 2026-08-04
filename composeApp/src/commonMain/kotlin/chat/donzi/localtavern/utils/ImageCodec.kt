@@ -63,7 +63,11 @@ public fun deserializeImageList(bytes: ByteArray?): List<ByteArray> {
         for (i in 0 until count) {
             val size = bytes.readInt(offset)
             offset += 4
-            if (size < 0 || offset + size > bytes.size) return emptyList()
+            // Long arithmetic: offset + size overflows Int for sizes near
+            // Int.MAX_VALUE, wraps negative and bypasses this guard — the
+            // ByteArray(size) below would then exhaust memory (OOM is an
+            // Error, not an Exception, so the catch below cannot contain it).
+            if (size < 0 || offset.toLong() + size > bytes.size) return emptyList()
             val img = ByteArray(size)
             bytes.copyInto(img, destinationOffset = 0, startIndex = offset, endIndex = offset + size)
             offset += size

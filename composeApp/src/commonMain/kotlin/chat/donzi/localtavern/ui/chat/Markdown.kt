@@ -171,7 +171,7 @@ fun parseMarkdown(text: String, style: MarkdownStyle): List<MarkdownBlock> {
 // underscore-italic, single-star italic. Single-star emphasis is matched last
 // so "**bold**" is never split into two "*" italics.
 private val INLINE_REGEX = Regex(
-    """(`[^`\n]+`|~~[^~\n]+~~|\[[^\]\n]+]\([^)\s]+\)|\*\*\*[^*\n]+?\*\*\*|\*\*[^*\n]+?\*\*|(?<![A-Za-z0-9_])_[^_`\n]+_(?![A-Za-z0-9_])|\*[^*\n]+?\*)"""
+    """(`[^`\n]+`|~~[^~\n]+~~|\[[^\[\]\n]++]\([^)\s]++\)|\*\*\*[^*\n]+?\*\*\*|\*\*[^*\n]+?\*\*|(?<![A-Za-z0-9_])_[^_`\n]+_(?![A-Za-z0-9_])|\*[^*\n]+?\*)"""
 )
 
 private data class InlineSpan(val text: String, val span: SpanStyle)

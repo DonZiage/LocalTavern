@@ -127,3 +127,5 @@ replay_pid*
 *.orig
 *.rej
 *.bak
+AGENTS.md
+VULNERABILITIES.md

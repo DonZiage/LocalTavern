@@ -128,6 +128,11 @@ object Zip {
             }
 
             val raw = extractEntryData(bytes, localOffset, compressedSize) ?: return@repeat
+            // Reject a claimed size above the cap BEFORE inflating: the
+            // platform inflaters allocate the full expected size up front, so
+            // a hostile archive claiming a multi-GiB entry would exhaust
+            // memory before the post-inflate cap check below could run.
+            if (uncompressedSize > MAX_ENTRY_SIZE) return@repeat
             val data = when (method) {
                 0 -> raw
                 8 -> inflateDeflate(raw, uncompressedSize.toInt())

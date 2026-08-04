@@ -24,7 +24,11 @@ object PngParser {
         var i = 8
         while (i + 8 <= bytes.size) {
             val length = readInt(bytes, i)
-            if (length < 0 || i + 8 + length + 4 > bytes.size) return null
+            // Long arithmetic: i + 8 + length + 4 can overflow Int when a
+            // hostile chunk claims a length near Int.MAX_VALUE, wrapping
+            // negative and bypassing the bounds check (the walker would then
+            // read out of range).
+            if (length < 0 || i.toLong() + 8 + length + 4 > bytes.size) return null
 
             val type = bytes.decodeToString(i + 4, i + 8)
 
