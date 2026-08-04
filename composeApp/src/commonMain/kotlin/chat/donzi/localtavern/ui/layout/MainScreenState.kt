@@ -1,5 +1,4 @@
 package chat.donzi.localtavern.ui.layout
-import chat.donzi.localtavern.ui.chat.ChatManagerDialog
 
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -13,101 +12,104 @@ import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.domain.ApiConfig
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Persona
+import chat.donzi.localtavern.ui.characters.CharactersPanelState
+import chat.donzi.localtavern.ui.chat.ChatScreenState
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
 
-// Holds every piece of MainScreen's local UI state plus the logic that
-// mutates it, so the composable stays a thin layout orchestrator. One
-// instance is remember-ed in MainScreen; the mutableStateOf-backed
-// properties here replace the previous remember { mutableStateOf(...) }
-// locals and keep the same recomposition granularity.
+// Coordinator for the MainScreen layout: owns the cross-feature selection
+// (active character/session), the navigation triggers shared by chat and
+// character panels, and composes the per-feature state holders (chat and
+// characters), whose own fields are exposed here as delegated accessors so
+// the layout code keeps one entry point. One instance is remember-ed in
+// MainScreen; the mutableStateOf-backed properties replace the previous
+// remember { mutableStateOf(...) } locals with the same recomposition
+// granularity.
 @Stable
 class MainScreenState(
-    private val characterRepository: CharacterRepository,
-    private val sessionRepository: SessionRepository,
-    private val messageRepository: MessageRepository,
-    private val apiSettingsRepository: ApiSettingsRepository,
-    private val chatController: ChatController,
-    private val scope: CoroutineScope
+    characterRepository: CharacterRepository,
+    sessionRepository: SessionRepository,
+    messageRepository: MessageRepository,
+    apiSettingsRepository: ApiSettingsRepository,
+    chatController: ChatController,
+    scope: CoroutineScope
 ) {
     var activeCharacter by mutableStateOf<Character?>(null)
     var activeSessionId by mutableStateOf<String?>(null)
 
-    var isSelectMode by mutableStateOf(false)
-    var selectedMessageIds by mutableStateOf<Set<String>>(emptySet())
+    val chatState: ChatScreenState = ChatScreenState(
+        characterRepository = characterRepository,
+        sessionRepository = sessionRepository,
+        messageRepository = messageRepository,
+        apiSettingsRepository = apiSettingsRepository,
+        chatController = chatController,
+        scope = scope,
+        activeSessionIdProvider = { activeSessionId },
+        activeCharacterProvider = { activeCharacter },
+        onActiveSessionIdChange = { activeSessionId = it },
+        onActiveCharacterChange = { activeCharacter = it }
+    )
 
-    var editingCharacter by mutableStateOf<Character?>(null)
-    var lastEditingCharacter by mutableStateOf<Character?>(null)
+    val charactersState: CharactersPanelState = CharactersPanelState(scope)
 
-    var hasApiProfile by mutableStateOf(false)
-    var sendInFlight by mutableStateOf(false)
+    var isSelectMode: Boolean
+        get() = chatState.isSelectMode
+        set(value) { chatState.isSelectMode = value }
 
+    var selectedMessageIds: Set<String>
+        get() = chatState.selectedMessageIds
+        set(value) { chatState.selectedMessageIds = value }
+
+    var sendInFlight: Boolean
+        get() = chatState.sendInFlight
+        set(value) { chatState.sendInFlight = value }
+
+    var hasApiProfile: Boolean
+        get() = chatState.hasApiProfile
+        set(value) { chatState.hasApiProfile = value }
+
+    var editingCharacter: Character?
+        get() = charactersState.editingCharacter
+        set(value) { charactersState.editingCharacter = value }
+
+    var lastEditingCharacter: Character?
+        get() = charactersState.lastEditingCharacter
+        set(value) { charactersState.lastEditingCharacter = value }
+
+    var showExportNotification: Boolean
+        get() = charactersState.showExportNotification
+        set(value) { charactersState.showExportNotification = value }
+
+    var exportedDir: String
+        get() = charactersState.exportedDir
+        set(value) { charactersState.exportedDir = value }
+
+    var exportedCount: Int
+        get() = charactersState.exportedCount
+        set(value) { charactersState.exportedCount = value }
+
+    var pendingCreationName: String?
+        get() = charactersState.pendingCreationName
+        set(value) { charactersState.pendingCreationName = value }
+
+    // Navigation triggers shared between the chat and character panels.
+    var showChatManagerDialog by mutableStateOf(false)
     var autoEditPersonaTrigger by mutableStateOf(false)
     var autoShowCharacterMenuTrigger by mutableStateOf(false)
-    var showChatManagerDialog by mutableStateOf(false)
 
-    var showExportNotification by mutableStateOf(false)
-    var exportedDir by mutableStateOf("")
-    var exportedCount by mutableStateOf(1)
+    // Sets the editor target synchronously (see CharactersPanelState).
+    fun openEditor(character: Character?) = charactersState.openEditor(character)
 
-    // Name of a character created through the panel while the list reloads;
-    // consumed by the characters LaunchedEffect in MainScreen to open the
-    // freshly-created character's editor.
-    var pendingCreationName by mutableStateOf<String?>(null)
+    fun enterSelectMode() = chatState.enterSelectMode()
 
-    // Sets the editor target synchronously: a LaunchedEffect would only run
-    // after the first frame, briefly showing the previous character's editor
-    // (with its callbacks) and playing the enter animation empty on first use.
-    fun openEditor(character: Character?) {
-        editingCharacter = character
-        if (character != null) lastEditingCharacter = character
-    }
+    fun exitSelectMode() = chatState.exitSelectMode()
 
-    fun enterSelectMode() {
-        isSelectMode = true
-        selectedMessageIds = emptySet()
-    }
+    fun refreshApiProfile() = chatState.refreshApiProfile()
 
-    fun exitSelectMode() {
-        isSelectMode = false
-        selectedMessageIds = emptySet()
-    }
+    fun refreshMessages() = chatState.refreshMessages()
 
-    fun refreshApiProfile() {
-        scope.launch {
-            hasApiProfile = apiSettingsRepository.getAllApiConnections().isNotEmpty()
-        }
-    }
-
-    fun refreshMessages() {
-        refreshApiProfile()
-        chatController.refresh(activeSessionId)
-    }
-
-    // Resolves the session shown for the active character/persona: reuses the
-    // current one when it still matches, otherwise creates a fresh session,
-    // seeds its greeting roots and points the chat controller at it. Clearing
-    // the view (no character/persona) resets the selection state too.
-    suspend fun syncActiveSession(character: Character?, personaId: String?) {
-        isSelectMode = false
-        selectedMessageIds = emptySet()
-        hasApiProfile = apiSettingsRepository.getAllApiConnections().isNotEmpty()
-        if (personaId != null && character != null) {
-            var sessionId = activeSessionId
-            val currentSession = sessionId?.let { sessionRepository.getSessionById(it) }
-
-            if (currentSession == null || currentSession.characterId != character.id || currentSession.personaId != personaId) {
-                sessionId = sessionRepository.getOrCreateSession(character.id, personaId)
-                activeSessionId = sessionId
-            }
-
-            messageRepository.ensureInitialGreetings(sessionId, character)
-            chatController.refresh(sessionId)
-        } else {
-            activeSessionId = null
-            chatController.refresh(null)
-        }
-    }
+    // Resolves the session shown for the active character/persona.
+    suspend fun syncActiveSession(character: Character?, personaId: String?) =
+        chatState.syncActiveSession(character, personaId)
 
     // Returns true when the send is accepted (the user message is committed);
     // false keeps the draft in the input bar so typed text is never lost.
@@ -118,41 +120,25 @@ class MainScreenState(
         activePersona: Persona?,
         activeApiConnection: ApiConfig?,
         isGenerating: Boolean
-    ): Boolean {
-        if (activePersonaId == null) {
-            chatController.reportError("Create a persona before sending a message.")
-            return false
-        } else if (activeApiConnection == null) {
-            chatController.reportError("No active API connection configured. Add one in Settings before sending.")
-            return false
-        } else if (!isGenerating && !sendInFlight) {
-            // Set the flag synchronously, before any suspend point: the DB
-            // round-trips below let a second tap slip through the flow-based
-            // isGenerating check (it is only set once requestAiResponse runs),
-            // which would insert a duplicate user message.
-            sendInFlight = true
-            scope.launch {
-                try {
-                    commitUserMessage(
-                        characterRepository = characterRepository,
-                        sessionRepository = sessionRepository,
-                        messageRepository = messageRepository,
-                        chatController = chatController,
-                        initialActiveCharacter = activeCharacter,
-                        activePersonaId = activePersonaId,
-                        activePersona = activePersona,
-                        userMessage = userMessage,
-                        imageList = imageList,
-                        onSetActiveCharacter = { activeCharacter = it },
-                        onSetActiveSession = { activeSessionId = it },
-                        onRefresh = { refreshMessages() }
-                    )
-                } finally {
-                    sendInFlight = false
-                }
-            }
-            return true
-        }
-        return false
-    }
+    ): Boolean = chatState.trySendMessage(
+        userMessage = userMessage,
+        imageList = imageList,
+        activePersonaId = activePersonaId,
+        activePersona = activePersona,
+        activeApiConnection = activeApiConnection,
+        isGenerating = isGenerating
+    )
+
+    // Character export flows (single + batch), setting the notification state.
+    fun buildExportHandler(
+        isDesktop: Boolean,
+        onCloseDrawer: () -> Unit,
+        onExportFailed: (message: String) -> Unit
+    ): (Character) -> Unit = charactersState.buildExportHandler(isDesktop, onCloseDrawer, onExportFailed)
+
+    fun buildBatchExportHandler(
+        isDesktop: Boolean,
+        onCloseDrawer: () -> Unit,
+        onExportFailed: (message: String) -> Unit
+    ): (List<Character>) -> Unit = charactersState.buildBatchExportHandler(isDesktop, onCloseDrawer, onExportFailed)
 }

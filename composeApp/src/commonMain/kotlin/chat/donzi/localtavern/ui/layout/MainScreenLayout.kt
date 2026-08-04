@@ -207,10 +207,7 @@ internal fun ChatScaffold(
                 },
                 onEnterSelectMode = { state.enterSelectMode() },
                 sendWithCtrlEnter = sendWithCtrlEnter,
-                actions = buildChatActions(
-                    chatController = deps.chatController,
-                    activeSessionId = state.activeSessionId,
-                    activeCharacter = state.activeCharacter,
+                actions = state.chatState.buildChatActions(
                     activePersona = activePersona,
                     messages = messages,
                     siblingsMap = chatState.siblingsMap,
@@ -219,7 +216,6 @@ internal fun ChatScaffold(
                     scope = scope,
                     isDesktop = isDesktop,
                     onSendMessage = onSendMessage,
-                    onSetActiveSession = { state.activeSessionId = it },
                     onManageChats = { state.showChatManagerDialog = true },
                     onRequestPersonaEdit = { state.autoEditPersonaTrigger = true },
                     onRequestCharacterMenu = { state.autoShowCharacterMenuTrigger = true },

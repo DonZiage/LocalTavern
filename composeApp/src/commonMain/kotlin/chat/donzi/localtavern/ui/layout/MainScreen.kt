@@ -74,23 +74,15 @@ fun MainScreen(
     val activeApiConnection by deps.apiSettingsRepository.observeActiveApiConnection()
         .collectAsState(initial = null)
 
-    val exportCharacterFromList = buildExportHandler(
+    val exportCharacterFromList = state.buildExportHandler(
         isDesktop = isDesktop,
         onCloseDrawer = { onActiveDrawerChange(ActiveDrawer.None) },
-        scope = coroutineScope,
-        onExported = { dir -> state.exportedDir = dir; state.exportedCount = 1; state.showExportNotification = true },
         onExportFailed = { message -> coroutineScope.launch { snackbarHostState.showSnackbar(message) } }
     )
 
-    val exportCharactersFromList = buildBatchExportHandler(
+    val exportCharactersFromList = state.buildBatchExportHandler(
         isDesktop = isDesktop,
         onCloseDrawer = { onActiveDrawerChange(ActiveDrawer.None) },
-        scope = coroutineScope,
-        onExported = { count, dir ->
-            state.exportedCount = count
-            state.exportedDir = dir
-            state.showExportNotification = true
-        },
         onExportFailed = { message -> coroutineScope.launch { snackbarHostState.showSnackbar(message) } }
     )
 
