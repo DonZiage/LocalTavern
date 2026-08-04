@@ -1,6 +1,5 @@
 package chat.donzi.localtavern.data.sync
 
-import chat.donzi.localtavern.data.blob.BlobStore
 import chat.donzi.localtavern.data.database.ApiConnection
 import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.data.database.ChatSession
@@ -9,8 +8,31 @@ import chat.donzi.localtavern.data.database.PersonaEntity
 import chat.donzi.localtavern.data.database.PromptBlockEntity
 import chat.donzi.localtavern.data.security.ApiKeyCipher
 import chat.donzi.localtavern.utils.deserializeImageRefs
-import chat.donzi.localtavern.utils.serializeImageList
 import kotlinx.serialization.Serializable
+
+// ---------- Wire-size bounds ----------
+//
+// Large libraries (hundreds of characters with avatars) never ride in a
+// single envelope: the delta exchange splits them into batches of at most
+// DELTA_BUDGET_BYTES estimated plaintext bytes, and both the server's request
+// cap and the client's pre-parse response check use MAX_SYNC_BODY_BYTES. A
+// mobile device decodes an incoming envelope by holding the JSON string, the
+// base64 bytes, the decrypted bytes and the decoded row objects at once
+// (~4-5x the wire size), so these bounds are what keep a huge library from
+// exhausting the heap mid-exchange.
+
+// Upper bound on any /exchange (and /pair, /blob/fetch) request body, and on
+// what this device is willing to parse as a sync response. Modern peers never
+// exceed a fraction of this (their envelopes are budget-batched); the bound
+// exists so a legacy or hostile peer cannot stream a body whose decode would
+// exhaust the device. Excess is rejected up front (413) instead of crashing.
+internal const val MAX_SYNC_BODY_BYTES = 16L * 1024 * 1024
+
+// Estimated plaintext bytes (text + base64-expanded blobs) per delta batch.
+// The wire envelope is roughly 4/3 of this (base64 of the ciphertext), so a
+// batch lands around 4 MB — comfortably under MAX_SYNC_BODY_BYTES with room
+// for the response.
+internal const val DELTA_BUDGET_BYTES = 3L * 1024 * 1024
 
 // Row snapshots exchanged during sync. ByteArray fields are base64-encoded
 // by kotlinx.serialization automatically (avatars, message images, keys).
@@ -172,8 +194,11 @@ data class SyncChanges(
             .coerceAtLeast(promptBlocks.maxOfOrNull { it.syncSeq } ?: 0L)
 }
 
-// One side's view of an exchange: everything the sender changed since the
-// recipient's last cursor, plus the sender's own cursor watermark.
+// One side's view of one exchange round: a bounded batch of everything the
+// sender changed since the recipient's last cursor, plus the sender's own
+// cursor watermark. When the sender has more rows above the batch, hasMore is
+// set and the peer keeps exchanging until a round arrives with hasMore=false
+// (see SyncExchange.syncNow).
 @Serializable
 data class SyncEnvelope(
     val fromDeviceId: String,
@@ -189,7 +214,21 @@ data class SyncEnvelope(
     // pull image blobs referenced by this envelope out of band. The receiver
     // never trusts it blindly: /blob/fetch is authenticated by the same
     // paired-key scheme as /exchange.
-    val fetchAddress: String? = null
+    val fetchAddress: String? = null,
+    // True when the sender still has rows above this envelope's cut that did
+    // not fit into the batch; the peer then initiates another round. Default
+    // keeps envelopes from older peers parseable (they always respond with
+    // their whole delta in one shot).
+    val hasMore: Boolean = false
+)
+
+// One bounded slice of a device's pending delta: the rows that fit within
+// the exchange budget, plus whether more rows remain above the cut. The next
+// batch resumes at cursor = changes.maxSyncSeq + 1, so batches tile the
+// delta without gaps or duplicates.
+data class DeltaBatch(
+    val changes: SyncChanges,
+    val hasMore: Boolean
 )
 
 // ---------- Blob fetch protocol (message images travel out of band) ----------
@@ -334,8 +373,10 @@ private fun isPlainHostname(host: String): Boolean {
 // inside sync envelopes. API keys travel as portable plaintext inside the
 // end-to-end-encrypted envelope (see ApiKeyCipher.toPortableForm); a key this
 // device cannot read is withheld (null) so the peer never stores an
-// undecryptable blob. Message images ride as content-addressed refs, with the
-// bytes kept for legacy peers that still expect inline imageData.
+// undecryptable blob. Message images ride ONLY as content-addressed refs: the
+// bytes travel out of band through /blob/fetch, so envelopes stay small and
+// delta collection never loads image bytes into memory. (Legacy peers that
+// ship inline imageData are still understood on the receiving side.)
 
 internal fun CharacterEntity.toSync() = SyncCharacter(
     id = id, name = name, description = description, personality = personality ?: "",
@@ -360,17 +401,18 @@ internal fun ChatSession.toSync() = SyncSession(
     syncSeq = syncSeq
 )
 
-internal suspend fun MessageEntity.toSync(blobStore: BlobStore?): SyncMessage {
+internal suspend fun MessageEntity.toSync(): SyncMessage {
     val refs = deserializeImageRefs(imageRefs)
     return SyncMessage(
         id = id, sessionId = sessionId, role = role, content = content, timestamp = timestamp,
         parentId = parentId, isActivePath = isActivePath, updatedAt = updatedAt,
         isDeleted = isDeleted,
-        // Legacy wire format: the image bytes ride in the envelope (loaded
-        // from the store); the refs ride along for newer peers to fetch.
-        imageData = blobStore?.let { store ->
-            refs.mapNotNull { store.read(it.sha256) }.takeIf { it.isNotEmpty() }?.let { serializeImageList(it) }
-        },
+        // imageData stays null on modern sends: the refs below are enough for
+        // any peer that understands the blob protocol, and the bytes travel
+        // out of band. Keeping them inline would load every image of every
+        // synced message into memory on each delta and multiply the envelope
+        // size (the pre-blob-store crash vector).
+        imageData = null,
         imageRefs = refs.map { SyncImageRef(sha256 = it.sha256, size = it.size) },
         reasoningText = reasoningText,
         costEstimate = costEstimate, syncSeq = syncSeq
@@ -398,3 +440,42 @@ internal fun PromptBlockEntity.toSync() = SyncPromptBlock(
     isCustom = isCustom, displayOrder = displayOrder, updatedAt = updatedAt,
     isDeleted = isDeleted, syncSeq = syncSeq
 )
+
+// ---------- Wire-size estimates ----------
+//
+// Rough upper bounds of the JSON-encoded size of each row, used by
+// SyncRepository.collectDeltaBatched to cut a delta on a byte budget BEFORE
+// the wire DTOs are materialized (the tail of the batch is never mapped).
+// Bytes account for base64 expansion (4/3); text lengths are close to their
+// UTF-8/JSON size; the fixed overhead covers field names, numbers, braces and
+// escaping margin. Being slightly generous only means a batch cuts a little
+// early, which is safe.
+
+private const val ROW_OVERHEAD = 200L
+
+internal fun CharacterEntity.estimatedWireSize(): Long = ROW_OVERHEAD +
+    name.length + (description?.length ?: 0) + (personality?.length ?: 0) +
+    (scenario?.length ?: 0) + (firstMes?.length ?: 0) + (mesExample?.length ?: 0) +
+    (creatorNotes?.length ?: 0) + (altGreetings?.length ?: 0) +
+    (systemPrompt?.length ?: 0) + (postHistoryInstructions?.length ?: 0) +
+    (creator?.length ?: 0) + (characterVersion?.length ?: 0) +
+    (tags?.length ?: 0) + (extensions?.length ?: 0) + (characterBook?.length ?: 0) +
+    (avatarData?.size?.toLong() ?: 0L) * 4 / 3
+
+internal fun PersonaEntity.estimatedWireSize(): Long = ROW_OVERHEAD +
+    name.length + (description?.length ?: 0) + (avatarData?.size?.toLong() ?: 0L) * 4 / 3
+
+internal fun ChatSession.estimatedWireSize(): Long = ROW_OVERHEAD +
+    characterId.length + personaId.length + (title?.length ?: 0) +
+    (currentMessageId?.length ?: 0) + (parentSessionId?.length ?: 0)
+
+internal fun MessageEntity.estimatedWireSize(): Long = ROW_OVERHEAD +
+    sessionId.length + role.length + content.length + (parentId?.length ?: 0) +
+    (reasoningText?.length ?: 0) + (imageRefs?.length ?: 0)
+
+internal fun ApiConnection.estimatedWireSize(): Long = ROW_OVERHEAD +
+    provider.length + name.length + (baseUrl?.length ?: 0) + (apiKey?.length ?: 0) +
+    (model?.length ?: 0) + (inferenceProvider?.length ?: 0) + (quantization?.length ?: 0)
+
+internal fun PromptBlockEntity.estimatedWireSize(): Long = ROW_OVERHEAD +
+    name.length + template.length

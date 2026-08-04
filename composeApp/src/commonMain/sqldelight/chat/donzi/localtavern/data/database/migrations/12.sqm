@@ -1,0 +1,12 @@
+-- v12 -> v13: syncSeq indexes.
+--
+-- The sync delta queries (selectCharacterDeltas & friends) run
+-- `WHERE syncSeq >= ? ORDER BY syncSeq ASC` so batched delta collection can
+-- cut envelopes on exact sequence boundaries. The index makes those scans
+-- ordered and bounded instead of full-table sorts.
+CREATE INDEX IF NOT EXISTS idx_character_syncseq ON CharacterEntity(syncSeq);
+CREATE INDEX IF NOT EXISTS idx_persona_syncseq ON PersonaEntity(syncSeq);
+CREATE INDEX IF NOT EXISTS idx_session_syncseq ON ChatSession(syncSeq);
+CREATE INDEX IF NOT EXISTS idx_message_syncseq ON MessageEntity(syncSeq);
+CREATE INDEX IF NOT EXISTS idx_apiconnection_syncseq ON ApiConnection(syncSeq);
+CREATE INDEX IF NOT EXISTS idx_promptblock_syncseq ON PromptBlockEntity(syncSeq);

@@ -7,6 +7,7 @@ import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.request.header
 import io.ktor.http.ContentType
+import io.ktor.http.contentLength
 import io.ktor.http.contentType
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -77,83 +78,110 @@ class SyncExchange(
     suspend fun syncNow(peerId: String): Result<String> = withContext(Dispatchers.IO) {
         try {
             noteActivity()
-            val peer = repository.getPeer(peerId) ?: error("Peer not found.")
-            val address = peer.lastKnownAddress ?: error("Peer has no address; reconnect or re-pair.")
-            val host = address.substringBeforeLast(':')
-            val port = address.substringAfterLast(':').toIntOrNull() ?: SYNC_PORT
-            val peerPublicKey = peer.publicKey ?: error("Peer has no key; re-pair.")
+            var rounds = 0
+            var peerName = peerId
+            while (true) {
+                // Large libraries never fit one envelope (the peer's server
+                // caps request bodies, and a mobile receiver cannot decode a
+                // huge body without exhausting its heap), so each round
+                // exchanges a bounded batch of deltas in both directions and
+                // the loop drains the rest until both sides report empty.
+                if (++rounds > MAX_SYNC_ROUNDS) {
+                    error("Library too large to sync in one session; try again.")
+                }
+                noteActivity()
+                val peer = repository.getPeer(peerId) ?: error("Peer not found.")
+                peerName = peer.name
+                val address = peer.lastKnownAddress ?: error("Peer has no address; reconnect or re-pair.")
+                val host = address.substringBeforeLast(':')
+                val port = address.substringAfterLast(':').toIntOrNull() ?: SYNC_PORT
+                val peerPublicKey = peer.publicKey ?: error("Peer has no key; re-pair.")
 
-            // Changes I have not yet sent this peer, and my received cursor.
-            val myChanges = repository.collectDelta(peer.peerReceivedCursor)
-            val channelKey = channelKeys.outboundChannelKey(peerPublicKey)
-            val exchangeId = freshExchangeId()
-            val envelope = SyncEnvelope(
-                fromDeviceId = identity.deviceId,
-                cursor = peer.receivedCursor,
-                changes = myChanges,
-                fromDeviceName = identity.deviceName,
-                fetchAddress = advertisedFetchAddress()
-            )
-            val aad = aad(from = identity.deviceId, to = peer.deviceId, exchangeId = exchangeId)
-            val payload = encodeBase64(crypto.encrypt(channelKey.key, aad, encodeEnvelope(envelope)))
-
-            val response: ExchangeResponse = httpClient.post("http://$host:$port/exchange") {
-                contentType(ContentType.Application.Json)
-                header("X-Sync-From", identity.deviceId)
-                setBody(
-                    ExchangeRequest(
-                        fromDeviceId = identity.deviceId,
-                        exchangeId = exchangeId,
-                        payload = payload,
-                        ephemeralPublicKey = encodeBase64(channelKey.ephemeralPublicKey)
-                    )
+                // Changes I have not yet sent this peer (this round's batch),
+                // and my received cursor.
+                val myBatch = repository.collectDeltaBatched(peer.peerReceivedCursor, DELTA_BUDGET_BYTES)
+                val channelKey = channelKeys.outboundChannelKey(peerPublicKey)
+                val exchangeId = freshExchangeId()
+                val envelope = SyncEnvelope(
+                    fromDeviceId = identity.deviceId,
+                    cursor = peer.receivedCursor,
+                    changes = myBatch.changes,
+                    fromDeviceName = identity.deviceName,
+                    fetchAddress = advertisedFetchAddress()
                 )
-            }.body()
+                val aad = aad(from = identity.deviceId, to = peer.deviceId, exchangeId = exchangeId)
+                val payload = encodeBase64(crypto.encrypt(channelKey.key, aad, encodeEnvelope(envelope)))
 
-            if (!response.ok) error(response.message.ifBlank { "Sync rejected by peer." })
-            if (response.exchangeId != exchangeId) {
-                // A response from a different exchange context: it cannot be
-                // the answer to this request.
-                error("Sync response did not match the request.")
-            }
+                val httpResponse = httpClient.post("http://$host:$port/exchange") {
+                    contentType(ContentType.Application.Json)
+                    header("X-Sync-From", identity.deviceId)
+                    setBody(
+                        ExchangeRequest(
+                            fromDeviceId = identity.deviceId,
+                            exchangeId = exchangeId,
+                            payload = payload,
+                            ephemeralPublicKey = encodeBase64(channelKey.ephemeralPublicKey)
+                        )
+                    )
+                }
+                // Reject oversized responses before the body is read into
+                // memory: a legacy peer may answer with its whole library in
+                // one envelope, which a mobile device could not decode
+                // without exhausting its heap.
+                val responseLength = httpResponse.contentLength()
+                if (responseLength != null && responseLength > MAX_SYNC_BODY_BYTES) {
+                    error("Sync response is too large (${responseLength / 1024 / 1024} MB). Update the other device to sync large libraries.")
+                }
+                val response: ExchangeResponse = httpResponse.body()
 
-            // The peer answers with its own delta (changes newer than my
-            // received cursor), its own fresh ephemeral key, and its updated
-            // received-cursor for me.
-            val responsePayload = response.payload ?: error("Empty sync response.")
-            val peerEphemeral = runCatching { decodeBase64(response.ephemeralPublicKey) }.getOrNull()
-            if (peerEphemeral == null || peerEphemeral.size != 32) {
-                error("Invalid ephemeral key from peer.")
-            }
-            val responseKey = channelKeys.inboundChannelKey(peerPublicKey, peerEphemeral)
-            val responseEnvelope = decodeEnvelope(
-                crypto.decrypt(responseKey, aad(from = peer.deviceId, to = identity.deviceId, exchangeId = exchangeId), decodeBase64(responsePayload))
-            )
+                if (!response.ok) error(response.message.ifBlank { "Sync rejected by peer." })
+                if (response.exchangeId != exchangeId) {
+                    // A response from a different exchange context: it cannot be
+                    // the answer to this request.
+                    error("Sync response did not match the request.")
+                }
 
-            if (!responseEnvelope.changes.isEmpty) {
-                repository.applyChanges(responseEnvelope.changes, peerDeviceId = peer.deviceId)
+                // The peer answers with its own delta (changes newer than my
+                // received cursor), its own fresh ephemeral key, and its
+                // updated received-cursor for me.
+                val responsePayload = response.payload ?: error("Empty sync response.")
+                val peerEphemeral = runCatching { decodeBase64(response.ephemeralPublicKey) }.getOrNull()
+                if (peerEphemeral == null || peerEphemeral.size != 32) {
+                    error("Invalid ephemeral key from peer.")
+                }
+                val responseKey = channelKeys.inboundChannelKey(peerPublicKey, peerEphemeral)
+                val responseEnvelope = decodeEnvelope(
+                    crypto.decrypt(responseKey, aad(from = peer.deviceId, to = identity.deviceId, exchangeId = exchangeId), decodeBase64(responsePayload))
+                )
+
+                if (!responseEnvelope.changes.isEmpty) {
+                    repository.applyChanges(responseEnvelope.changes, peerDeviceId = peer.deviceId)
+                }
+                // Pull image blobs referenced by the received rows out of band
+                // (chunked, authenticated). The peer's stored address is used;
+                // envelope.fetchAddress is only used server-side (the responder
+                // cannot know the initiator's stored address).
+                val refs = responseEnvelope.changes.messages.flatMap { it.imageRefs }
+                if (refs.isNotEmpty() && blobStore != null) {
+                    blobTransfer.fetchMissingBlobs(peerId, address, refs, peerPublicKey)
+                }
+                // The peer's new display name (if any), authenticated by the
+                // exchange: only the device holding the paired key can have
+                // produced this envelope. Display-only — cursors are untouched.
+                DeviceName.sanitize(responseEnvelope.fromDeviceName.orEmpty())?.let { name ->
+                    repository.updatePeerName(peer.deviceId, name)
+                }
+                val newReceivedCursor = nextReceivedCursor(peer.receivedCursor, responseEnvelope.changes)
+                repository.updatePeerCursors(
+                    deviceId = peer.deviceId,
+                    receivedCursor = newReceivedCursor,
+                    peerReceivedCursor = responseEnvelope.cursor
+                )
+                // Drained when I have nothing left to send AND the peer has
+                // nothing left either (its envelope was a full, uncut batch).
+                if (myBatch.changes.isEmpty && !responseEnvelope.hasMore) break
             }
-            // Pull image blobs referenced by the received rows out of band
-            // (chunked, authenticated). The peer's stored address is used;
-            // envelope.fetchAddress is only used server-side (the responder
-            // cannot know the initiator's stored address).
-            val refs = responseEnvelope.changes.messages.flatMap { it.imageRefs }
-            if (refs.isNotEmpty() && blobStore != null) {
-                blobTransfer.fetchMissingBlobs(peerId, address, refs, peerPublicKey)
-            }
-            // The peer's new display name (if any), authenticated by the
-            // exchange: only the device holding the paired key can have
-            // produced this envelope. Display-only — cursors are untouched.
-            DeviceName.sanitize(responseEnvelope.fromDeviceName.orEmpty())?.let { name ->
-                repository.updatePeerName(peer.deviceId, name)
-            }
-            val newReceivedCursor = nextReceivedCursor(peer.receivedCursor, responseEnvelope.changes)
-            repository.updatePeerCursors(
-                deviceId = peer.deviceId,
-                receivedCursor = newReceivedCursor,
-                peerReceivedCursor = responseEnvelope.cursor
-            )
-            Result.success("Synced with ${peer.name}.")
+            Result.success("Synced with $peerName.")
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -228,14 +256,20 @@ class SyncExchange(
                 peerReceivedCursor = envelope.cursor
             )
 
-            val myChanges = repository.collectDelta(envelope.cursor)
+            // Respond with MY changes since the initiator's received cursor,
+            // cut to the same bounded budget: an uncut response would let a
+            // peer with a huge library hand this device one giant envelope.
+            // The hasMore flag tells the initiator to keep exchanging until
+            // the delta is drained.
+            val myBatch = repository.collectDeltaBatched(envelope.cursor, DELTA_BUDGET_BYTES)
             val myExchangeKey = channelKeys.outboundChannelKey(peerKey)
             val responseEnvelope = SyncEnvelope(
                 fromDeviceId = identity.deviceId,
                 cursor = newReceivedCursor,
-                changes = myChanges,
+                changes = myBatch.changes,
                 fromDeviceName = identity.deviceName,
-                fetchAddress = advertisedFetchAddress()
+                fetchAddress = advertisedFetchAddress(),
+                hasMore = myBatch.hasMore
             )
             val responsePayload = encodeBase64(
                 crypto.encrypt(myExchangeKey.key, aad(from = identity.deviceId, to = fromDeviceId, exchangeId = exchangeId), encodeEnvelope(responseEnvelope))
@@ -281,5 +315,9 @@ class SyncExchange(
         // verbatim replays.
         const val REPLAY_WINDOW_MS = 10 * 60 * 1000L
         const val MAX_SEEN_EXCHANGES = 256
+        // Safety valve on the multi-round drain loop: each round carries at
+        // most DELTA_BUDGET_BYTES, so this bounds one sync to ~3 GB of
+        // deltas — far beyond any real library, and a clear error beyond it.
+        const val MAX_SYNC_ROUNDS = 1000
     }
 }

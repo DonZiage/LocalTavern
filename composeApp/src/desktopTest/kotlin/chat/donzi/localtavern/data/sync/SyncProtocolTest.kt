@@ -481,6 +481,146 @@ class SyncProtocolTest {
         }
     }
 
+    // Reproduces the "hundreds of characters" crash: a library whose avatars
+    // alone exceed the server's per-request body cap cannot ride in a single
+    // monolithic envelope. The exchange must split it into bounded batches
+    // (see SyncRepository.collectDeltaBatched / SyncExchange) and drain them
+    // over multiple rounds, converging both sides without any single request
+    // coming close to the cap.
+    @Test
+    fun largeLibrary_syncsAcrossMultipleBoundedBatches() = runTest {
+        val hostPort = freePort()
+        val host = Device("host-device", "Host", hostPort)
+        val guest = Device("guest-device", "Guest", hostPort + 1)
+        try {
+            host.start()
+            guest.start()
+            host.service.startPairing()
+            val pin = host.service.state.value.pairingPin!!
+            guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+            host.service.confirmFingerprint()
+            guest.service.confirmFingerprint()
+
+            // ~21 MB of library data (330 characters with 64 KB avatars, plus
+            // sessions and messages): larger than MAX_SYNC_BODY_BYTES, so a
+            // single envelope could never carry it.
+            val avatar = ByteArray(64 * 1024) { (it % 251).toByte() }
+            seedCharacterLibrary(host, count = 330, avatar = avatar)
+            seedSessionAndMessages(host, sessionCount = 100, messagesPerSession = 3)
+
+            val syncResult = guest.service.syncNow("host-device")
+            assertTrue(syncResult.isSuccess, "A >16MB library must sync in batches: ${syncResult.exceptionOrNull()}")
+
+            val guestCharacters = guest.db.localTavernDBQueries.selectCharacterByIdAny("char-0").executeAsOneOrNull()
+            assertNotNull(guestCharacters, "The guest must hold the synced characters")
+            assertEquals(330, guest.db.localTavernDBQueries.selectCharacterDeltas(0L).executeAsList().size)
+            assertEquals(avatar.toList(), guestCharacters.avatarData!!.toList(), "Avatars must arrive intact")
+            assertEquals(
+                100 * 3,
+                guest.db.localTavernDBQueries.selectMessageDeltas(0L).executeAsList().size,
+                "Messages must arrive intact"
+            )
+
+            // A second sync must be a no-op (both sides drained): it must
+            // still succeed, which also proves the cursors landed exactly past
+            // the last batch and nothing is re-sent or stuck.
+            val second = guest.service.syncNow("host-device")
+            assertTrue(second.isSuccess, "Second sync after drain must succeed: ${second.exceptionOrNull()}")
+            assertEquals(
+                330,
+                guest.db.localTavernDBQueries.selectCharacterDeltas(0L).executeAsList().size,
+                "No characters may be duplicated or lost across batches"
+            )
+        } finally {
+            host.stop()
+            guest.stop()
+        }
+    }
+
+    // The direction the reported failure actually used: the PC holds the
+    // large library and INITIATES the sync, so the mobile's server receives
+    // the batched requests and the PC's drain loop advances its own cursors.
+    @Test
+    fun largeLibrary_syncsWhenHostInitiates() = runTest {
+        val hostPort = freePort()
+        val host = Device("host-device", "Host", hostPort)
+        val guest = Device("guest-device", "Guest", hostPort + 1)
+        try {
+            host.start()
+            guest.start()
+            host.service.startPairing()
+            val pin = host.service.state.value.pairingPin!!
+            guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+            host.service.confirmFingerprint()
+            guest.service.confirmFingerprint()
+
+            val avatar = ByteArray(64 * 1024) { (it % 251).toByte() }
+            seedCharacterLibrary(host, count = 330, avatar = avatar)
+
+            // The test devices listen on different ports; the pairing flow
+            // records the guest's address as remoteHost + THE HOST'S port (all
+            // production devices share SYNC_PORT, so the real-world address is
+            // correct there). Point the host at the guest's actual port, as
+            // LAN discovery would in production.
+            host.repository.updatePeerAddress("guest-device", "127.0.0.1:${hostPort + 1}")
+
+            val syncResult = host.service.syncNow("guest-device")
+            assertTrue(syncResult.isSuccess, "Host-initiated sync of a >16MB library must succeed: ${syncResult.exceptionOrNull()}")
+
+            assertEquals(330, guest.db.localTavernDBQueries.selectCharacterDeltas(0L).executeAsList().size)
+            val row = guest.db.localTavernDBQueries.selectCharacterByIdAny("char-0").executeAsOneOrNull()
+            assertNotNull(row)
+            assertEquals(avatar.toList(), row.avatarData!!.toList(), "Avatars must arrive intact")
+
+            // The guest echoes the applied rows back; the host must converge
+            // without data loss or churn.
+            val second = host.service.syncNow("guest-device")
+            assertTrue(second.isSuccess, "Second sync must succeed: ${second.exceptionOrNull()}")
+            assertEquals(330, host.db.localTavernDBQueries.selectCharacterDeltas(0L).executeAsList().size)
+        } finally {
+            host.stop()
+            guest.stop()
+        }
+    }
+
+    private fun seedCharacterLibrary(device: Device, count: Int, avatar: ByteArray) {
+        device.db.transaction {
+            for (i in 0 until count) {
+                device.db.localTavernDBQueries.insertCharacterFull(
+                    id = "char-$i", name = "Character $i", description = "description $i",
+                    personality = "personality $i", scenario = "scenario $i",
+                    firstMes = null, mesExample = null, creatorNotes = null, altGreetings = null,
+                    avatarData = avatar, isAssistant = 0L, updatedAt = 1_000L + i, isDeleted = 0L,
+                    systemPrompt = null, postHistoryInstructions = null, creator = null,
+                    characterVersion = null, tags = null, extensions = null, characterBook = null,
+                    syncSeq = i.toLong() + 1
+                )
+            }
+        }
+    }
+
+    private fun seedSessionAndMessages(device: Device, sessionCount: Int, messagesPerSession: Int) {
+        device.db.transaction {
+            var seq = 10_000L
+            for (s in 0 until sessionCount) {
+                device.db.localTavernDBQueries.insertSessionFull(
+                    id = "session-$s", characterId = "char-${s % 330}", personaId = "",
+                    title = "Session $s", lastTimestamp = 1_000L + s, currentMessageId = null,
+                    parentSessionId = null, updatedAt = 1_000L + s, isDeleted = 0L, syncSeq = seq++
+                )
+                for (m in 0 until messagesPerSession) {
+                    device.db.localTavernDBQueries.insertMessageFull(
+                        id = "msg-$s-$m", sessionId = "session-$s", role = "user",
+                        content = "Message $s/$m with a moderately long body of text to keep envelopes realistic.",
+                        timestamp = 1_000L + m, parentId = null, isActivePath = 1L,
+                        updatedAt = 1_000L + m, isDeleted = 0L, imageRefs = null,
+                        reasoningText = null, costEstimate = null, syncSeq = seq++
+                    )
+                }
+            }
+        }
+    }
+
     @Test
     fun imageBlobs_areFetchedOutOfBandAfterSync() = runTest {
         val hostPort = freePort()

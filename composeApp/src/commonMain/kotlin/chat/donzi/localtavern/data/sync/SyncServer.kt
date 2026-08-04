@@ -33,12 +33,16 @@ class SyncServer(
 
     val isRunning: Boolean get() = server != null
 
-    // Upper bound on a request body: deltas carry plain rows, legacy envelopes
-    // may carry inline images, and blob requests address exactly one chunk, so
-    // nothing legitimate needs more than this. Without the cap a paired peer
-    // could stream an unbounded body and exhaust memory.
+    // Upper bound on a request body. Modern peers exchange deltas in small
+    // bounded batches (see DELTA_BUDGET_BYTES), so nothing legitimate needs
+    // more than this; the bound exists for legacy peers that still ship a
+    // whole library in one envelope. Without the cap a paired peer could
+    // stream a body whose decode (JSON -> base64 -> decrypt -> rows) would
+    // hold several times its size in memory and exhaust the device — the
+    // pre-batching crash. Oversized bodies are rejected up front (413)
+    // instead.
     private companion object {
-        const val MAX_REQUEST_BYTES = 64L * 1024 * 1024
+        const val MAX_REQUEST_BYTES = MAX_SYNC_BODY_BYTES
     }
 
     fun start() {

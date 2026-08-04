@@ -23,6 +23,7 @@ CREATE TABLE CharacterEntity (
 );
 
 CREATE INDEX IF NOT EXISTS idx_character_assistant ON CharacterEntity(isAssistant);
+CREATE INDEX IF NOT EXISTS idx_character_syncseq ON CharacterEntity(syncSeq);
 
 CREATE TABLE PersonaEntity (
     id TEXT PRIMARY KEY NOT NULL,
@@ -33,6 +34,8 @@ CREATE TABLE PersonaEntity (
     isDeleted INTEGER NOT NULL DEFAULT 0,
     syncSeq INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS idx_persona_syncseq ON PersonaEntity(syncSeq);
 
 CREATE TABLE ChatSession (
     id TEXT PRIMARY KEY NOT NULL,
@@ -48,6 +51,7 @@ CREATE TABLE ChatSession (
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_character_time ON ChatSession(characterId, lastTimestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_session_syncseq ON ChatSession(syncSeq);
 
 CREATE TABLE MessageEntity (
     id TEXT PRIMARY KEY NOT NULL,
@@ -68,6 +72,7 @@ CREATE TABLE MessageEntity (
 
 CREATE INDEX IF NOT EXISTS idx_message_active_timeline ON MessageEntity(sessionId, isActivePath, timestamp ASC);
 CREATE INDEX IF NOT EXISTS idx_message_siblings ON MessageEntity(sessionId, parentId, timestamp ASC);
+CREATE INDEX IF NOT EXISTS idx_message_syncseq ON MessageEntity(syncSeq);
 
 CREATE TABLE ApiConnection (
     id TEXT PRIMARY KEY NOT NULL,
@@ -99,6 +104,8 @@ CREATE TABLE ApiConnection (
     isDeleted INTEGER NOT NULL DEFAULT 0,
     syncSeq INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS idx_apiconnection_syncseq ON ApiConnection(syncSeq);
 
 -- User overrides for the bundled pricing catalog. A row whose modelPattern
 -- matches a model name wins over the built-in price for that provider/model.
@@ -172,6 +179,8 @@ CREATE TABLE PromptBlockEntity (
     isDeleted INTEGER NOT NULL DEFAULT 0,
     syncSeq INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS idx_promptblock_syncseq ON PromptBlockEntity(syncSeq);
 
 -- ==========================================
 -- Standard Queries (Filtered for Non-Deleted)
@@ -529,25 +538,30 @@ UPDATE SyncPeer SET isDeleted = 1, updatedAt = ? WHERE isDeleted = 0;
 -- (late arrivals from lagging peers always get a fresh sequence). Cursors
 -- advance to maxSeq + 1, so nothing is ever skipped and nothing is ever
 -- re-sent.
+--
+-- Rows are ordered by syncSeq: batch collection (SyncRepository
+-- .collectDeltaBatched) cuts the union on a sequence boundary, and the
+-- per-table prefix below that boundary is exactly the slice it ships. The
+-- syncSeq index makes the scan ordered and bounded.
 -- ==========================================
 
 selectCharacterDeltas:
-SELECT * FROM CharacterEntity WHERE syncSeq >= ?;
+SELECT * FROM CharacterEntity WHERE syncSeq >= ? ORDER BY syncSeq ASC;
 
 selectPersonaDeltas:
-SELECT * FROM PersonaEntity WHERE syncSeq >= ?;
+SELECT * FROM PersonaEntity WHERE syncSeq >= ? ORDER BY syncSeq ASC;
 
 selectSessionDeltas:
-SELECT * FROM ChatSession WHERE syncSeq >= ?;
+SELECT * FROM ChatSession WHERE syncSeq >= ? ORDER BY syncSeq ASC;
 
 selectMessageDeltas:
-SELECT * FROM MessageEntity WHERE syncSeq >= ?;
+SELECT * FROM MessageEntity WHERE syncSeq >= ? ORDER BY syncSeq ASC;
 
 selectApiConnectionDeltas:
-SELECT * FROM ApiConnection WHERE syncSeq >= ?;
+SELECT * FROM ApiConnection WHERE syncSeq >= ? ORDER BY syncSeq ASC;
 
 selectPromptBlockDeltas:
-SELECT * FROM PromptBlockEntity WHERE syncSeq >= ?;
+SELECT * FROM PromptBlockEntity WHERE syncSeq >= ? ORDER BY syncSeq ASC;
 
 -- ==========================================
 -- Sync upserts (full-row writes, LWW resolved in code)

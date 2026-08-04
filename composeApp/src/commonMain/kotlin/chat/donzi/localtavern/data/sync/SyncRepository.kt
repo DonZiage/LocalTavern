@@ -125,15 +125,91 @@ class SyncRepository(
 
     // ---------- Delta collection ----------
 
-    /** All rows changed after [since] (including tombstones). */
-    suspend fun collectDelta(since: Long): SyncChanges = withContext(ioDispatcher) {
-        SyncChanges(
-            characters = queries.selectCharacterDeltas(since).executeAsList().map { it.toSync() },
-            personas = queries.selectPersonaDeltas(since).executeAsList().map { it.toSync() },
-            sessions = queries.selectSessionDeltas(since).executeAsList().map { it.toSync() },
-            messages = queries.selectMessageDeltas(since).executeAsList().map { it.toSync(blobStore) },
-            apiConnections = queries.selectApiConnectionDeltas(since).executeAsList().map { it.toSync(apiKeyCipher) },
-            promptBlocks = queries.selectPromptBlockDeltas(since).executeAsList().map { it.toSync() }
+    /** All rows changed after [since] (including tombstones), in one batch. */
+    suspend fun collectDelta(since: Long): SyncChanges = collectDeltaBatched(since, Long.MAX_VALUE).changes
+
+    /**
+     * All rows changed after [since] (including tombstones), cut to at most
+     * [budgetBytes] of estimated wire bytes and ordered by sync sequence.
+     *
+     * The cut lands on a sequence boundary: rows that share a syncSeq (a
+     * local write and a peer's applied row can collide under SQLite's
+     * serialized stamping) form one atomic group and always ship together,
+     * because the peer's cursor advances to maxSeq + 1 — splitting a group
+     * would strand the leftover row below the cursor forever.
+     *
+     * The returned batch is sequence-closed: every local row with
+     * syncSeq <= batch.changes.maxSyncSeq is in the batch, so the peer's
+     * cursor (maxSeq + 1) is exact and the next batch resumes without gaps
+     * or duplicates. [hasMore] is true when rows remain above the cut.
+     * Batches are small enough that a large library (hundreds of characters
+     * with avatars) never has to ride in one envelope: the receiver of such
+     * an envelope would otherwise have to hold several times its size in
+     * memory while decoding, which exhausts mobile heaps mid-exchange.
+     */
+    suspend fun collectDeltaBatched(since: Long, budgetBytes: Long = DELTA_BUDGET_BYTES): DeltaBatch = withContext(ioDispatcher) {
+        val characters = queries.selectCharacterDeltas(since).executeAsList()
+        val personas = queries.selectPersonaDeltas(since).executeAsList()
+        val sessions = queries.selectSessionDeltas(since).executeAsList()
+        val messages = queries.selectMessageDeltas(since).executeAsList()
+        val apiConnections = queries.selectApiConnectionDeltas(since).executeAsList()
+        val promptBlocks = queries.selectPromptBlockDeltas(since).executeAsList()
+
+        // Rank the union of all six tables by syncSeq (each table is already
+        // ordered by syncSeq, see the delta queries) so the budget cut is
+        // taken on the GLOBAL sequence order.
+        val ranking = ArrayList<RankedRow>(
+            characters.size + personas.size + sessions.size + messages.size + apiConnections.size + promptBlocks.size
+        )
+        characters.forEach { ranking.add(RankedRow(it.syncSeq, it.estimatedWireSize())) }
+        personas.forEach { ranking.add(RankedRow(it.syncSeq, it.estimatedWireSize())) }
+        sessions.forEach { ranking.add(RankedRow(it.syncSeq, it.estimatedWireSize())) }
+        messages.forEach { ranking.add(RankedRow(it.syncSeq, it.estimatedWireSize())) }
+        apiConnections.forEach { ranking.add(RankedRow(it.syncSeq, it.estimatedWireSize())) }
+        promptBlocks.forEach { ranking.add(RankedRow(it.syncSeq, it.estimatedWireSize())) }
+        ranking.sortBy { it.seq }
+
+        // Walk whole sequence groups: the first group always ships (it is the
+        // atomic minimum), and a group is never split by the budget.
+        var cutSeq = Long.MIN_VALUE
+        var total = 0L
+        var index = 0
+        while (index < ranking.size) {
+            val seq = ranking[index].seq
+            var groupBytes = 0L
+            while (index < ranking.size && ranking[index].seq == seq) {
+                groupBytes += ranking[index].size
+                index++
+            }
+            if (total > 0 && total + groupBytes > budgetBytes) break
+            total += groupBytes
+            cutSeq = seq
+        }
+
+        // Sequence-closed slice: every row at or below the cut. Only the
+        // shipped rows are mapped to wire DTOs (the tail is left as raw rows).
+        val shippedCharacters = characters.takeWhile { it.syncSeq <= cutSeq }
+        val shippedPersonas = personas.takeWhile { it.syncSeq <= cutSeq }
+        val shippedSessions = sessions.takeWhile { it.syncSeq <= cutSeq }
+        val shippedMessages = messages.takeWhile { it.syncSeq <= cutSeq }
+        val shippedApiConnections = apiConnections.takeWhile { it.syncSeq <= cutSeq }
+        val shippedPromptBlocks = promptBlocks.takeWhile { it.syncSeq <= cutSeq }
+
+        DeltaBatch(
+            changes = SyncChanges(
+                characters = shippedCharacters.map { it.toSync() },
+                personas = shippedPersonas.map { it.toSync() },
+                sessions = shippedSessions.map { it.toSync() },
+                messages = shippedMessages.map { it.toSync() },
+                apiConnections = shippedApiConnections.map { it.toSync(apiKeyCipher) },
+                promptBlocks = shippedPromptBlocks.map { it.toSync() }
+            ),
+            hasMore = shippedCharacters.size < characters.size ||
+                shippedPersonas.size < personas.size ||
+                shippedSessions.size < sessions.size ||
+                shippedMessages.size < messages.size ||
+                shippedApiConnections.size < apiConnections.size ||
+                shippedPromptBlocks.size < promptBlocks.size
         )
     }
 
@@ -191,6 +267,10 @@ class SyncRepository(
     }
 
     private data class PreparedMessage(val row: SyncMessage, val refsJson: String?)
+
+    // (syncSeq, estimated wire bytes) of one pending row, used to rank the
+    // delta union for the batch cut.
+    private data class RankedRow(val seq: Long, val size: Long)
 
     // Legacy wire images (serialized byte-list BLOB) -> content-addressed
     // blobs + references. Only writes blobs that are not already stored.
