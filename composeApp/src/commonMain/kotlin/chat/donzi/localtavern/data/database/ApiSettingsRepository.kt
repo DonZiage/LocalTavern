@@ -16,16 +16,17 @@ class ApiSettingsRepository(
     database: LocalTavernDB,
     private val apiKeyCipher: ApiKeyCipher,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    clock: LogicalClock = LogicalClock(database)
+    clock: LogicalClock = LogicalClock(database),
+    private val readDispatcher: CoroutineDispatcher = ioDispatcher
 ) : BaseRepository(database, clock) {
 
     // Live stream of the active connection so UI checks (e.g. refusing a send
     // without a profile) never rely on a stale snapshot loaded once.
     fun observeActiveApiConnection(): Flow<ApiConfig?> =
-        queries.selectActiveApiConnection().asFlow().mapToOneOrNull(ioDispatcher)
+        queries.selectActiveApiConnection().asFlow().mapToOneOrNull(readDispatcher)
             .map { it?.toDomain()?.withDecryptedKey() }
 
-    suspend fun getAllApiConnections(): List<ApiConfig> = withContext(ioDispatcher) {
+    suspend fun getAllApiConnections(): List<ApiConfig> = withContext(readDispatcher) {
         queries.selectAllApiConnections().executeAsList().map { it.toDomain().withDecryptedKey() }
     }
 
@@ -250,7 +251,7 @@ class ApiSettingsRepository(
         }
     }
 
-    suspend fun getActiveApiConnection(): ApiConfig? = withContext(ioDispatcher) {
+    suspend fun getActiveApiConnection(): ApiConfig? = withContext(readDispatcher) {
         // No silent fallback to the last-used profile: a connection is active
         // only when explicitly marked as such, so the UI never claims a
         // deactivated profile is in use.
@@ -268,6 +269,9 @@ class ApiSettingsRepository(
     }
 
     suspend fun getAppSettings(): AppSettings = withContext(ioDispatcher) {
+        // Self-healing: the settings row may not exist yet on a fresh database.
+        // The INSERT OR IGNORE is a write, so this stays on the write
+        // dispatcher (reader connections are query-only on native drivers).
         queries.insertDefaultSettings()
         queries.getAppSettings().executeAsOne()
     }

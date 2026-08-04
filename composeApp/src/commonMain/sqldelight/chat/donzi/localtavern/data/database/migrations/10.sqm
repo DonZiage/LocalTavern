@@ -1,7 +1,0 @@
--- v10 -> v11: desktop idle auto-lock.
---
--- Minutes of inactivity after which the derived passphrase key is forgotten
--- and the unlock gate is shown again. 0 disables auto-lock (the key lives
--- until the app exits). Per-device preference, never synced, so it is not
--- synced by the delta cursors or LWW merge.
-ALTER TABLE AppSettings ADD COLUMN autoLockIdleMinutes INTEGER NOT NULL DEFAULT 10;

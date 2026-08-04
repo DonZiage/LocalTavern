@@ -11,6 +11,7 @@ import chat.donzi.localtavern.utils.serializeImageList
 import chat.donzi.localtavern.utils.serializeImageRefs
 import app.cash.sqldelight.coroutines.asFlow
 import app.cash.sqldelight.coroutines.mapToList
+import chat.donzi.localtavern.data.database.ConflictEvent
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -36,7 +37,10 @@ class SyncRepository(
     // Content-addressed blob store for message images. Incoming rows write
     // their blobs here and outbound envelopes read them from here; a null
     // store (tests) ships/holds no image bytes.
-    private val blobStore: BlobStore? = null
+    private val blobStore: BlobStore? = null,
+    // Pure-read dispatcher: delta collection, peer lookups and flows. Reads
+    // never contend with the single write connection under WAL.
+    private val readDispatcher: CoroutineDispatcher = ioDispatcher
 ) {
     private val queries get() = database.localTavernDBQueries
 
@@ -73,13 +77,49 @@ class SyncRepository(
     }
 
     fun observePeers(): Flow<List<SyncPeer>> =
-        queries.selectAllSyncPeers().asFlow().mapToList(ioDispatcher)
+        queries.selectAllSyncPeers().asFlow().mapToList(readDispatcher)
 
-    suspend fun getPeers(): List<SyncPeer> = withContext(ioDispatcher) {
+    // ---------- Conflict ledger (per-device, never synced) ----------
+
+    /**
+     * Unseen conflict events: rows where a newer version from a paired device
+     * overwrote a local edit the peer had never seen (last-write-wins). The
+     * UI shows these so the silent overwrite is at least surfaced; dismissing
+     * them marks them seen.
+     */
+    fun observeUnseenConflicts(): Flow<List<ConflictEvent>> =
+        queries.selectUnseenConflicts().asFlow().mapToList(readDispatcher)
+
+    suspend fun markConflictSeen(ids: List<Long>) = withContext(ioDispatcher) {
+        if (ids.isEmpty()) return@withContext
+        queries.markConflictSeen(ids)
+        pruneOldConflictsInternal()
+    }
+
+    suspend fun markAllConflictsSeen() = withContext(ioDispatcher) {
+        queries.markAllConflictsSeen()
+        pruneOldConflictsInternal()
+    }
+
+    /**
+     * Drops seen events older than 30 days. Events are observational history;
+     * once dismissed they serve no purpose, and a device that syncs a lot
+     * would otherwise grow this table forever. Called on startup and after
+     * every dismiss action.
+     */
+    suspend fun pruneOldConflicts() = withContext(ioDispatcher) {
+        pruneOldConflictsInternal()
+    }
+
+    private fun pruneOldConflictsInternal() {
+        queries.pruneSeenConflicts(currentTimeMillis() - CONFLICT_RETENTION_MS)
+    }
+
+    suspend fun getPeers(): List<SyncPeer> = withContext(readDispatcher) {
         queries.selectAllSyncPeers().executeAsList()
     }
 
-    suspend fun getPeer(deviceId: String): SyncPeer? = withContext(ioDispatcher) {
+    suspend fun getPeer(deviceId: String): SyncPeer? = withContext(readDispatcher) {
         queries.selectSyncPeer(deviceId).executeAsOneOrNull()
     }
 
@@ -136,7 +176,7 @@ class SyncRepository(
      * peer re-advances its cursor from the batch's max sequence and normal
      * exact-cut behavior resumes.
      */
-    suspend fun saneDeltaCutoff(cursor: Long): Long = withContext(ioDispatcher) {
+    suspend fun saneDeltaCutoff(cursor: Long): Long = withContext(readDispatcher) {
         val maxSeq = queries.selectMaxSyncSeq().executeAsOne()
         if (cursor > maxSeq + 1) 0L else cursor
     }
@@ -174,7 +214,7 @@ class SyncRepository(
      * an envelope would otherwise have to hold several times its size in
      * memory while decoding, which exhausts mobile heaps mid-exchange.
      */
-    suspend fun collectDeltaBatched(since: Long, budgetBytes: Long = DELTA_BUDGET_BYTES): DeltaBatch = withContext(ioDispatcher) {
+    suspend fun collectDeltaBatched(since: Long, budgetBytes: Long = DELTA_BUDGET_BYTES): DeltaBatch = withContext(readDispatcher) {
         val characters = queries.selectCharacterDeltas(since).executeAsList()
         val personas = queries.selectPersonaDeltas(since).executeAsList()
         val sessions = queries.selectSessionDeltas(since).executeAsList()
@@ -241,6 +281,17 @@ class SyncRepository(
     }
 
     // ---------- Applying remote changes (LWW) ----------
+
+    // Table names stored on ConflictEvent rows; shown to the user verbatim.
+    private companion object {
+        const val TABLE_CHARACTER = "Character"
+        const val TABLE_PERSONA = "Persona"
+        const val TABLE_SESSION = "Chat"
+        const val TABLE_MESSAGE = "Message"
+        const val TABLE_API_CONNECTION = "API connection"
+        const val TABLE_PROMPT_BLOCK = "Prompt block"
+        const val CONFLICT_RETENTION_MS = 30L * 24 * 60 * 60 * 1000
+    }
 
     /**
      * Applies incoming changes. For each row, the newer version wins
@@ -317,9 +368,44 @@ class SyncRepository(
         return peerDeviceId > identity.deviceId
     }
 
+    /**
+     * Ledger + conflict-event recording for one incoming row whose local copy
+     * exists.
+     *
+     * The peer's announcement advances the per-peer ledger REGARDLESS of
+     * whether the row wins or loses LWW: the ledger tracks the newest version
+     * that peer has ever announced, which is the baseline "has the peer seen
+     * this row's state" must be compared against.
+     *
+     * An event is recorded only when a STRICTLY newer incoming version
+     * replaces a local version that the peer had never announced — i.e. the
+     * local row was edited after the peer's knowledge, and that edit is now
+     * discarded by last-write-wins. Equal stamps are the peer echoing this
+     * device's own version back (applied rows keep the author's updatedAt), so
+     * they never record; an incoming version that only converges with what
+     * the peer already knew never records either.
+     */
+    private fun noteIncoming(rowId: String, tableName: String, peerDeviceId: String, localUpdatedAt: Long, incomingUpdatedAt: Long) {
+        val previous = queries.selectAppliedRow(rowId, peerDeviceId).executeAsOneOrNull()?.appliedUpdatedAt ?: 0L
+        if (incomingUpdatedAt > localUpdatedAt && localUpdatedAt > previous) {
+            queries.insertConflictEventIgnore(
+                rowId = rowId, tableName = tableName, peerDeviceId = peerDeviceId,
+                localUpdatedAt = localUpdatedAt, incomingUpdatedAt = incomingUpdatedAt,
+                createdAt = currentTimeMillis()
+            )
+        }
+        queries.insertAppliedRow(rowId, peerDeviceId, incomingUpdatedAt)
+        queries.updateAppliedRowMax(incomingUpdatedAt, rowId, peerDeviceId)
+    }
+
     private fun apply(row: SyncCharacter, peerDeviceId: String) {
         val existing = queries.selectCharacterByIdAny(row.id).executeAsOneOrNull()
-        if (existing != null && !incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        if (existing != null) {
+            noteIncoming(row.id, TABLE_CHARACTER, peerDeviceId, existing.updatedAt, row.updatedAt)
+            if (!incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        } else {
+            queries.insertAppliedRow(row.id, peerDeviceId, row.updatedAt)
+        }
         // Applied rows are re-stamped with a device-local sync sequence (see
         // applyChanges): the row's own sequence (from its author) is only a
         // cursor hint for the sender; here it must be local so it can always
@@ -352,7 +438,12 @@ class SyncRepository(
 
     private fun apply(row: SyncPersona, peerDeviceId: String) {
         val existing = queries.selectPersonaByIdAny(row.id).executeAsOneOrNull()
-        if (existing != null && !incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        if (existing != null) {
+            noteIncoming(row.id, TABLE_PERSONA, peerDeviceId, existing.updatedAt, row.updatedAt)
+            if (!incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        } else {
+            queries.insertAppliedRow(row.id, peerDeviceId, row.updatedAt)
+        }
         val seq = clock.nextSyncSeq()
         if (existing == null) {
             queries.insertPersonaFull(
@@ -370,7 +461,12 @@ class SyncRepository(
 
     private fun apply(row: SyncSession, peerDeviceId: String) {
         val existing = queries.selectSessionByIdAny(row.id).executeAsOneOrNull()
-        if (existing != null && !incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        if (existing != null) {
+            noteIncoming(row.id, TABLE_SESSION, peerDeviceId, existing.updatedAt, row.updatedAt)
+            if (!incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        } else {
+            queries.insertAppliedRow(row.id, peerDeviceId, row.updatedAt)
+        }
         val seq = clock.nextSyncSeq()
         if (existing == null) {
             queries.insertSessionFull(
@@ -391,7 +487,12 @@ class SyncRepository(
 
     private fun apply(row: SyncMessage, peerDeviceId: String, refsJson: String?) {
         val existing = queries.selectMessageByIdAny(row.id).executeAsOneOrNull()
-        if (existing != null && !incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        if (existing != null) {
+            noteIncoming(row.id, TABLE_MESSAGE, peerDeviceId, existing.updatedAt, row.updatedAt)
+            if (!incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        } else {
+            queries.insertAppliedRow(row.id, peerDeviceId, row.updatedAt)
+        }
         val seq = clock.nextSyncSeq()
 
         if (existing == null) {
@@ -421,7 +522,12 @@ class SyncRepository(
 
     private fun apply(row: SyncApiConnection, peerDeviceId: String) {
         val existing = queries.selectApiConnectionByIdAny(row.id).executeAsOneOrNull()
-        if (existing != null && !incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        if (existing != null) {
+            noteIncoming(row.id, TABLE_API_CONNECTION, peerDeviceId, existing.updatedAt, row.updatedAt)
+            if (!incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        } else {
+            queries.insertAppliedRow(row.id, peerDeviceId, row.updatedAt)
+        }
         // The active flag is a per-device preference (like activePersonaId);
         // it never crosses the wire, so a sync cannot silently flip which
         // profile THIS device uses, and its deactivation cascade cannot
@@ -500,7 +606,12 @@ class SyncRepository(
 
     private fun apply(row: SyncPromptBlock, peerDeviceId: String) {
         val existing = queries.selectPromptBlockByIdAny(row.id).executeAsOneOrNull()
-        if (existing != null && !incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        if (existing != null) {
+            noteIncoming(row.id, TABLE_PROMPT_BLOCK, peerDeviceId, existing.updatedAt, row.updatedAt)
+            if (!incomingWins(existing.updatedAt, row.updatedAt, peerDeviceId)) return
+        } else {
+            queries.insertAppliedRow(row.id, peerDeviceId, row.updatedAt)
+        }
         val seq = clock.nextSyncSeq()
         if (existing == null) {
             queries.insertPromptBlockFull(

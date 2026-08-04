@@ -1,9 +1,0 @@
--- v9 -> v10: message images move out of the database into the blob store.
---
--- The imageData BLOB column is retained (unused) in v10 on purpose: the
--- .sqm files run atomically with no app-code hook between statements, so the
--- actual extraction (read blobs -> hash -> write to the content-addressed
--- blob store -> replace with refs) runs in app code after the database
--- opens. The column is emptied by that pass and dropped by a later migration
--- once every device has run it.
-ALTER TABLE MessageEntity ADD COLUMN imageRefs TEXT;

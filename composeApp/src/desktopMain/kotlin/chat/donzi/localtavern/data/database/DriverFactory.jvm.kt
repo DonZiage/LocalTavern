@@ -25,43 +25,16 @@ actual class DriverFactory {
 
         // The JDBC driver has no built-in schema versioning, so create/migrate
         // against PRAGMA user_version manually. (Android and iOS drivers manage
-        // this themselves.) Silently swallowing Schema.create errors left stale
-        // schemas behind on app updates.
+        // this themselves.) The migration history was reset: the schema is
+        // created fresh at version 1, and future .sqm files dropped into
+        // migrations/ will be run here for older databases.
         val currentVersion = readUserVersion(driver)
         if (currentVersion < LocalTavernDB.Schema.version) {
             val hasTables = queryRow(driver, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'CharacterEntity';") > 0L
             if (!hasTables) {
                 LocalTavernDB.Schema.create(driver)
             } else {
-                // An existing database whose user_version was never stamped (0)
-                // cannot be assumed to be v1: it may already carry the
-                // round-trip columns from later versions (e.g. from an
-                // intermediate dev build). Re-running an old migration on a
-                // newer schema would crash every launch with "duplicate column
-                // name". Detect the real schema from the columns instead of
-                // trusting the version number. The mappings mirror the
-                // migrations: 1.sqm adds systemPrompt (v1->v2), 5.sqm adds
-                // inferenceProvider (v5->v6), 6.sqm adds quantization
-                // (v6->v7), 7.sqm adds sendWithCtrlEnter (v7->v8), 8.sqm adds
-                // syncSeq (v8->v9), 9.sqm adds imageRefs (v9->v10).
-                val actualOldVersion = currentVersion.coerceAtLeast(
-                    when {
-                        hasColumn(driver, "MessageEntity", "imageRefs") -> 10L
-                        hasColumn(driver, "MessageEntity", "syncSeq") -> 9L
-                        hasColumn(driver, "AppSettings", "sendWithCtrlEnter") -> 8L
-                        hasColumn(driver, "ApiConnection", "quantization") -> 7L
-                        hasColumn(driver, "ApiConnection", "inferenceProvider") -> 6L
-                        hasColumn(driver, "CharacterEntity", "systemPrompt") -> 2L
-                        else -> 1L
-                    }
-                )
-                if (actualOldVersion < LocalTavernDB.Schema.version) {
-                    LocalTavernDB.Schema.migrate(
-                        driver,
-                        oldVersion = actualOldVersion,
-                        newVersion = LocalTavernDB.Schema.version
-                    )
-                }
+                LocalTavernDB.Schema.migrate(driver, currentVersion, LocalTavernDB.Schema.version)
             }
             writeUserVersion(driver, LocalTavernDB.Schema.version)
         }
@@ -88,9 +61,4 @@ actual class DriverFactory {
             },
             parameters = 0
         ).value
-
-    private fun hasColumn(driver: SqlDriver, table: String, column: String): Boolean =
-        // pragma_table_info is a table-valued function available since
-        // SQLite 3.16; table/column names are compile-time constants.
-        queryRow(driver, "SELECT count(*) FROM pragma_table_info('$table') WHERE name = '$column';") > 0L
 }

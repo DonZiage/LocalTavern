@@ -15,10 +15,11 @@ import kotlinx.coroutines.withContext
 class SessionRepository(
     database: LocalTavernDB,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    clock: LogicalClock = LogicalClock(database)
+    clock: LogicalClock = LogicalClock(database),
+    private val readDispatcher: CoroutineDispatcher = ioDispatcher
 ) : BaseRepository(database, clock) {
 
-    suspend fun getSessionById(id: String): Session? = withContext(ioDispatcher) {
+    suspend fun getSessionById(id: String): Session? = withContext(readDispatcher) {
         queries.selectSessionById(id).executeAsOneOrNull()?.toDomain()
     }
 
@@ -60,7 +61,7 @@ class SessionRepository(
         queries.updateSessionCurrentMessage(currentMessageId = messageId, lastTimestamp = lastTimestamp, updatedAt = updatedAt, syncSeq = syncSeq, id = sessionId)
     }
 
-    suspend fun getSessionsForCharacter(characterId: String): List<Session> = withContext(ioDispatcher) {
+    suspend fun getSessionsForCharacter(characterId: String): List<Session> = withContext(readDispatcher) {
         queries.selectSessionsForCharacter(characterId).executeAsList().map { it.toDomain() }
     }
 

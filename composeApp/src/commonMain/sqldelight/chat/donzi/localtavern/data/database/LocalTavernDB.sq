@@ -186,6 +186,40 @@ CREATE TABLE PromptBlockEntity (
 
 CREATE INDEX IF NOT EXISTS idx_promptblock_syncseq ON PromptBlockEntity(syncSeq);
 
+-- Per-peer ledger of the last version of each row that this device received
+-- from that peer (the incoming row's updatedAt stamp). Conflict detection
+-- compares a row's LOCAL updatedAt against this ledger: a local version newer
+-- than what the peer last announced means this device edited after the peer's
+-- knowledge, so a later winning incoming row discards a local edit the peer
+-- never saw. Not synced; purely observational, per-device.
+CREATE TABLE AppliedRow (
+    rowId TEXT NOT NULL,
+    peerDeviceId TEXT NOT NULL,
+    appliedUpdatedAt INTEGER NOT NULL,
+    PRIMARY KEY (rowId, peerDeviceId)
+);
+
+-- Conflict events: rows where this device's post-peer edit was overwritten by
+-- a newer version from a paired device (last-write-wins). Inserted only when
+-- the incoming version strictly out-stamps the local one AND the local
+-- version was never announced by that peer -- i.e. a genuine concurrent edit,
+-- not plain convergence or an echo of this device's own row. Recorded
+-- per-device, never synced. UNIQUE + INSERT OR IGNORE makes re-applying the
+-- same envelope idempotent.
+CREATE TABLE ConflictEvent (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rowId TEXT NOT NULL,
+    tableName TEXT NOT NULL,
+    peerDeviceId TEXT NOT NULL,
+    localUpdatedAt INTEGER NOT NULL,
+    incomingUpdatedAt INTEGER NOT NULL,
+    createdAt INTEGER NOT NULL,
+    seen INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (rowId, incomingUpdatedAt, peerDeviceId)
+);
+
+CREATE INDEX IF NOT EXISTS idx_conflictevent_unseen ON ConflictEvent(seen, createdAt DESC);
+
 -- ==========================================
 -- Standard Queries (Filtered for Non-Deleted)
 -- ==========================================
@@ -652,3 +686,40 @@ WHERE id = ?;
 insertPromptBlockFull:
 INSERT INTO PromptBlockEntity(id, name, template, isEnabled, isCustom, displayOrder, updatedAt, isDeleted, syncSeq)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- ==========================================
+-- Conflict ledger (per-device, never synced)
+-- ==========================================
+
+-- The ledger only ever moves forward: the max() update makes a re-announced
+-- older version a no-op.
+insertAppliedRow:
+INSERT OR IGNORE INTO AppliedRow(rowId, peerDeviceId, appliedUpdatedAt) VALUES (?, ?, ?);
+
+updateAppliedRowMax:
+UPDATE AppliedRow SET appliedUpdatedAt = MAX(appliedUpdatedAt, ?) WHERE rowId = ? AND peerDeviceId = ?;
+
+selectAppliedRow:
+SELECT * FROM AppliedRow WHERE rowId = ? AND peerDeviceId = ? LIMIT 1;
+
+insertConflictEventIgnore:
+INSERT OR IGNORE INTO ConflictEvent(rowId, tableName, peerDeviceId, localUpdatedAt, incomingUpdatedAt, createdAt, seen)
+VALUES (?, ?, ?, ?, ?, ?, 0);
+
+selectUnseenConflicts:
+SELECT * FROM ConflictEvent WHERE seen = 0 ORDER BY createdAt DESC;
+
+-- All events (seen or not); used by tests to verify pruning.
+selectAllConflictEvents:
+SELECT * FROM ConflictEvent ORDER BY createdAt DESC;
+
+markConflictSeen:
+UPDATE ConflictEvent SET seen = 1 WHERE id IN ?;
+
+markAllConflictsSeen:
+UPDATE ConflictEvent SET seen = 1 WHERE seen = 0;
+
+-- Seen events older than the cutoff are pure history; dropping them keeps the
+-- table from growing forever on devices that sync a lot.
+pruneSeenConflicts:
+DELETE FROM ConflictEvent WHERE seen = 1 AND createdAt < ?;

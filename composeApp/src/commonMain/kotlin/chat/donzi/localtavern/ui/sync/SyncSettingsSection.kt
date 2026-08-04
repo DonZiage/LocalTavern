@@ -1,16 +1,21 @@
 package chat.donzi.localtavern.ui.sync
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import chat.donzi.localtavern.data.database.ConflictEvent
 import chat.donzi.localtavern.data.database.SyncPeer
 import chat.donzi.localtavern.data.sync.SyncDiscovery
 import chat.donzi.localtavern.data.sync.SyncRepository
@@ -29,6 +34,7 @@ fun SyncSettingsSection(
     val scope = rememberCoroutineScope()
     val syncState by syncService.state.collectAsState()
     val peers by syncService.observePeers().collectAsState(initial = emptyList())
+    val conflicts by syncService.observeConflicts().collectAsState(initial = emptyList())
     val deviceName by syncService.deviceName.collectAsState()
 
     var showSyncDialog by remember { mutableStateOf(false) }
@@ -108,6 +114,16 @@ fun SyncSettingsSection(
                 text = "Syncing images… ${formatBytes(progress.doneBytes)} / ${formatBytes(progress.totalBytes)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        if (conflicts.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(12.dp))
+            ConflictsResolvedCard(
+                conflicts = conflicts,
+                peerNames = peers.associate { it.deviceId to it.name },
+                onDismiss = { ids -> scope.launch { syncService.dismissConflicts(ids) } },
+                onDismissAll = { scope.launch { syncService.dismissAllConflicts() } }
             )
         }
 
@@ -202,6 +218,104 @@ private fun PeerRow(
                     tint = MaterialTheme.colorScheme.error
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun ConflictsResolvedCard(
+    conflicts: List<ConflictEvent>,
+    peerNames: Map<String, String>,
+    onDismiss: (List<Long>) -> Unit,
+    onDismissAll: () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.Warning,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.error
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (conflicts.size == 1) {
+                            "1 edit overwritten by a paired device"
+                        } else {
+                            "${conflicts.size} edits overwritten by paired devices"
+                        },
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Text(
+                        text = "Last-write-wins: the other device's newer version replaced a local edit it had never seen.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
+                    )
+                }
+                Icon(
+                    if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    contentDescription = if (expanded) "Collapse" else "Expand",
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
+            if (expanded) {
+                Spacer(modifier = Modifier.height(6.dp))
+                conflicts.forEach { conflict ->
+                    ConflictRow(
+                        conflict = conflict,
+                        peerName = peerNames[conflict.peerDeviceId],
+                        onDismiss = { onDismiss(listOf(conflict.id)) }
+                    )
+                }
+                TextButton(onClick = onDismissAll, modifier = Modifier.align(Alignment.End)) {
+                    Text("Dismiss all")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConflictRow(
+    conflict: ConflictEvent,
+    peerName: String?,
+    onDismiss: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "${conflict.tableName} row",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            Text(
+                text = buildString {
+                    append(peerName ?: conflict.peerDeviceId)
+                    append(" · ")
+                    append(relativeTime(conflict.createdAt))
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f)
+            )
+        }
+        TextButton(onClick = onDismiss, modifier = Modifier.height(32.dp)) {
+            Text("Dismiss", style = MaterialTheme.typography.labelMedium)
         }
     }
 }

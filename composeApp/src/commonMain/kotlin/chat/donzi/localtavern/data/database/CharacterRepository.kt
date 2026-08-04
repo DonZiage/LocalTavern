@@ -29,20 +29,21 @@ private fun encodeTags(tags: List<String>): String? = tags.takeIf { it.isNotEmpt
 class CharacterRepository(
     database: LocalTavernDB,
     clock: LogicalClock = LogicalClock(database),
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val readDispatcher: CoroutineDispatcher = ioDispatcher
 ) : BaseRepository(database, clock) {
 
     fun observeCharacters(): Flow<List<Character>> =
-        queries.selectAllCharacters().asFlow().mapToList(ioDispatcher).map { list -> list.map { it.toDomain() } }
+        queries.selectAllCharacters().asFlow().mapToList(readDispatcher).map { list -> list.map { it.toDomain() } }
 
     fun observePersonas(): Flow<List<Persona>> =
-        queries.selectAllPersonas().asFlow().mapToList(ioDispatcher).map { list -> list.map { it.toDomain() } }
+        queries.selectAllPersonas().asFlow().mapToList(readDispatcher).map { list -> list.map { it.toDomain() } }
 
-    suspend fun getAllCharacters(): List<Character> = withContext(ioDispatcher) {
+    suspend fun getAllCharacters(): List<Character> = withContext(readDispatcher) {
         queries.selectAllCharacters().executeAsList().map { it.toDomain() }
     }
 
-    suspend fun getAssistant(): Character? = withContext(ioDispatcher) {
+    suspend fun getAssistant(): Character? = withContext(readDispatcher) {
         queries.selectAssistant().executeAsOneOrNull()?.toDomain()
     }
 
@@ -76,7 +77,7 @@ class CharacterRepository(
         newId
     }
 
-    suspend fun getCharacterById(id: String): Character? = withContext(ioDispatcher) {
+    suspend fun getCharacterById(id: String): Character? = withContext(readDispatcher) {
         queries.selectCharacterById(id).executeAsOneOrNull()?.toDomain()
     }
 
@@ -254,7 +255,7 @@ class CharacterRepository(
         )
     }
 
-    suspend fun getAllPersonas(): List<Persona> = withContext(ioDispatcher) {
+    suspend fun getAllPersonas(): List<Persona> = withContext(readDispatcher) {
         queries.selectAllPersonas().executeAsList().map { it.toDomain() }
     }
 

@@ -107,6 +107,7 @@ Mobile devices without any unlock method (no PIN, password or fingerprint) open 
 - The sync identity key can be rotated, which invalidates all pairings.
 - **LAN discovery** (UDP broadcast) lists nearby devices and auto-updates peer addresses after DHCP changes — not available on iOS, where you pair by manual address.
 - Characters, personas, chats, messages, and API profiles all sync. Auto-sync runs on app start and after pairing.
+- **Overwrites are not silent.** LWW keeps a per-peer ledger of the last version each device announced per row. When a peer's newer version replaces a local edit that the peer had never seen (a genuine concurrent edit), the event is recorded and surfaced in the sync settings ("N edits overwritten by paired devices") with the row type, device and time, dismissible per row or all at once. The records are per-device observational history, never synced. Convergence and echoes (a peer sending this device's own version back) are not reported; ties resolved by the deterministic device-id tie-break are not reported either.
 
 ---
 
@@ -115,11 +116,15 @@ Mobile devices without any unlock method (no PIN, password or fingerprint) open 
 | Layer | Choice |
 |---|---|
 | Framework | Compose Multiplatform (Kotlin 2.3.x, Compose 1.10.x, Material3) |
-| Database | SQLDelight (type-safe, cross-platform SQL, schema v12) |
+| Database | SQLDelight (type-safe, cross-platform SQL, schema v14) |
 | Networking | Ktor 3.x (client for API calls; embedded CIO server + UDP discovery for sync) |
 | Image loading | Coil3 |
 | Serialization | kotlinx-serialization (JSON), kotlinx-datetime, kotlinx-coroutines |
 | Cryptography | dev.whyoleg.cryptography (X25519, AES-256-GCM, HKDF, ChaCha20) with platform providers: AndroidKeyStore/BouncyCastle (Android), JDK (desktop), CryptoKit/CommonCrypto (iOS) |
+
+### Dependency notes
+
+Every pin is a current stable except one, deliberately: `org.jetbrains.compose.material3:material3` is `1.10.0-alpha05`, the companion line to Compose Multiplatform 1.10.x — JetBrains versions material3 independently, and no *stable* 1.10 material3 exists (stable lines are 1.8/1.9; 1.11/1.12 are alpha/beta). Downgrading to 1.9.0 or jumping to the 1.11 alpha each carries its own compatibility risk, so the alpha companion stays. Everything else — Kotlin 2.3.21, Compose 1.10.3, Ktor 3.4.x, SQLDelight 2.3.2, `dev.whyoleg.cryptography` 0.6.0 (the latest release), Coil 3.4, CameraX 1.4 — is the current stable release of its line.
 
 ### Supported Platforms
 
@@ -154,7 +159,7 @@ composeApp/
 │   ├── desktopMain/     JVM platform implementations (driver, secret storage, …)
 │   ├── iosMain/         iOS platform implementations (Keychain, CryptoKit, …)
 │   ├── commonTest/      Cross-platform tests
-│   └── desktopTest/     JVM-only tests (sync protocol, crypto, migrations, UI state + Compose UI)
+│   └── desktopTest/     JVM-only tests (sync protocol, crypto, UI state + Compose UI)
 ├── iosApp/              Xcode host app for iOS
 └── build.gradle.kts     Multiplatform build config (targets, SQLDelight, packaging)
 ```
@@ -172,10 +177,18 @@ composeApp/
 
 ---
 
+## Data Layer
+
+**SQLite is accessed through two dispatchers, not one.** The JVM driver opens a separate SQLite connection per thread, so concurrent write transactions on different connections would collide with SQLITE_BUSY; all writes therefore funnel through a single-threaded dispatcher (one connection, never contended). Pure reads — chat timelines, character lists, sync delta collection — run on a small pool of extra connections, which is safe because WAL readers never block the writer and every connection carries `busy_timeout`. The routing rule: transactions, writes and read-modify-write flows stay on the write connection; standalone SELECTs use the read pool. iOS keeps everything serialized (its native driver manages its own single reader connection). This is verified by `DatabaseConcurrencyTest`, which hammers concurrent readers against a live writer and asserts no SQLITE_BUSY, no stalls and no lost writes.
+
+## Testing
+
+`./gradlew :composeApp:desktopTest` runs 360+ tests covering the sync protocol (two real devices pairing and converging over localhost), the crypto (including the **BouncyCastle provider Android uses on-device** — X25519, HKDF, AES-GCM, PBKDF2 — exercised through `SyncCryptoBouncyCastleTest` without an emulator), QR round-trips (decoded with an independent zxing reader), fresh-database creation through the driver factory, the conflict ledger, LWW merge, delta batching, malformed-envelope fuzzing (truncations, byte corruption, structural damage and extreme-value stamps must never crash or pollute the database), the passphrase/secret gates, and screen-level Compose smoke tests. Device-only paths — AndroidKeyStore, iOS Keychain, biometric prompts — cannot run on the JVM and are verified manually on hardware.
+
 ## Known Limitations
 
 - **Message images live in a platform blob store** (content-addressed files, never in SQLite). They travel out of band during sync: rows carry SHA-256 refs and the bytes are pulled chunked from the peer. A blob the peer cannot serve shows a "pending sync" placeholder (re-attempted after an app restart); a blob fetch that fails mid-transfer is retried on the next sync.
-- **The legacy `imageData` column remains in schema v10** (unused, emptied by the startup extraction pass). It will be dropped by a later migration once the blob offload has been live for at least one release — a device jumping straight past the extraction would lose its inline images, so the drop is deliberately deferred.
+- **The legacy `imageData` column remains in the schema** (unused, emptied by the startup extraction pass). It will be dropped by a future migration once the blob offload has been live for at least one release — a device jumping straight past the extraction would lose its inline images, so the drop is deliberately deferred.
 - **The tokenizer is a heuristic, not a true BPE tokenizer:** it estimates ~4 characters per token for Latin text and 1 token per CJK character. Accurate enough for context budgeting, cost estimates, and editor token counters, but it will not match a model's exact tokenizer.
 - **Desktop API keys are passphrase-encrypted by default** — a passphrase setup screen blocks the main UI on first launch (and after the passphrase is explicitly removed). The passphrase is never stored; a forgotten passphrase means encrypted keys are unrecoverable by design. Like every passphrase scheme, it protects keys **at rest** (stolen disk, idle unlocked session via auto-lock) but cannot stop malware running as the same user on an unlocked machine.
 - **The hand-rolled markdown renderer is deliberately conservative:** no raw HTML, links render as non-clickable labels, and inline spans are strict-format only — malformed LLM output degrades to plain text instead of misrendering.

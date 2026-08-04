@@ -6,6 +6,7 @@ import chat.donzi.localtavern.data.blob.migrateMessageImagesToBlobStore
 import chat.donzi.localtavern.data.blob.runBlobGc
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.database.CharacterRepository
+import chat.donzi.localtavern.data.database.createDatabaseDispatchers
 import chat.donzi.localtavern.data.database.DriverFactory
 import chat.donzi.localtavern.data.database.LocalTavernDB
 import chat.donzi.localtavern.data.database.LogicalClock
@@ -50,13 +51,18 @@ class AppContainer(driverFactory: DriverFactory) {
     val database: LocalTavernDB = LocalTavernDB(driver)
     // Content-addressed store for message image blobs (never in SQLite).
     val blobStore: BlobStore = createBlobStore()
-    // All DB access must go through ONE thread: the JVM driver opens a separate
-    // SQLite connection per thread (JdbcSqliteDriver.ThreadedConnectionManager),
-    // so concurrent transactions on Dispatchers.IO run on different connections
-    // and one of them fails with "SQL is busy" (SQLITE_BUSY) — e.g. switching
-    // characters fast overlaps getOrCreateSession/ensureInitialGreetings writes.
-    // Serializing on a single dispatcher keeps every statement on one connection.
-    private val databaseDispatcher = Dispatchers.IO.limitedParallelism(1)
+    // All DB access must go through ONE thread for writes: the JVM driver
+    // opens a separate SQLite connection per thread (JdbcSqliteDriver
+    // .ThreadedConnectionManager), so concurrent write transactions on
+    // Dispatchers.IO would run on different connections and one of them
+    // fails with "SQL is busy" (SQLITE_BUSY) — e.g. switching characters fast
+    // overlaps getOrCreateSession/ensureInitialGreetings writes. Serializing
+    // writes on a single dispatcher keeps every statement on one connection.
+    // Pure reads are NOT serialized: under WAL they never contend with the
+    // writer, so they run on a small read pool (see DatabaseDispatchers).
+    private val databaseDispatchers = createDatabaseDispatchers()
+    private val databaseDispatcher = databaseDispatchers.write
+    private val databaseReadDispatcher = databaseDispatchers.read
     val secretCrypto = createSecretCrypto()
     val apiKeyCipher = ApiKeyCipher(secretCrypto)
     // Mobile device-unlock prompt (PIN/password/fingerprint) for the startup
@@ -66,10 +72,10 @@ class AppContainer(driverFactory: DriverFactory) {
     // it with every received timestamp and all local writes stamp from it,
     // keeping LWW immune to wall-clock skew between devices.
     val logicalClock = LogicalClock(database)
-    val characterRepository: CharacterRepository = CharacterRepository(database, clock = logicalClock, ioDispatcher = databaseDispatcher)
-    val sessionRepository: SessionRepository = SessionRepository(database, ioDispatcher = databaseDispatcher, clock = logicalClock)
-    val messageRepository: MessageRepository = MessageRepository(database, ioDispatcher = databaseDispatcher, clock = logicalClock, blobStore = blobStore, sessionRepository = sessionRepository)
-    val apiSettingsRepository: ApiSettingsRepository = ApiSettingsRepository(database, apiKeyCipher, databaseDispatcher, clock = logicalClock)
+    val characterRepository: CharacterRepository = CharacterRepository(database, clock = logicalClock, ioDispatcher = databaseDispatcher, readDispatcher = databaseReadDispatcher)
+    val sessionRepository: SessionRepository = SessionRepository(database, ioDispatcher = databaseDispatcher, clock = logicalClock, readDispatcher = databaseReadDispatcher)
+    val messageRepository: MessageRepository = MessageRepository(database, ioDispatcher = databaseDispatcher, clock = logicalClock, blobStore = blobStore, sessionRepository = sessionRepository, readDispatcher = databaseReadDispatcher)
+    val apiSettingsRepository: ApiSettingsRepository = ApiSettingsRepository(database, apiKeyCipher, databaseDispatcher, clock = logicalClock, readDispatcher = databaseReadDispatcher)
 
     val httpClient: HttpClient = HttpClient {
         install(ContentNegotiation) {
@@ -170,7 +176,10 @@ class AppContainer(driverFactory: DriverFactory) {
                 // Unreferenced blobs (deleted/edited messages) are dropped now
                 // that the store is consistent with the database.
                 withContext(databaseDispatcher) { runBlobGc(database, blobStore) }
-                syncRepository = SyncRepository(database, identity, ioDispatcher = databaseDispatcher, apiKeyCipher = apiKeyCipher, clock = logicalClock, blobStore = blobStore)
+                syncRepository = SyncRepository(database, identity, ioDispatcher = databaseDispatcher, readDispatcher = databaseReadDispatcher, apiKeyCipher = apiKeyCipher, clock = logicalClock, blobStore = blobStore)
+                // Seen conflict events older than the retention window are pure
+                // history; drop them so the table cannot grow forever.
+                syncRepository.pruneOldConflicts()
                 syncService = SyncService(
                     initialIdentity = identity,
                     crypto = SyncCrypto(),

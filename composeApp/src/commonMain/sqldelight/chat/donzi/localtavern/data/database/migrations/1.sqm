@@ -1,9 +1,0 @@
--- v1 -> v2: preserve the full SillyTavern v2 card on import/export round-trips.
--- Round-trip-only fields were previously dropped when a card was re-exported.
-ALTER TABLE CharacterEntity ADD COLUMN systemPrompt TEXT;
-ALTER TABLE CharacterEntity ADD COLUMN postHistoryInstructions TEXT;
-ALTER TABLE CharacterEntity ADD COLUMN creator TEXT;
-ALTER TABLE CharacterEntity ADD COLUMN characterVersion TEXT;
-ALTER TABLE CharacterEntity ADD COLUMN tags TEXT;
-ALTER TABLE CharacterEntity ADD COLUMN extensions TEXT;
-ALTER TABLE CharacterEntity ADD COLUMN characterBook TEXT;

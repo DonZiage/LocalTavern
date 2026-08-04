@@ -25,7 +25,8 @@ class MessageRepository(
     // wiring) disables persistence: images are dropped on write and reads
     // hydrate nothing, but rows and refs stay consistent.
     private val blobStore: BlobStore? = null,
-    private val sessionRepository: SessionRepository
+    private val sessionRepository: SessionRepository,
+    private val readDispatcher: CoroutineDispatcher = ioDispatcher
 ) : BaseRepository(database, clock) {
 
     // Writes every image to the store (content-addressed, deduplicated) and
@@ -49,15 +50,15 @@ class MessageRepository(
             } ?: emptyList()
         )
 
-    suspend fun getMessagesForSession(sessionId: String): List<Message> = withContext(ioDispatcher) {
+    suspend fun getMessagesForSession(sessionId: String): List<Message> = withContext(readDispatcher) {
         queries.selectActiveTimeline(sessionId).executeAsList().map { it.toMessage() }
     }
 
-    suspend fun getAllMessagesForSession(sessionId: String): List<Message> = withContext(ioDispatcher) {
+    suspend fun getAllMessagesForSession(sessionId: String): List<Message> = withContext(readDispatcher) {
         queries.selectAllMessagesForSession(sessionId).executeAsList().map { it.toMessage() }
     }
 
-    suspend fun getMessageSiblings(sessionId: String, parentId: String?): List<Message> = withContext(ioDispatcher) {
+    suspend fun getMessageSiblings(sessionId: String, parentId: String?): List<Message> = withContext(readDispatcher) {
         queries.selectSiblings(sessionId, parentId).executeAsList().map { it.toMessage() }
     }
 

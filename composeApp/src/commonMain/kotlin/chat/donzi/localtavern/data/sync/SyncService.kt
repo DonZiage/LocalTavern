@@ -1,6 +1,7 @@
 package chat.donzi.localtavern.data.sync
 
 import chat.donzi.localtavern.data.blob.BlobStore
+import chat.donzi.localtavern.data.database.ConflictEvent
 import chat.donzi.localtavern.data.database.SyncPeer
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.CancellationException
@@ -197,6 +198,20 @@ class SyncService(
     }
 
     fun observePeers(): Flow<List<SyncPeer>> = repository.observePeers()
+
+    /**
+     * Unseen conflict events: rows where a newer version from a paired device
+     * overwrote a local edit that peer had never seen (last-write-wins). The
+     * records are per-device and never synced; dismissing them marks them
+     * seen.
+     */
+    fun observeConflicts(): Flow<List<ConflictEvent>> = repository.observeUnseenConflicts()
+
+    /** Dismisses specific conflict events (marks them seen). */
+    suspend fun dismissConflicts(ids: List<Long>) = repository.markConflictSeen(ids)
+
+    /** Dismisses every conflict event. */
+    suspend fun dismissAllConflicts() = repository.markAllConflictsSeen()
 
     // ---------- Pairing (delegated) ----------
 

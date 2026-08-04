@@ -322,13 +322,13 @@ private fun MaxPromptCostBanner(connection: ApiConfig) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    "Worst case for one request with the current limits.",
+                    "Estimated worst case for one request — heuristic tokenizer and current list prices, may differ from the actual bill.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                 )
             }
             Text(
-                text = cost?.let { CostEstimator.formatUsd(it.totalUsd) } ?: "—",
+                text = cost?.let { "~${CostEstimator.formatUsd(it.totalUsd)}" } ?: "—",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
