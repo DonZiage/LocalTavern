@@ -26,6 +26,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import chat.donzi.localtavern.ui.PassphrasePolicy
 
 // Values collected by PassphraseDialog. `current` is non-null only when the
 // dialog was opened with requireCurrent (change-passphrase flow); `value` is
@@ -41,13 +42,18 @@ fun PassphraseDialog(
     requireConfirmation: Boolean,
     onDismiss: () -> Unit,
     onConfirm: (PassphraseDialogInput) -> Unit,
-    requireCurrent: Boolean = false
+    requireCurrent: Boolean = false,
+    // When true, the new passphrase must satisfy PassphrasePolicy (used for
+    // every flow that CREATES a passphrase: protect + change). Unlock/remove
+    // flows only verify, so they leave it off.
+    enforcePolicy: Boolean = false
 ) {
     var current by remember { mutableStateOf("") }
     var passphrase by remember { mutableStateOf("") }
     var confirmation by remember { mutableStateOf("") }
     val mismatch = requireConfirmation && confirmation.isNotEmpty() && confirmation != passphrase
-    val canConfirm = passphrase.length >= 6 &&
+    val policyIssue = if (enforcePolicy) PassphrasePolicy.firstIssue(passphrase) else null
+    val canConfirm = (!enforcePolicy || policyIssue == null) &&
         (!requireConfirmation || (confirmation == passphrase)) &&
         (!requireCurrent || current.isNotBlank())
     val submit = { onConfirm(PassphraseDialogInput(current.ifBlank { null }, passphrase)) }
@@ -133,6 +139,33 @@ fun PassphraseDialog(
                                 }
                             }
                     )
+                }
+                if (enforcePolicy) {
+                    val hint = policyIssue?.let { PassphrasePolicy.messageFor(it) }
+                    if (hint != null) {
+                        Text(
+                            hint,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    Column(
+                        modifier = Modifier.widthIn(max = 280.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        PassphrasePolicy.requirements.forEach { requirement ->
+                            Text(
+                                "• $requirement",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Text(
+                            PassphrasePolicy.PASSWORD_MANAGER_TIP,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
         },

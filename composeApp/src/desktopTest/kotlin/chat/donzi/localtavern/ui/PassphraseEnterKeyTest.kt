@@ -77,8 +77,8 @@ class PassphraseEnterKeyTest {
         setContent {
             MaterialTheme { Surface(Modifier) { SecretGate(state) } }
         }
-        onAllNodes(hasSetTextAction())[0].performTextInput("secret123")
-        onAllNodes(hasSetTextAction())[1].performTextInput("secret123")
+        onAllNodes(hasSetTextAction())[0].performTextInput("Saf3-Wolf!")
+        onAllNodes(hasSetTextAction())[1].performTextInput("Saf3-Wolf!")
         onAllNodes(hasSetTextAction())[1].performKeyInput { pressKey(Key.Enter) }
         waitForIdle()
         assertEquals(SecretGateMode.Open, state.mode)
@@ -90,7 +90,7 @@ class PassphraseEnterKeyTest {
         setContent {
             MaterialTheme { Surface(Modifier) { SecretGate(state) } }
         }
-        onAllNodes(hasSetTextAction())[0].performTextInput("secret123")
+        onAllNodes(hasSetTextAction())[0].performTextInput("Saf3-Wolf!")
         onAllNodes(hasSetTextAction())[0].performKeyInput { pressKey(Key.Enter) }
         waitForIdle()
         // Validation cannot pass with an empty confirmation, so Enter must
@@ -156,6 +156,7 @@ class PassphraseEnterKeyTest {
                     confirmLabel = "Set",
                     requireConfirmation = false,
                     requireCurrent = false,
+                    enforcePolicy = true,
                     onDismiss = {},
                     onConfirm = { confirmed = true }
                 )

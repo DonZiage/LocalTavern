@@ -98,8 +98,11 @@ class SyncExchange(
                 val peerPublicKey = peer.publicKey ?: error("Peer has no key; re-pair.")
 
                 // Changes I have not yet sent this peer (this round's batch),
-                // and my received cursor.
-                val myBatch = repository.collectDeltaBatched(peer.peerReceivedCursor, DELTA_BUDGET_BYTES)
+                // and my received cursor. The peer's cursor is clamped against
+                // my sequence space first (saneDeltaCutoff): after this device
+                // restores from an older backup its fresh rows would otherwise
+                // be stamped below the peer's frozen cursor and never shipped.
+                val myBatch = repository.collectDeltaBatched(repository.saneDeltaCutoff(peer.peerReceivedCursor), DELTA_BUDGET_BYTES)
                 val channelKey = channelKeys.outboundChannelKey(peerPublicKey)
                 val exchangeId = freshExchangeId()
                 val envelope = SyncEnvelope(
@@ -260,8 +263,11 @@ class SyncExchange(
             // cut to the same bounded budget: an uncut response would let a
             // peer with a huge library hand this device one giant envelope.
             // The hasMore flag tells the initiator to keep exchanging until
-            // the delta is drained.
-            val myBatch = repository.collectDeltaBatched(envelope.cursor, DELTA_BUDGET_BYTES)
+            // the delta is drained. The initiator's cursor is clamped against
+            // my sequence space first (saneDeltaCutoff): if the initiator
+            // restored from an older backup its cursor is stale-high and would
+            // skip every row this device has written since, permanently.
+            val myBatch = repository.collectDeltaBatched(repository.saneDeltaCutoff(envelope.cursor), DELTA_BUDGET_BYTES)
             val myExchangeKey = channelKeys.outboundChannelKey(peerKey)
             val responseEnvelope = SyncEnvelope(
                 fromDeviceId = identity.deviceId,

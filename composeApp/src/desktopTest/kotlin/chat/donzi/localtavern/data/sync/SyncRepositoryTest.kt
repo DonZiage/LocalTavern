@@ -215,7 +215,7 @@ class SyncRepositoryTest {
     }
 
     @Test
-    fun peerCursors_neverRegress() = runTest {
+    fun peerCursors_storeAnnouncedValuesVerbatim() = runTest {
         val device = newDevice("device-a")
         val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
         device.repo.upsertPeer(
@@ -227,18 +227,74 @@ class SyncRepositoryTest {
         )
         device.repo.updatePeerCursors("peer-1", receivedCursor = 100L, peerReceivedCursor = 200L)
 
-        // A peer restored from a backup (or a lost race) claims lower cursors;
-        // the stored values must not move backwards.
+        // A peer that restored from an older backup announces lower cursors
+        // (its database genuinely has less). The announcement is authoritative:
+        // refusing the regression would freeze its cursor above this device's
+        // re-stamped rows and starve the sync forever (saneDeltaCutoff below
+        // makes a stale cutoff safe, so regression never costs correctness).
         device.repo.updatePeerCursors("peer-1", receivedCursor = 0L, peerReceivedCursor = 0L)
         val peer = device.repo.getPeer("peer-1")!!
-        assertEquals(100L, peer.receivedCursor, "receivedCursor must never regress")
-        assertEquals(200L, peer.peerReceivedCursor, "peerReceivedCursor must never regress")
+        assertEquals(0L, peer.receivedCursor, "Announced cursors must be stored verbatim")
+        assertEquals(0L, peer.peerReceivedCursor, "Announced cursors must be stored verbatim")
 
         // Higher values still advance normally.
         device.repo.updatePeerCursors("peer-1", receivedCursor = 150L, peerReceivedCursor = 250L)
         val advanced = device.repo.getPeer("peer-1")!!
         assertEquals(150L, advanced.receivedCursor)
         assertEquals(250L, advanced.peerReceivedCursor)
+    }
+
+    @Test
+    fun saneDeltaCutoff_keepsValidCursors() = runTest {
+        val device = newDevice("device-a")
+        device.insert("p1", "Alice", 1000L) // seq 1
+        device.insert("p2", "Bob", 2000L)   // seq 2
+
+        // A cursor of maxSeq + 1 is the exact, normal post-sync state.
+        assertEquals(3L, device.repo.saneDeltaCutoff(3L))
+        // Older cutoffs are untouched too (they just re-send more).
+        assertEquals(0L, device.repo.saneDeltaCutoff(0L))
+        assertEquals(1L, device.repo.saneDeltaCutoff(1L))
+    }
+
+    @Test
+    fun saneDeltaCutoff_resetsCursorBeyondSequenceSpace() = runTest {
+        val device = newDevice("device-a")
+        device.insert("p1", "Alice", 1000L) // seq 1
+        device.insert("p2", "Bob", 2000L)   // seq 2
+
+        // Nothing in this device's space is at/above 999: the cursor can only
+        // predate a database restore, so the cutoff is reset to 0.
+        assertEquals(0L, device.repo.saneDeltaCutoff(999L))
+        assertEquals(0L, device.repo.saneDeltaCutoff(Long.MAX_VALUE))
+    }
+
+    @Test
+    fun restoreFromBackup_stalePeerCursorStillForwardsRows() = runTest {
+        val device = newDevice("device-a")
+        device.insert("p1", "Alice", 1000L) // seq 1
+        device.insert("p2", "Bob", 2000L)   // seq 2
+
+        // The peer had consumed everything (cursor 999) before this device
+        // restored an older backup. The backup also rewound AppSettings
+        // (lastSyncSeq is part of the restored data), so rows written after
+        // the restore get LOW sequences — all of them below the stale cursor.
+        device.db.localTavernDBQueries.updateLastSyncSeq(0L)
+        device.insert("p3", "Carol", 3000L) // seq 1 again (post-restore)
+
+        // The exact cutoff would ship nothing (every row sits below 999): the
+        // clamped cutoff re-sends the whole library once, and the peer's
+        // cursor re-advances past the batch on the next exchange. (Order is
+        // sequence order; the post-restore row shares seq 1 with the first
+        // restored row, so compare as a set.)
+        val cutoff = device.repo.saneDeltaCutoff(999L)
+        assertEquals(0L, cutoff)
+        val delta = device.repo.collectDeltaBatched(cutoff, Long.MAX_VALUE).changes
+        assertEquals(
+            setOf("Alice", "Bob", "Carol"),
+            delta.personas.map { it.name }.toSet(),
+            "Rows stamped below a stale peer cursor must still be forwarded"
+        )
     }
 
     @Test

@@ -544,6 +544,22 @@ SELECT * FROM ApiConnection WHERE syncSeq >= ? ORDER BY syncSeq ASC;
 selectPromptBlockDeltas:
 SELECT * FROM PromptBlockEntity WHERE syncSeq >= ? ORDER BY syncSeq ASC;
 
+-- Highest device-local sync sequence across every synced table (tombstones
+-- included: they carry sequences too). Cursors are stored as maxSeq + 1, so
+-- this is the ceiling any peer cursor may legitimately reach; a cursor above
+-- it can only mean the sequence space was rewound (database restore from an
+-- older backup), and the delta cut must then be reset (see
+-- SyncRepository.saneDeltaCutoff). COALESCE: all tables empty -> 0.
+selectMaxSyncSeq:
+SELECT COALESCE(MAX(m), 0) FROM (
+    SELECT MAX(syncSeq) AS m FROM CharacterEntity
+    UNION ALL SELECT MAX(syncSeq) FROM PersonaEntity
+    UNION ALL SELECT MAX(syncSeq) FROM ChatSession
+    UNION ALL SELECT MAX(syncSeq) FROM MessageEntity
+    UNION ALL SELECT MAX(syncSeq) FROM ApiConnection
+    UNION ALL SELECT MAX(syncSeq) FROM PromptBlockEntity
+);
+
 -- ==========================================
 -- Sync upserts (full-row writes, LWW resolved in code)
 -- ==========================================

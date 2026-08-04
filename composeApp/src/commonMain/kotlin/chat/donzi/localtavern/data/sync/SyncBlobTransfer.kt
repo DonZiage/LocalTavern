@@ -172,6 +172,23 @@ class SyncBlobTransfer(
                         // Empty blob or offset past the end: nothing to store.
                         refIndex = pending.size
                         break
+                    } else {
+                        // Empty data claiming more chunks: a protocol violation.
+                        // A well-behaved peer either sends bytes or reports the
+                        // ref done/missing (see handleBlobFetch: offset past the
+                        // end yields data="" with hasMore=false), so an empty
+                        // chunk with hasMore=true could never terminate — it is
+                        // exactly how a buggy or hostile peer would drive this
+                        // loop forever. Abandon the remaining refs.
+                        refIndex = pending.size
+                        break
+                    }
+                    if (offset >= MAX_FETCH_BYTES_PER_REF) {
+                        // Hard cap on the offset space as well as the chunk
+                        // count: even a peer that never sends a byte cannot
+                        // keep this loop iterating past the 64 MB mark.
+                        refIndex = pending.size
+                        break
                     }
                     offset += CHUNK_BYTES
                     doneBytes += minOf(CHUNK_BYTES.toLong(), (finalSize - (offset - CHUNK_BYTES)).coerceAtLeast(0).toLong())

@@ -97,6 +97,14 @@ class ApiSettingsRepository(
         reasoningOverride = connection.reasoningOverride
     )
 
+    /**
+     * Updates a connection; returns true when the provided key is stored as
+     * intended, false when a NEW key could not be stored (encryption failed
+     * while the backend claims protection). The row is still updated with the
+     * previous stored key in that case — never plaintext, never wiped — but
+     * the caller MUST surface the failure: silently keeping the old key while
+     * the UI claims the new one was saved would discard user input.
+     */
     suspend fun updateApiConnection(
         id: String, provider: String, name: String, baseUrl: String?, apiKey: String?, model: String?,
         inferenceProvider: String? = null,
@@ -105,7 +113,7 @@ class ApiSettingsRepository(
         topP: Double, topK: Long, presencePenalty: Double, frequencyPenalty: Double, contextLimit: Long,
         responseLimit: Long, displayOrder: Long, timeoutLimit: Long,
         reasoningOverride: Int = 0
-    ) = withContext(ioDispatcher) {
+    ): Boolean = withContext(ioDispatcher) {
         val now = currentTimeMillis()
         val ts = nextTimestamp()
         // A stored key that is unchanged (or unreadable while locked) must be
@@ -116,7 +124,8 @@ class ApiSettingsRepository(
         // null would wipe the key.
         val storedRow = queries.selectApiConnectionById(id).executeAsOneOrNull()
         val storedKey = storedRow?.apiKey
-        val finalKey = if (apiKey == null || apiKey == apiKeyCipher.decryptFromStorage(storedKey)) {
+        val keyChanged = apiKey != null && apiKey != apiKeyCipher.decryptFromStorage(storedKey)
+        val finalKey = if (!keyChanged) {
             storedKey
         } else {
             apiKeyCipher.encryptForStorage(apiKey) ?: storedKey
@@ -149,6 +158,7 @@ class ApiSettingsRepository(
                 queries.updateApiConnectionLastUsed(lastUsed = lastUsed ?: now, updatedAt = ts, syncSeq = seq, id = id)
             }
         }
+        !keyChanged || finalKey != storedKey
     }
 
     // Re-encrypts every stored API key with the current crypto state. Called

@@ -167,10 +167,11 @@ fun SecuritySettingsSection(
     if (showChangeDialog) {
         PassphraseDialog(
             title = "Change Passphrase",
-            message = "Enter your current passphrase, then choose a new one. All API keys are re-encrypted with the new key; the old passphrase stops working immediately.",
+            message = "Enter your current passphrase, then choose a new one. All API keys are re-encrypted with the new key; the old passphrase stops working immediately. Store the new one in your password manager.",
             confirmLabel = "Change",
             requireConfirmation = true,
             requireCurrent = true,
+            enforcePolicy = true,
             onDismiss = { showChangeDialog = false },
             onConfirm = { input ->
                 val current = input.current ?: ""

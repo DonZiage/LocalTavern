@@ -118,8 +118,8 @@ private fun SetupContent(state: SecretGateState) {
     val firstFieldFocus = remember { FocusRequester() }
     var passphrase by remember { mutableStateOf("") }
     var confirmation by remember { mutableStateOf("") }
-    val canSubmit = passphrase.length >= SecretGateState.MIN_PASSPHRASE_LENGTH &&
-        confirmation == passphrase && !state.busy
+    val valid = PassphrasePolicy.isValid(passphrase)
+    val canSubmit = valid && confirmation == passphrase && !state.busy
 
     // Desktop users type straight away: focus the passphrase field on entry.
     LaunchedEffect(Unit) { firstFieldFocus.requestFocus() }
@@ -188,7 +188,20 @@ private fun SetupContent(state: SecretGateState) {
                 }
             }
     )
-    GateError(state.error)
+    if (state.error != null) {
+        Text(
+            state.error!!,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error
+        )
+    } else if (passphrase.isNotEmpty() && !valid) {
+        Text(
+            PassphrasePolicy.messageFor(PassphrasePolicy.firstIssue(passphrase)!!),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error
+        )
+    }
+    PassphraseRequirements()
 
     Button(
         onClick = { scope.launch { state.submitSetup(passphrase, confirmation) } },
@@ -200,6 +213,31 @@ private fun SetupContent(state: SecretGateState) {
         } else {
             Text("Protect & Continue")
         }
+    }
+}
+
+// Compact requirements + password-manager tip shown under the passphrase
+// fields wherever a NEW passphrase is created.
+@Composable
+private fun PassphraseRequirements() {
+    Column(
+        modifier = Modifier.widthIn(max = 300.dp),
+        horizontalAlignment = Alignment.Start,
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        PassphrasePolicy.requirements.forEach { requirement ->
+            Text(
+                "• $requirement",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Text(
+            PassphrasePolicy.PASSWORD_MANAGER_TIP,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp)
+        )
     }
 }
 

@@ -35,6 +35,10 @@ fun ApiConnectionSettings(
     // when the decision is most relevant.
     var showPassphraseNudge by remember { mutableStateOf(false) }
     var showProtectDialog by remember { mutableStateOf(false) }
+    // A key the user typed could not be encrypted/stored (security store
+    // unavailable while protection is configured). The dialog stays open so
+    // the input is not lost; this alert explains why nothing was saved.
+    var keySaveError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(refreshTrigger) {
         connections = apiSettingsRepository.getAllApiConnections()
@@ -132,6 +136,15 @@ fun ApiConnectionSettings(
             onDismiss = { showAddDialog = false },
             onSave = { name, baseUrl, apiKey, model, inferenceProvider, quantization ->
                 scope.launch {
+                    // A new key cannot be encrypted while the security store
+                    // is unavailable (lost keystore/keychain key, corrupt
+                    // passphrase file): inserting would store a keyless row
+                    // and the typed key would silently vanish. Refuse the
+                    // save instead and let the user retry after a restart.
+                    if (apiKey.isNotBlank() && apiKeyCipher.isProtected && !apiKeyCipher.isAvailable) {
+                        keySaveError = "Your API key could not be encrypted and was not saved: the security store is unavailable. Restart the app and try again."
+                        return@launch
+                    }
                     // The repository derives the active flag and display order
                     // from fresh DB state, so a stale UI list cannot wrongly
                     // activate the new connection or collide on ordering.
@@ -168,7 +181,7 @@ fun ApiConnectionSettings(
             onDismiss = { editingConnection = null },
             onSave = { name, baseUrl, apiKey, model, inferenceProvider, quantization ->
                 scope.launch {
-                    apiSettingsRepository.updateApiConnection(
+                    val stored = apiSettingsRepository.updateApiConnection(
                         id = connectionToEdit.id,
                         provider = ProviderCatalog.detectProviderFromBaseUrl(baseUrl),
                         name = name,
@@ -189,6 +202,15 @@ fun ApiConnectionSettings(
                         displayOrder = connectionToEdit.displayOrder,
                         timeoutLimit = connectionToEdit.timeoutLimit
                     )
+                    if (!stored) {
+                        // The row was updated but the NEW key could not be
+                        // encrypted, so the previous key was kept. Never let
+                        // the dialog close silently: the typed key would be
+                        // lost and the UI would claim a save that did not
+                        // happen. The dialog stays open with the input intact.
+                        keySaveError = "Your new API key could not be encrypted and was not saved: the security store is unavailable. Restart the app and try again."
+                        return@launch
+                    }
                     editingConnection = null
                     refreshTrigger++
                     onApiChanged()
@@ -226,9 +248,10 @@ fun ApiConnectionSettings(
     if (showProtectDialog) {
         PassphraseDialog(
             title = "Protect API Keys",
-            message = "Keys will be encrypted with a passphrase-derived key. Remember the passphrase — without it the keys cannot be recovered.",
+            message = "Keys will be encrypted with a passphrase-derived key. Remember the passphrase — without it the keys cannot be recovered. Store it in your password manager.",
             confirmLabel = "Protect",
             requireConfirmation = true,
+            enforcePolicy = true,
             onDismiss = { showProtectDialog = false },
             onConfirm = { input ->
                 scope.launch {
@@ -243,6 +266,17 @@ fun ApiConnectionSettings(
                     refreshTrigger++
                     onApiChanged()
                 }
+            }
+        )
+    }
+
+    keySaveError?.let { message ->
+        AlertDialog(
+            onDismissRequest = { keySaveError = null },
+            title = { Text("API key not saved") },
+            text = { Text(message) },
+            confirmButton = {
+                TextButton(onClick = { keySaveError = null }) { Text("OK") }
             }
         )
     }

@@ -142,7 +142,30 @@ class SecretGateStateTest {
 
             state.submitSetup("abc", "abc")
             assertEquals(SecretGateMode.Setup, state.mode, "A short passphrase must be rejected")
-            assertEquals("Passphrase must be at least 6 characters.", state.error)
+            assertEquals("Passphrase must be at least 8 characters.", state.error)
+            assertEquals(0, protectedCalled)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun setupRejectsWeakPassphrase() = runTest {
+        val dir = tempDir()
+        try {
+            var protectedCalled = 0
+            val state = SecretGateState(
+                ApiKeyCipher(DesktopPassphraseSecretCrypto(dir)),
+                FakeUserAuthenticator(isLockConfigured = false),
+                onProtected = { protectedCalled++ }
+            )
+            assertEquals(SecretGateMode.Setup, state.mode)
+
+            // Meets the old 6-char length rule but fails the composition and
+            // digit rules ("correct horse" has no uppercase, digit or symbol).
+            state.submitSetup("correct horse", "correct horse")
+            assertEquals(SecretGateMode.Setup, state.mode, "A weak passphrase must be rejected by the policy")
+            assertEquals("Passphrase must contain at least one uppercase letter.", state.error)
             assertEquals(0, protectedCalled)
         } finally {
             dir.deleteRecursively()
@@ -159,7 +182,7 @@ class SecretGateStateTest {
                 FakeUserAuthenticator(isLockConfigured = false),
                 onProtected = { protectedCalled++ }
             )
-            state.submitSetup("correct horse", "different")
+            state.submitSetup("Saf3-Wolf!", "different")
             assertEquals(SecretGateMode.Setup, state.mode)
             assertEquals("Passphrases do not match.", state.error)
             assertEquals(0, protectedCalled)
@@ -178,7 +201,7 @@ class SecretGateStateTest {
                 FakeUserAuthenticator(isLockConfigured = false),
                 onProtected = { protectedCalled++ }
             )
-            state.submitSetup("correct horse", "correct horse")
+            state.submitSetup("Saf3-Wolf!", "Saf3-Wolf!")
             assertEquals(SecretGateMode.Open, state.mode, "A valid setup must open the gate")
             assertEquals(1, protectedCalled, "Existing keys must be re-encrypted after protect")
             assertNull(state.error)

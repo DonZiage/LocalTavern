@@ -141,7 +141,6 @@ class GenerationRunner(
             // deadline, while a stalled stream (long silence with no tokens)
             // still surfaces a timeout.
             val timeoutDuration = if (timeoutLimitSeconds <= 0L) null else timeoutLimitSeconds.seconds
-            var lastTokenAt = TimeSource.Monotonic.markNow()
 
             // Reasoning mode: override wins, otherwise auto-detect from the
             // model name (o-series, R1, reasoner, ...).
@@ -150,6 +149,21 @@ class GenerationRunner(
                 2 -> false
                 else -> isReasoningModel(activeConnection.model)
             }
+
+            // Before the FIRST token, a longer grace applies: reasoning models
+            // legitimately "think" in silence for minutes (Anthropic extended
+            // thinking, R1-style) before emitting anything, and the idle timer
+            // below would otherwise kill them at the plain timeout. The
+            // transport-level socket timeout (ChatClient.applySocketTimeout)
+            // still bounds a genuinely dead connection; this only stops the
+            // app-level timer from firing during a silent-but-working phase.
+            // Once the first token flows, the idle-restart semantics take over
+            // unchanged (a mid-stream stall is still a timeout).
+            val firstTokenTimeout: Duration = timeoutDuration?.let {
+                if (reasoningEnabled) it * 4 else it * 2
+            } ?: Duration.ZERO
+            var lastTokenAt = TimeSource.Monotonic.markNow()
+            var hasFirstToken = false
             val isAnthropic = apiStyleForProvider(activeConnection.provider, activeConnection.baseUrl) == chat.donzi.localtavern.data.network.ApiStyle.Anthropic
             val effectiveResponseLimit = activeConnection.responseLimit.takeIf { it > 0 } ?: 8192L
 
@@ -205,12 +219,13 @@ class GenerationRunner(
                         tokenChannel.receiveCatching()
                     } else {
                         val elapsedSinceLastToken = lastTokenAt.elapsedNow()
-                        if (elapsedSinceLastToken >= timeoutDuration) {
+                        val deadline = if (hasFirstToken) timeoutDuration else firstTokenTimeout
+                        if (elapsedSinceLastToken >= deadline) {
                             // Force the timeout so the partial response is kept
                             // with a warning.
                             withTimeout(Duration.ZERO) { tokenChannel.receiveCatching() }
                         } else {
-                            withTimeout(timeoutDuration - elapsedSinceLastToken) { tokenChannel.receiveCatching() }
+                            withTimeout(deadline - elapsedSinceLastToken) { tokenChannel.receiveCatching() }
                         }
                     }
 
@@ -226,6 +241,7 @@ class GenerationRunner(
 
                     // Any progress resets the idle timer.
                     lastTokenAt = TimeSource.Monotonic.markNow()
+                    hasFirstToken = true
                     chunk.content?.let { responseBuilder.append(it) }
                     chunk.reasoning?.let { reasoningBuilder.append(it) }
 

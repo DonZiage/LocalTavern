@@ -97,21 +97,48 @@ class SyncRepository(
         queries.updateSyncPeerName(name = name, updatedAt = currentTimeMillis(), deviceId = deviceId)
     }
 
+    /**
+     * Updates a peer's cursors after an exchange.
+     *
+     * Cursors are announcements, not high-water marks: [receivedCursor] is
+     * this device's own cursor into the peer's sequence space, and
+     * [peerReceivedCursor] is the peer's announced cursor into THIS device's
+     * space. Both are taken verbatim — a regression is not "corrected" here,
+     * because the peer is authoritative about what it has consumed, and a
+     * refused regression is exactly what starves a peer that restored from an
+     * older backup (its re-stamped rows would sit below the frozen cursor and
+     * never be forwarded). Stale cutoffs are safe: SyncExchange clamps every
+     * cutoff against this device's actual sequence space (saneDeltaCutoff),
+     * and a re-send is idempotent LWW.
+     */
     suspend fun updatePeerCursors(deviceId: String, receivedCursor: Long, peerReceivedCursor: Long) = withContext(ioDispatcher) {
-        // Cursors must never regress: a peer that restores from a backup (or a
-        // concurrent sync that lost a race) could otherwise send a lower value
-        // and force this device to re-send its whole history on every sync.
-        val existing = queries.selectSyncPeer(deviceId).executeAsOneOrNull()
-        val effReceived = maxOf(receivedCursor, existing?.receivedCursor ?: 0L)
-        val effPeerReceived = maxOf(peerReceivedCursor, existing?.peerReceivedCursor ?: 0L)
         val now = currentTimeMillis()
         queries.updateSyncPeerCursors(
-            receivedCursor = effReceived,
-            peerReceivedCursor = effPeerReceived,
+            receivedCursor = receivedCursor,
+            peerReceivedCursor = peerReceivedCursor,
             lastSyncAt = now,
             updatedAt = now,
             deviceId = deviceId
         )
+    }
+
+    /**
+     * Makes a peer's delta cutoff sane against this device's sequence space.
+     *
+     * Cursors are stored as `maxSeq + 1` and sequences are strictly monotone
+     * while the database lives, so a cutoff above `maxSeq + 1` cannot happen
+     * in normal operation — it only appears when this device's sequence space
+     * was rewound by restoring a database from an older backup. In that case
+     * every row the peer already consumed has been replaced by older rows with
+     * new low sequences, and the exact cutoff would silently skip them all
+     * (rows would be stamped below the cursor forever, no matter their LWW
+     * timestamps). Resetting the cutoff to 0 re-sends everything once; the
+     * peer re-advances its cursor from the batch's max sequence and normal
+     * exact-cut behavior resumes.
+     */
+    suspend fun saneDeltaCutoff(cursor: Long): Long = withContext(ioDispatcher) {
+        val maxSeq = queries.selectMaxSyncSeq().executeAsOne()
+        if (cursor > maxSeq + 1) 0L else cursor
     }
 
     suspend fun deletePeer(deviceId: String) = withContext(ioDispatcher) {

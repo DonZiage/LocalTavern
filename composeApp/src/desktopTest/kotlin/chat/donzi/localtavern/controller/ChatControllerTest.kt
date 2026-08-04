@@ -11,6 +11,7 @@ import chat.donzi.localtavern.domain.Persona
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockEngineConfig
+import io.ktor.client.engine.mock.MockRequestHandler
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.HttpHeaders
@@ -18,10 +19,14 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.utils.io.ByteChannel
 import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
@@ -35,6 +40,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ChatControllerTest {
@@ -72,6 +78,46 @@ class ChatControllerTest {
                             ignoreUnknownKeys = true
                             isLenient = true
                         })
+                    }
+                }
+            ),
+            scope = CoroutineScope(testDispatcher + SupervisorJob()),
+            payloadDispatcher = testDispatcher
+        )
+        return controller to db
+    }
+
+    // Like newController, but with a fully custom MockEngine handler (timing,
+    // multi-chunk bodies, per-request behavior) and configurable connection
+    // model/timeout.
+    private suspend fun TestScope.newControllerWithEngine(
+        model: String = "model",
+        timeoutLimit: Long = 60L,
+        handler: MockRequestHandler
+    ): Pair<ChatController, TestDb> {
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        val db = TestDb()
+        val (sessionRepository, messageRepository) = newRepos(db, testDispatcher)
+        val apiSettingsRepository = ApiSettingsRepository(db.database, chat.donzi.localtavern.data.security.ApiKeyCipher(chat.donzi.localtavern.data.security.TestSecretCrypto()), testDispatcher)
+        apiSettingsRepository.insertApiConnection(
+            provider = "test", name = "Test", baseUrl = "https://example.com",
+            apiKey = "key", model = model, isActive = true, timeoutLimit = timeoutLimit
+        )
+        val controller = ChatController(
+            sessionRepository = sessionRepository,
+            messageRepository = messageRepository,
+            apiSettingsRepository = apiSettingsRepository,
+            chatClient = ChatClient(
+                HttpClient(
+                    MockEngine(
+                        MockEngineConfig().apply {
+                            dispatcher = testDispatcher
+                            addHandler(handler)
+                        }
+                    )
+                ) {
+                    install(ContentNegotiation) {
+                        json(Json { ignoreUnknownKeys = true; isLenient = true })
                     }
                 }
             ),
@@ -1102,5 +1148,149 @@ data: [DONE]
             "Partial tokens of a truncated stream must be kept, not deleted")
         assertEquals("Response stream ended before completion.", controller.state.value.errorMessage)
         assertFalse(controller.state.value.errorIsWarning)
+    }
+
+    @Test
+    fun silentFirstToken_reasoningModel_survivesIdleTimeoutGrace() = runTest {
+        // A reasoning model that thinks in silence for 30 s before its first
+        // token, with a 10 s connection timeout. The first-token grace (4x for
+        // reasoning models) must outlast the silence; the old idle timer fired
+        // at 10 s and killed the stream mid-thinking.
+        val (controller, db) = newControllerWithEngine(model = "deepseek-r1", timeoutLimit = 10L) {
+            delay(30_000)
+            respond(
+                content = ByteReadChannel(
+                    """data: {"choices":[{"delta":{"content":"Hello there"}}]}
+
+data: [DONE]
+
+"""
+                ),
+                status = HttpStatusCode.OK,
+                headers = headersOf(HttpHeaders.ContentType, "text/event-stream")
+            )
+        }
+        val seed = seedSession(db)
+
+        controller.refresh(seed.sessionId)
+        testScheduler.advanceUntilIdle()
+
+        controller.requestAiResponse(seed.sessionId, CHARACTER, PERSONA, seed.userId)
+        testScheduler.advanceUntilIdle()
+
+        assertEquals("Hello there", controller.state.value.messages.lastOrNull()?.content,
+            "A silent thinking phase must not be killed by the idle timeout")
+        assertNull(controller.state.value.errorMessage)
+    }
+
+    @Test
+    fun silentFirstToken_plainModel_survivesShorterGrace() = runTest {
+        // Non-reasoning models get a 2x first-token grace: 15 s of silence
+        // with a 10 s timeout is past the plain idle timeout but within the
+        // grace, so the stream must still complete.
+        val (controller, db) = newControllerWithEngine(model = "gpt-4o", timeoutLimit = 10L) {
+            delay(15_000)
+            respond(
+                content = ByteReadChannel(
+                    """data: {"choices":[{"delta":{"content":"Hello there"}}]}
+
+data: [DONE]
+
+"""
+                ),
+                status = HttpStatusCode.OK,
+                headers = headersOf(HttpHeaders.ContentType, "text/event-stream")
+            )
+        }
+        val seed = seedSession(db)
+
+        controller.refresh(seed.sessionId)
+        testScheduler.advanceUntilIdle()
+
+        controller.requestAiResponse(seed.sessionId, CHARACTER, PERSONA, seed.userId)
+        testScheduler.advanceUntilIdle()
+
+        assertEquals("Hello there", controller.state.value.messages.lastOrNull()?.content)
+        assertNull(controller.state.value.errorMessage)
+    }
+
+    @Test
+    fun silentFirstToken_beyondGrace_stillTimesOut() = runTest {
+        // The grace is not unlimited: silence past the 2x first-token budget
+        // (25 s grace vs 30 s of silence, 10 s timeout) must still surface a
+        // timeout.
+        val (controller, db) = newControllerWithEngine(model = "gpt-4o", timeoutLimit = 10L) {
+            delay(30_000)
+            respond(
+                content = ByteReadChannel(
+                    """data: {"choices":[{"delta":{"content":"Hello there"}}]}
+
+data: [DONE]
+
+"""
+                ),
+                status = HttpStatusCode.OK,
+                headers = headersOf(HttpHeaders.ContentType, "text/event-stream")
+            )
+        }
+        val seed = seedSession(db)
+
+        controller.refresh(seed.sessionId)
+        testScheduler.advanceUntilIdle()
+
+        controller.requestAiResponse(seed.sessionId, CHARACTER, PERSONA, seed.userId)
+        testScheduler.advanceUntilIdle()
+
+        assertEquals("Response timeout exceeded.", controller.state.value.errorMessage,
+            "Silence beyond the first-token grace must still time out")
+        assertTrue(controller.state.value.errorIsWarning)
+    }
+
+    @Test
+    fun midStreamStall_afterFirstToken_stillTimesOut() = runTest {
+        // The grace applies to the first token only: once tokens flow, a
+        // stall must be killed at the plain idle timeout even on reasoning
+        // models.
+        val (controller, db) = newControllerWithEngine(model = "deepseek-r1", timeoutLimit = 10L) {
+            // Stream one token immediately, then go silent for 30 s before
+            // finishing the stream.
+            val producerScope = CoroutineScope(coroutineContext + SupervisorJob())
+            val channel = ByteChannel()
+            producerScope.launch {
+                // The runner cancels the stream at the timeout, which closes
+                // the channel mid-silence; the trailing write then fails and
+                // is expected, so it must not crash the producer.
+                runCatching {
+                    channel.writeFully(
+                        """data: {"choices":[{"delta":{"content":"Hello"}}]}
+
+""".encodeToByteArray()
+                    )
+                    channel.flush()
+                    delay(30_000)
+                    channel.writeFully("data: [DONE]\n\n".encodeToByteArray())
+                    channel.flush()
+                    channel.close()
+                }
+            }
+            respond(
+                content = channel,
+                status = HttpStatusCode.OK,
+                headers = headersOf(HttpHeaders.ContentType, "text/event-stream")
+            )
+        }
+        val seed = seedSession(db)
+
+        controller.refresh(seed.sessionId)
+        testScheduler.advanceUntilIdle()
+
+        controller.requestAiResponse(seed.sessionId, CHARACTER, PERSONA, seed.userId)
+        testScheduler.advanceUntilIdle()
+
+        val (_, messageRepository) = seed.sessionRepository to seed.messageRepository
+        assertEquals("Hello", messageRepository.getMessagesForSession(seed.sessionId).last().content,
+            "The partial response must be kept with a warning")
+        assertEquals("Response timeout exceeded.", controller.state.value.errorMessage)
+        assertTrue(controller.state.value.errorIsWarning)
     }
 }

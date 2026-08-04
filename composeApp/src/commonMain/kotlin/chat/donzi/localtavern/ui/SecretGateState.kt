@@ -56,6 +56,9 @@ class SecretGateState(
 
     companion object {
         const val MAX_ATTEMPTS = 5
+        // Legacy constant kept for callers that displayed the old 6-char
+        // rule; the actual policy lives in PassphrasePolicy.
+        @Deprecated("Use PassphrasePolicy.MIN_LENGTH")
         const val MIN_PASSPHRASE_LENGTH = 6
     }
 
@@ -78,15 +81,20 @@ class SecretGateState(
 
     // First-run setup: derive a key from the passphrase, persist the
     // protection file, then re-encrypt any existing plaintext API keys under
-    // the new key so nothing stays on disk unprotected.
+    // the new key so nothing stays on disk unprotected. The passphrase must
+    // satisfy the full strength policy (see PassphrasePolicy) before the
+    // backend is touched.
     suspend fun submitSetup(passphrase: String, confirmation: String) {
         error = null
         when {
-            passphrase.length < MIN_PASSPHRASE_LENGTH ->
-                error = "Passphrase must be at least $MIN_PASSPHRASE_LENGTH characters."
             passphrase != confirmation ->
                 error = "Passphrases do not match."
             else -> {
+                val issue = PassphrasePolicy.firstIssue(passphrase)
+                if (issue != null) {
+                    error = PassphrasePolicy.messageFor(issue)
+                    return
+                }
                 busy = true
                 try {
                     apiKeyCipher.protect(passphrase)
