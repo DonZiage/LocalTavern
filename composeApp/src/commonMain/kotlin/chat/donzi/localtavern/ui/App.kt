@@ -1,4 +1,7 @@
 package chat.donzi.localtavern.ui
+import chat.donzi.localtavern.ui.layout.MainScreenDependencies
+import chat.donzi.localtavern.ui.layout.MainScreen
+import chat.donzi.localtavern.ui.layout.ActiveDrawer
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -17,7 +20,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.controller.AppContainer
 import chat.donzi.localtavern.data.database.DriverFactory
-import chat.donzi.localtavern.ui.components.ActiveDrawer
 import chat.donzi.localtavern.ui.theme.LocalTavernTheme
 import chat.donzi.localtavern.ui.theme.ThemeTransition
 
