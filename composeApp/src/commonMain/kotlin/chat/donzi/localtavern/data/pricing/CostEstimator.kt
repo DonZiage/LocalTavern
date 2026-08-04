@@ -17,6 +17,13 @@ data class CostEstimate(
 
 object CostEstimator {
 
+    // A "Max prompt cost" needs concrete token counts. When a connection runs
+    // with an unlimited context (0) the app clamps it to 1M tokens, and an
+    // unlimited response is proxied as 8192 tokens by the generation runner —
+    // mirror those app-wide bounds so the ceiling stays finite and honest.
+    private const val UNBOUNDED_CONTEXT_TOKENS = 1_000_000L
+    private const val UNBOUNDED_RESPONSE_TOKENS = 8_192L
+
     fun estimate(
         pricing: ModelPricing?,
         inputTokens: Long,
@@ -32,6 +39,22 @@ object CostEstimator {
             outputCostUsd = outputCost,
             totalUsd = inputCost + outputCost
         )
+    }
+
+    // Worst-case cost of one request for the current connection: the whole
+    // context budget filled with prompt tokens plus a full response. Pricing
+    // is resolved automatically — live cloud prices when fetched, the bundled
+    // catalog otherwise — and is null for local models (no price to show).
+    fun estimateMaxPromptCost(
+        provider: String?,
+        model: String?,
+        contextLimit: Long,
+        responseLimit: Long
+    ): CostEstimate? {
+        val pricing = PricingResolver.lookup(provider, model) ?: return null
+        val maxInput = if (contextLimit <= 0L) UNBOUNDED_CONTEXT_TOKENS else contextLimit
+        val maxOutput = if (responseLimit <= 0L) UNBOUNDED_RESPONSE_TOKENS else responseLimit
+        return estimate(pricing, maxInput, maxOutput)
     }
 
     fun estimateWithTokenizer(

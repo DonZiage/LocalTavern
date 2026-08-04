@@ -2,7 +2,6 @@ package chat.donzi.localtavern.controller
 
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.database.MessageRepository
-import chat.donzi.localtavern.data.database.PricingRepository
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.domain.Character
@@ -35,7 +34,6 @@ class ChatController(
     private val sessionRepository: SessionRepository,
     private val messageRepository: MessageRepository,
     private val apiSettingsRepository: ApiSettingsRepository,
-    private val pricingRepository: PricingRepository,
     private val chatClient: ChatClient,
     private val scope: CoroutineScope,
     private val payloadDispatcher: CoroutineDispatcher = Dispatchers.Default
@@ -46,7 +44,6 @@ class ChatController(
     private val generationRunner = GenerationRunner(
         messageRepository = messageRepository,
         apiSettingsRepository = apiSettingsRepository,
-        pricingRepository = pricingRepository,
         chatClient = chatClient,
         scope = scope,
         payloadDispatcher = payloadDispatcher

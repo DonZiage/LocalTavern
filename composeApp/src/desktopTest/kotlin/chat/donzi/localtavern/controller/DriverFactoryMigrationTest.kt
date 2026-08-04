@@ -518,11 +518,12 @@ class DriverFactoryMigrationTest {
                         isActive = 1L, isChatCompletion = 1L, temperature = 1.0, topP = 1.0, topK = 0L,
                         presencePenalty = 0.0, frequencyPenalty = 0.0, contextLimit = 4096L,
                         responseLimit = 0L, displayOrder = 0L, timeoutLimit = 60L,
-                        reasoningOverride = 0L, updatedAt = 2L, syncSeq = 0L, id = "ac1"
+                        reasoningOverride = 0L, chatCompletionMode = 0L, updatedAt = 2L, syncSeq = 0L, id = "ac1"
                     )
                     val updated = database.localTavernDBQueries.selectApiConnectionById("ac1").executeAsOneOrNull()
                     assertEquals("DeepSeek", updated?.inferenceProvider)
                     assertEquals("int8", updated?.quantization)
+                    assertEquals(0L, updated?.chatCompletionMode)
                 } finally {
                     driver.close()
                 }

@@ -1,10 +1,16 @@
 package chat.donzi.localtavern.ui.settings
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.*
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.security.ApiKeyCipher
@@ -100,20 +106,45 @@ fun SecuritySettingsSection(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.height(8.dp))
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+            val currentIndex = autoLockOptions.indexOf(autoLockIdleMinutes)
+                .coerceAtLeast(0)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                autoLockOptions.forEach { minutes ->
-                    FilterChip(
-                        selected = autoLockIdleMinutes == minutes,
-                        onClick = { onAutoLockIdleMinutesChange(minutes) },
-                        label = {
-                            Text(
-                                if (minutes == 0) "Off" else
-                                    if (minutes == 60) "60 min" else "$minutes min"
-                            )
-                        }
+                IconButton(
+                    onClick = { onAutoLockIdleMinutesChange(autoLockOptions[(currentIndex - 1).coerceAtLeast(0)]) },
+                    enabled = currentIndex > 0
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                        contentDescription = "Previous",
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = autoLockLabel(autoLockIdleMinutes),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp)
+                    )
+                }
+                IconButton(
+                    onClick = { onAutoLockIdleMinutesChange(autoLockOptions[(currentIndex + 1).coerceAtMost(autoLockOptions.size - 1)]) },
+                    enabled = currentIndex < autoLockOptions.size - 1
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = "Next",
+                        modifier = Modifier.size(28.dp)
                     )
                 }
             }
@@ -181,4 +212,10 @@ fun SecuritySettingsSection(
             }
         )
     }
+}
+
+private fun autoLockLabel(minutes: Int): String = when (minutes) {
+    0 -> "Off"
+    60 -> "60 min"
+    else -> "$minutes min"
 }

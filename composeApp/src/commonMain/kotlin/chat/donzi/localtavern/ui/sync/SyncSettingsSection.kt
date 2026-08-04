@@ -47,22 +47,8 @@ fun SyncSettingsSection(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
         )
-        Text(
-            text = "Encrypted P2P sync over your local network, with per-session keys and PIN-authenticated pairing. Pair two devices to share characters, chats and settings.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 4.dp)
-        )
 
         Spacer(modifier = Modifier.height(10.dp))
-
-        Text(
-            text = "Pairing is two devices and a PIN: the host shows a QR code, the receiver scans it and types the PIN from the host's screen.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
 
         Button(
             onClick = {
@@ -128,7 +114,7 @@ fun SyncSettingsSection(
         Spacer(modifier = Modifier.height(12.dp))
         Text("Sync Key", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(
-            text = "Rotating generates a fresh device key and invalidates all pairings — re-pair every device afterwards. Do this if a device was lost or compromised.",
+            text = "Invalidates all pairings — re-pair every device afterwards.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 2.dp)

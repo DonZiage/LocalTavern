@@ -70,7 +70,7 @@ class SyncRepositoryTest {
             apiKey = apiKey, model = "gpt-4o", inferenceProvider = null, quantization = null, isActive = isActive, isChatCompletion = 1L,
             lastUsed = 0L, temperature = 1.0, topP = 1.0, topK = 0L, presencePenalty = 0.0,
             frequencyPenalty = 0.0, contextLimit = 4096L, responseLimit = 1024L,
-            displayOrder = 0L, timeoutLimit = 60L, reasoningOverride = 0L,
+            displayOrder = 0L, timeoutLimit = 60L, reasoningOverride = 0L, chatCompletionMode = 0L,
             updatedAt = updatedAt, isDeleted = 0L, syncSeq = 0L
         )
     }

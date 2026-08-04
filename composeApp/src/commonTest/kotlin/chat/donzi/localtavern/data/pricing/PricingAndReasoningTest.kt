@@ -33,10 +33,10 @@ class PricingCatalogTest {
     }
 
     @Test
-    fun lookup_localProviderIsZeroCost() {
-        val price = PricingCatalog.lookup("Ollama", "llama3")
-        assertEquals(0.0, price?.inputPerMillion)
-        assertEquals(0.0, price?.outputPerMillion)
+    fun lookup_localProviderReturnsNull() {
+        // Local inference has no price info at all: lookups must resolve to
+        // null so every cost readout stays hidden for local models.
+        assertNull(PricingCatalog.lookup("Ollama", "llama3"))
     }
 
     @Test
@@ -72,10 +72,33 @@ class PricingCatalogTest {
     }
 
     @Test
-    fun resolve_overrideWinsOverCatalog() {
-        val override = chat.donzi.localtavern.data.database.ModelPricing("OpenAI", "gpt-4o", 9.9, 9.9, "USD")
-        val resolved = PricingCatalog.resolve("OpenAI", "gpt-4o", override)
-        assertEquals(9.9, resolved?.inputPerMillion)
+    fun estimateMaxPromptCost_usesBundledCatalogAndConnectionLimits() {
+        // gpt-4o: $2.50 input / $10.00 output per 1M tokens.
+        val estimate = CostEstimator.estimateMaxPromptCost("OpenAI", "gpt-4o", contextLimit = 100_000, responseLimit = 2_000)
+        assertEquals(0.25, estimate?.inputCostUsd)
+        assertEquals(0.02, estimate?.outputCostUsd)
+        assertEquals(0.27, estimate?.totalUsd)
+    }
+
+    @Test
+    fun estimateMaxPromptCost_unboundedLimitsUseAppBounds() {
+        // 0 context = app-wide 1M-token cap, 0 response = 8192-token proxy.
+        val estimate = CostEstimator.estimateMaxPromptCost("OpenAI", "gpt-4o-mini", contextLimit = 0, responseLimit = 0)
+        assertEquals(1_000_000, estimate?.inputTokens)
+        assertEquals(8_192, estimate?.outputTokens)
+    }
+
+    @Test
+    fun estimateMaxPromptCost_unknownModelReturnsNull() {
+        assertNull(CostEstimator.estimateMaxPromptCost("OpenAI", "not-a-real-model", 1000, 1000))
+        assertNull(CostEstimator.estimateMaxPromptCost("Unknown", "anything", 1000, 1000))
+    }
+
+    @Test
+    fun estimateMaxPromptCost_localProviderReturnsNull() {
+        // No price info for local models: the estimator must return null so
+        // the UI hides the readout entirely.
+        assertNull(CostEstimator.estimateMaxPromptCost("Ollama", "llama3", 100_000, 100_000))
     }
 }
 

@@ -4,7 +4,6 @@ import chat.donzi.localtavern.controller.ChatController
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.database.CharacterRepository
 import chat.donzi.localtavern.data.database.MessageRepository
-import chat.donzi.localtavern.data.database.PricingRepository
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.data.security.ApiKeyCipher
@@ -20,7 +19,6 @@ data class MainScreenDependencies(
     val sessionRepository: SessionRepository,
     val messageRepository: MessageRepository,
     val apiSettingsRepository: ApiSettingsRepository,
-    val pricingRepository: PricingRepository,
     val apiKeyCipher: ApiKeyCipher,
     val syncService: SyncService,
     val syncRepository: SyncRepository,

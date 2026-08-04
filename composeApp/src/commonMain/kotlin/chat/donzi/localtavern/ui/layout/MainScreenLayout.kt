@@ -62,7 +62,6 @@ internal fun DesktopSettingsPanel(
     Box(modifier.width(drawerWidth).fillMaxHeight()) {
         SettingsPanelContent(
             apiSettingsRepository = deps.apiSettingsRepository,
-            pricingRepository = deps.pricingRepository,
             apiKeyCipher = deps.apiKeyCipher,
             syncService = deps.syncService,
             syncRepository = deps.syncRepository,
@@ -265,7 +264,6 @@ internal fun MobilePanels(
         drawerWidth = drawerWidth,
         onClose = { onActiveDrawerChange(ActiveDrawer.None) },
         apiSettingsRepository = deps.apiSettingsRepository,
-        pricingRepository = deps.pricingRepository,
         apiKeyCipher = deps.apiKeyCipher,
         syncService = deps.syncService,
         syncRepository = deps.syncRepository,

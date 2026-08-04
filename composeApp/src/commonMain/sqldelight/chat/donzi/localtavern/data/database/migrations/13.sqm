@@ -1,0 +1,8 @@
+-- v13 -> v14: chat completion mode.
+--
+-- The app now picks /chat/completions vs the legacy /completions endpoint
+-- automatically (Anthropic keeps its own /messages route); this column is an
+-- explicit per-connection override for providers that need the older
+-- endpoint. 0 = auto (default), 1 = force chat completions, 2 = force legacy
+-- completions.
+ALTER TABLE ApiConnection ADD COLUMN chatCompletionMode INTEGER NOT NULL DEFAULT 0;

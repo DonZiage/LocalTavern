@@ -13,7 +13,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -22,13 +21,19 @@ import chat.donzi.localtavern.domain.ApiConfig
 import chat.donzi.localtavern.data.network.ChatClient
 import kotlinx.coroutines.delay
 
+// Model ids often carry a publisher prefix ("openai/gpt-4o", "deepseek/
+// deepseek-chat"); the card shows just the model name.
+private fun displayModel(model: String?): String {
+    if (model.isNullOrBlank()) return "None"
+    return model.substringAfter('/')
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ApiConnectionItem(
     connection: ApiConfig,
     chatClient: ChatClient,
     onToggleActive: () -> Unit,
-    onToggleMode: (Boolean) -> Unit,
     onDelete: () -> Unit,
     onEdit: () -> Unit,
     onCenterRequest: () -> Unit,
@@ -37,7 +42,7 @@ fun ApiConnectionItem(
     var status by remember { mutableStateOf<Boolean?>(null) }
     var retryTrigger by remember { mutableStateOf(0) }
     val cardShape = RoundedCornerShape(12.dp)
-    
+
     LaunchedEffect(connection.id, connection.baseUrl, connection.apiKey, connection.provider, retryTrigger) {
         status = null
         // Local providers (Ollama, LM Studio, KoboldCPP, ...) need no API key,
@@ -53,13 +58,13 @@ fun ApiConnectionItem(
         modifier = modifier.clip(cardShape),
         shape = cardShape,
         colors = CardDefaults.cardColors(
-            containerColor = if (connection.isActive) 
-                MaterialTheme.colorScheme.primaryContainer 
-            else 
+            containerColor = if (connection.isActive)
+                MaterialTheme.colorScheme.primaryContainer
+            else
                 MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxSize()
                 .clip(cardShape)
@@ -67,112 +72,54 @@ fun ApiConnectionItem(
                     onToggleActive()
                     onCenterRequest()
                 }
-                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                StatusIndicator(
-                    status,
-                    modifier = Modifier
-                        .size(32.dp)
-                        .clickable { retryTrigger++ }
-                        .padding(8.dp)
-                        .clip(CircleShape),
-                    size = 16.dp
-                )
-                
-                Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
-                    Text(
-                        connection.name, 
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        maxLines = 1, 
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        connection.provider, 
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
-                        Icon(
-                            Icons.Default.Edit, 
-                            contentDescription = "Edit",
-                            modifier = Modifier.size(20.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                        )
-                    }
-                    IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
-                        Icon(
-                            Icons.Default.Delete, 
-                            contentDescription = "Delete", 
-                            modifier = Modifier.size(22.dp),
-                            tint = MaterialTheme.colorScheme.error.copy(alpha = 0.6f)
-                        )
-                    }
-                }
-            }
-            
-            Text(
-                buildString {
-                    append(connection.model ?: "None")
-                    if (!connection.inferenceProvider.isNullOrBlank()) {
-                        val via = connection.inferenceProvider
-                            .split(',')
-                            .map { it.trim() }
-                            .filter { it.isNotEmpty() }
-                            .joinToString(" + ")
-                        append("  ·  via $via")
-                    }
-                    if (!connection.quantization.isNullOrBlank()) {
-                        append("  ·  ${connection.quantization}")
-                    }
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                fontSize = 14.sp,
-                maxLines = 1, 
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 24.dp)
+            StatusIndicator(
+                status,
+                modifier = Modifier
+                    .size(32.dp)
+                    .clickable { retryTrigger++ }
+                    .padding(8.dp)
+                    .clip(CircleShape),
+                size = 16.dp
             )
 
-            val primaryColor = MaterialTheme.colorScheme.primary
-            val primaryContainerColor = MaterialTheme.colorScheme.primaryContainer
-            val uncheckedColor = MaterialTheme.colorScheme.outline
+            Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
+                Text(
+                    connection.name.ifBlank { connection.provider },
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    displayModel(connection.model),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
 
-            Row(
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                verticalAlignment = Alignment.Bottom
-            ) {
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable { onToggleMode(!connection.isChatCompletion) }
-                        .padding(end = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Text", style = MaterialTheme.typography.labelMedium)
-                    Switch(
-                        checked = connection.isChatCompletion,
-                        onCheckedChange = { onToggleMode(it) },
-                        modifier = Modifier.padding(horizontal = 8.dp).scale(0.65f),
-                        thumbContent = { Box(Modifier) },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = primaryColor,
-                            checkedTrackColor = primaryContainerColor,
-                            checkedBorderColor = primaryColor,
-                            uncheckedThumbColor = uncheckedColor,
-                            uncheckedTrackColor = uncheckedColor.copy(alpha = 0.2f),
-                            uncheckedBorderColor = uncheckedColor,
-                        )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        Icons.Default.Edit,
+                        contentDescription = "Edit",
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                     )
-                    Text("Chat", style = MaterialTheme.typography.labelMedium)
+                }
+                IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "Delete",
+                        modifier = Modifier.size(22.dp),
+                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.6f)
+                    )
                 }
             }
         }

@@ -1,17 +1,17 @@
 package chat.donzi.localtavern.controller
 
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
-import chat.donzi.localtavern.data.database.PricingRepository
 import chat.donzi.localtavern.data.database.MessageRepository
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.data.network.GenerationParams
 import chat.donzi.localtavern.data.network.StreamChunk
 import chat.donzi.localtavern.data.network.StreamTruncatedException
 import chat.donzi.localtavern.data.network.apiStyleForProvider
+import chat.donzi.localtavern.data.network.effectiveChatCompletion
 import chat.donzi.localtavern.data.network.isOpenAIEffortModel
 import chat.donzi.localtavern.data.network.isReasoningModel
 import chat.donzi.localtavern.data.pricing.CostEstimator
-import chat.donzi.localtavern.data.pricing.PricingCatalog
+import chat.donzi.localtavern.data.pricing.PricingResolver
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Persona
 import chat.donzi.localtavern.utils.ChatMessage
@@ -50,7 +50,6 @@ import kotlin.time.TimeSource
 class GenerationRunner(
     private val messageRepository: MessageRepository,
     private val apiSettingsRepository: ApiSettingsRepository,
-    private val pricingRepository: PricingRepository,
     private val chatClient: ChatClient,
     private val scope: CoroutineScope,
     private val payloadDispatcher: CoroutineDispatcher = Dispatchers.Default
@@ -128,6 +127,15 @@ class GenerationRunner(
             val timeoutLimitSeconds = activeConnection.timeoutLimit
             val tokenChannel = Channel<StreamChunk>(Channel.UNLIMITED)
 
+            // Chat vs legacy-completions endpoint: the override wins, otherwise
+            // the app decides from the model name and API style.
+            val isChatCompletion = effectiveChatCompletion(
+                activeConnection.chatCompletionMode,
+                activeConnection.model,
+                activeConnection.provider,
+                activeConnection.baseUrl
+            )
+
             // Idle timeout: the deadline restarts on every token, so a
             // continuously streaming response is never killed by a total-stream
             // deadline, while a stalled stream (long silence with no tokens)
@@ -156,15 +164,11 @@ class GenerationRunner(
                 thinkingBudgetTokens = if (reasoningEnabled && isAnthropic) effectiveResponseLimit.coerceAtLeast(1024) else null
             )
 
-            // Resolve pricing once per request: DB override wins, otherwise the
-            // bundled catalog. The model can be null on legacy connections;
-            // estimate() then returns null.
-            val pricingOverride = runCatching {
-                activeConnection.model?.let { model ->
-                    pricingRepository.getPricing(activeConnection.provider, model)
-                }
-            }.getOrNull()
-            val pricing = PricingCatalog.resolve(activeConnection.provider, activeConnection.model, pricingOverride)
+            // Resolve pricing once per request: live cloud prices when
+            // available, bundled catalog as fallback. Local models resolve to
+            // null (no price info), so their estimates stay hidden. The model
+            // can be null on legacy connections; estimate() then returns null.
+            val pricing = PricingResolver.lookup(activeConnection.provider, activeConnection.model)
 
             fun updateLiveCost(outputTokens: Long) {
                 val estimate = CostEstimator.estimate(pricing, inputTokens, outputTokens)
@@ -182,7 +186,7 @@ class GenerationRunner(
                     chatClient.streamChatRequest(
                         baseUrl = activeConnection.baseUrl ?: "", apiKey = activeConnection.apiKey ?: "",
                         model = activeConnection.model ?: "", messages = messagesPayload,
-                        isChatCompletion = activeConnection.isChatCompletion,
+                        isChatCompletion = isChatCompletion,
                         params = generationParams, provider = activeConnection.provider,
                         inferenceProvider = activeConnection.inferenceProvider,
                         quantization = activeConnection.quantization,
@@ -269,7 +273,7 @@ class GenerationRunner(
                         chatClient.sendChatRequest(
                             baseUrl = activeConnection.baseUrl ?: "", apiKey = activeConnection.apiKey ?: "",
                             model = activeConnection.model ?: "", messages = messagesPayload,
-                            isChatCompletion = activeConnection.isChatCompletion, params = generationParams,
+                            isChatCompletion = isChatCompletion, params = generationParams,
                             provider = activeConnection.provider, inferenceProvider = activeConnection.inferenceProvider,
                             quantization = activeConnection.quantization,
                             timeoutSeconds = activeConnection.timeoutLimit

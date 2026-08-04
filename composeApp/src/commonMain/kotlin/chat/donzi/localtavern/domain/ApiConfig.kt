@@ -14,7 +14,9 @@ data class ApiConfig(
     // Null means the endpoint's default quantization.
     val quantization: String? = null,
     val isActive: Boolean,
-    val isChatCompletion: Boolean,
+    // 0 = auto-detect chat vs legacy completions endpoint from the model
+    // name, 1 = force chat completions, 2 = force legacy completions.
+    val chatCompletionMode: Int = 0,
     val lastUsed: Long?,
     val temperature: Double,
     val topP: Double,

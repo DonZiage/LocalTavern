@@ -194,7 +194,6 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
                     sessionRepository = container.sessionRepository,
                     messageRepository = container.messageRepository,
                     apiSettingsRepository = container.apiSettingsRepository,
-                    pricingRepository = container.pricingRepository,
                     apiKeyCipher = container.apiKeyCipher,
                     syncService = container.syncService,
                     syncRepository = container.syncRepository,

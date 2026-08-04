@@ -10,9 +10,10 @@ import chat.donzi.localtavern.data.database.DriverFactory
 import chat.donzi.localtavern.data.database.LocalTavernDB
 import chat.donzi.localtavern.data.database.LogicalClock
 import chat.donzi.localtavern.data.database.MessageRepository
-import chat.donzi.localtavern.data.database.PricingRepository
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.data.network.ChatClient
+import chat.donzi.localtavern.data.pricing.LivePricingCatalog
+import chat.donzi.localtavern.data.pricing.LivePricingFetcher
 import chat.donzi.localtavern.data.security.ApiKeyCipher
 import chat.donzi.localtavern.data.security.createSecretCrypto
 import chat.donzi.localtavern.data.security.createUserAuthenticator
@@ -69,7 +70,6 @@ class AppContainer(driverFactory: DriverFactory) {
     val sessionRepository: SessionRepository = SessionRepository(database, ioDispatcher = databaseDispatcher, clock = logicalClock)
     val messageRepository: MessageRepository = MessageRepository(database, ioDispatcher = databaseDispatcher, clock = logicalClock, blobStore = blobStore, sessionRepository = sessionRepository)
     val apiSettingsRepository: ApiSettingsRepository = ApiSettingsRepository(database, apiKeyCipher, databaseDispatcher, clock = logicalClock)
-    val pricingRepository: PricingRepository = PricingRepository(database, databaseDispatcher)
 
     val httpClient: HttpClient = HttpClient {
         install(ContentNegotiation) {
@@ -88,6 +88,11 @@ class AppContainer(driverFactory: DriverFactory) {
     val chatClient: ChatClient = ChatClient(httpClient)
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    // Fetches live cloud prices (OpenRouter models endpoint) at startup so
+    // cost readouts reflect current list prices; the bundled catalog covers
+    // the offline window before the first fetch lands.
+    private val livePricingFetcher: LivePricingFetcher = LivePricingFetcher(httpClient)
 
     // Device identity for P2P sync: created once, stored platform-privately.
     // Loading it (or generating the X25519 keypair on first run) used to block
@@ -110,6 +115,25 @@ class AppContainer(driverFactory: DriverFactory) {
 
     init {
         retrySyncBootstrap()
+        refreshLivePricing()
+    }
+
+    // Refreshes the live cloud price cache in the background. Failures are
+    // silent: the previous cache (or the bundled catalog) keeps working, and
+    // a later refresh can repopulate the cache.
+    fun refreshLivePricing() {
+        appScope.launch {
+            try {
+                val entries = livePricingFetcher.fetch()
+                if (entries.isNotEmpty()) {
+                    LivePricingCatalog.update(entries)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Offline or endpoint down: keep whatever cache we have.
+            }
+        }
     }
 
     // Loads or creates the sync identity off the main thread, then wires up
@@ -210,7 +234,7 @@ class AppContainer(driverFactory: DriverFactory) {
         if (::syncDiscovery.isInitialized) syncDiscovery.start()
     }
 
-    val chatController: ChatController = ChatController(sessionRepository, messageRepository, apiSettingsRepository, pricingRepository, chatClient, appScope)
+    val chatController: ChatController = ChatController(sessionRepository, messageRepository, apiSettingsRepository, chatClient, appScope)
     val appState: AppState = AppState(characterRepository, apiSettingsRepository, sessionRepository, appScope)
 
     // Cancels all app-level coroutines (generation, flows, settings writes)

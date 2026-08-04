@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -16,7 +15,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.domain.ApiConfig
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
-import chat.donzi.localtavern.data.database.PricingRepository
 import chat.donzi.localtavern.domain.PromptBlock
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -27,8 +25,11 @@ import kotlin.math.roundToInt
 fun ParameterControls(
     connection: ApiConfig,
     apiSettingsRepository: ApiSettingsRepository,
-    pricingRepository: PricingRepository,
-    onUpdate: (ApiConfig) -> Unit
+    onUpdate: (ApiConfig) -> Unit,
+    // Reports every parameter change immediately (before the debounced DB
+    // write), so parent-level readouts — like the max prompt cost banner —
+    // update in real time while the user drags a slider.
+    onLiveUpdate: (ApiConfig) -> Unit = {}
 ) {
     val coroutineScope = rememberCoroutineScope()
     var promptBlocks by remember { mutableStateOf<List<PromptBlock>>(emptyList()) }
@@ -54,6 +55,7 @@ fun ParameterControls(
     }
 
     fun persistParams() {
+        onLiveUpdate(workingConnection)
         paramWriteJob?.cancel()
         paramWriteJob = coroutineScope.launch {
             delay(250)
@@ -274,27 +276,37 @@ fun ParameterControls(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    "Cost Estimation",
+                    "Chat Completion Mode",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    "Heuristic estimate based on the bundled price list. Set a custom price per model here.",
+                    "Auto decides between the chat and legacy completions endpoints from the model name. Only needed for providers stuck on the older completions API.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                 )
                 Spacer(modifier = Modifier.height(6.dp))
-                var showPricingDialog by remember { mutableStateOf(false) }
-                OutlinedButton(onClick = { showPricingDialog = true }) {
-                    Text("Model Pricing…")
-                }
-                if (showPricingDialog) {
-                    ModelPricingDialog(
-                        connection = workingConnection,
-                        pricingRepository = pricingRepository,
-                        onDismiss = { showPricingDialog = false },
-                        onSaved = { onUpdate(workingConnection) }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val chatCompletionOptions = listOf(
+                        "Auto" to 0,
+                        "Chat" to 1,
+                        "Completions" to 2
                     )
+                    chatCompletionOptions.forEachIndexed { index, (label, value) ->
+                        val selected = workingConnection.chatCompletionMode == value
+                        FilterChip(
+                            selected = selected,
+                            onClick = {
+                                workingConnection = workingConnection.copy(chatCompletionMode = value)
+                                persistParams()
+                            },
+                            label = { Text(label) },
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                    }
                 }
             }
         }

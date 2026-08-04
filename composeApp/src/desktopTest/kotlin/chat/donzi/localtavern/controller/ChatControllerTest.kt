@@ -3,7 +3,6 @@ package chat.donzi.localtavern.controller
 import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.database.LocalTavernDB
-import chat.donzi.localtavern.data.database.PricingRepository
 import chat.donzi.localtavern.data.database.MessageRepository
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.data.network.ChatClient
@@ -53,7 +52,6 @@ class ChatControllerTest {
             sessionRepository = sessionRepository,
             messageRepository = messageRepository,
             apiSettingsRepository = apiSettingsRepository,
-            pricingRepository = PricingRepository(db.database, testDispatcher),
             chatClient = ChatClient(
                 HttpClient(
                     MockEngine(
@@ -507,7 +505,7 @@ data: [DONE]
             apiKey = "key", model = "model", isActive = true
         )
         val controller = ChatController(
-            sessionRepository, messageRepository, apiSettingsRepository, PricingRepository(db.database, testDispatcher),
+            sessionRepository, messageRepository, apiSettingsRepository,
             ChatClient(HttpClient(MockEngine { respond(
                 content = ByteReadChannel("data: [DONE]"),
                 status = HttpStatusCode.OK,
@@ -547,7 +545,6 @@ data: [DONE]
         val controller = ChatController(
             sessionRepository, messageRepository,
             ApiSettingsRepository(db.database, chat.donzi.localtavern.data.security.ApiKeyCipher(chat.donzi.localtavern.data.security.TestSecretCrypto()), testDispatcher),
-            PricingRepository(db.database, testDispatcher),
             ChatClient(HttpClient(MockEngine { respond(
                 content = ByteReadChannel("data: [DONE]"),
                 status = HttpStatusCode.OK,
@@ -758,7 +755,7 @@ data: [DONE]
             }
         )
         val controller = ChatController(
-            sessionRepository, messageRepository, apiSettingsRepository, PricingRepository(db.database, testDispatcher), client,
+            sessionRepository, messageRepository, apiSettingsRepository, client,
             CoroutineScope(testDispatcher + SupervisorJob()),
             payloadDispatcher = testDispatcher
         )
@@ -1024,7 +1021,7 @@ data: [DONE]
             }
         )
         val controller = ChatController(
-            sessionRepository, messageRepository, apiSettingsRepository, PricingRepository(db.database, testDispatcher), client,
+            sessionRepository, messageRepository, apiSettingsRepository, client,
             CoroutineScope(testDispatcher + SupervisorJob()),
             payloadDispatcher = testDispatcher
         )
@@ -1087,7 +1084,7 @@ data: [DONE]
             }
         )
         val controller = ChatController(
-            sessionRepository, messageRepository, apiSettingsRepository, PricingRepository(db.database, testDispatcher), client,
+            sessionRepository, messageRepository, apiSettingsRepository, client,
             CoroutineScope(testDispatcher + SupervisorJob()),
             payloadDispatcher = testDispatcher
         )

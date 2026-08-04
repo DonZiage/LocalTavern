@@ -133,6 +133,10 @@ data class SyncApiConnection(
     val quantization: String? = null,
     val isActive: Long,
     val isChatCompletion: Long,
+    // 0 = auto-detect chat vs legacy completions endpoint, 1 = force chat
+    // completions, 2 = force legacy completions. Default keeps envelopes
+    // from older peers parseable.
+    val chatCompletionMode: Long = 0,
     val lastUsed: Long?,
     val temperature: Double,
     val topP: Double,
@@ -426,7 +430,11 @@ internal fun ApiConnection.toSync(cipher: ApiKeyCipher?) = SyncApiConnection(
     // read is withheld (null) so the peer never stores an undecryptable blob.
     apiKey = if (cipher != null) cipher.toPortableForm(apiKey) else apiKey,
     model = model, inferenceProvider = inferenceProvider, quantization = quantization,
-    isActive = 0L, isChatCompletion = isChatCompletion,
+    isActive = 0L,
+    // Mirror the mode into the legacy column so older peers (which still read
+    // isChatCompletion directly) keep working.
+    isChatCompletion = if (chatCompletionMode == 2L) 0L else 1L,
+    chatCompletionMode = chatCompletionMode,
     lastUsed = lastUsed, temperature = temperature, topP = topP,
     topK = topK, presencePenalty = presencePenalty,
     frequencyPenalty = frequencyPenalty, contextLimit = contextLimit,

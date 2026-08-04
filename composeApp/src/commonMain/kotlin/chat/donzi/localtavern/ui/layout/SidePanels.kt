@@ -60,7 +60,6 @@ fun SidePanels(
     drawerWidth: Dp,
     onClose: () -> Unit,
     apiSettingsRepository: ApiSettingsRepository,
-    pricingRepository: chat.donzi.localtavern.data.database.PricingRepository,
     apiKeyCipher: chat.donzi.localtavern.data.security.ApiKeyCipher,
     syncService: chat.donzi.localtavern.data.sync.SyncService,
     syncRepository: chat.donzi.localtavern.data.sync.SyncRepository,
@@ -143,7 +142,6 @@ fun SidePanels(
         ) {
             SettingsPanelContent(
                 apiSettingsRepository = apiSettingsRepository,
-                pricingRepository = pricingRepository,
                 apiKeyCipher = apiKeyCipher,
                 syncService = syncService,
                 syncRepository = syncRepository,

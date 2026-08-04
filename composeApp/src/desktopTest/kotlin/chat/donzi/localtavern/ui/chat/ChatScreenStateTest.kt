@@ -7,7 +7,6 @@ import chat.donzi.localtavern.data.database.CharacterRepository
 import chat.donzi.localtavern.data.database.LocalTavernDB
 import chat.donzi.localtavern.data.database.LogicalClock
 import chat.donzi.localtavern.data.database.MessageRepository
-import chat.donzi.localtavern.data.database.PricingRepository
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.data.security.ApiKeyCipher
@@ -126,7 +125,6 @@ class ChatScreenStateTest {
             sessionRepository = sessionRepository,
             messageRepository = messageRepository,
             apiSettingsRepository = apiSettingsRepository,
-            pricingRepository = PricingRepository(db.database, testDispatcher),
             chatClient = chatClient,
             scope = CoroutineScope(testDispatcher + SupervisorJob()),
             payloadDispatcher = testDispatcher
@@ -193,7 +191,7 @@ class ChatScreenStateTest {
             userMessage = "Hello there", imageList = emptyList(), activePersonaId = PERSONA.id,
             activePersona = PERSONA, activeApiConnection = chat.donzi.localtavern.domain.ApiConfig(
                 id = "c1", provider = "test", name = "Test", baseUrl = "https://example.com",
-                apiKey = "key", model = "model", isActive = true, isChatCompletion = true,
+                apiKey = "key", model = "model", isActive = true,
                 lastUsed = 0L, temperature = 1.0, topP = 1.0, topK = 0L,
                 presencePenalty = 0.0, frequencyPenalty = 0.0, contextLimit = 4096L,
                 responseLimit = 0L, displayOrder = 0L, timeoutLimit = 60L
@@ -224,7 +222,7 @@ class ChatScreenStateTest {
             userMessage = "one", imageList = emptyList(), activePersonaId = PERSONA.id,
             activePersona = PERSONA, activeApiConnection = chat.donzi.localtavern.domain.ApiConfig(
                 id = "c1", provider = "test", name = "Test", baseUrl = "https://example.com",
-                apiKey = "key", model = "model", isActive = true, isChatCompletion = true,
+                apiKey = "key", model = "model", isActive = true,
                 lastUsed = 0L, temperature = 1.0, topP = 1.0, topK = 0L,
                 presencePenalty = 0.0, frequencyPenalty = 0.0, contextLimit = 4096L,
                 responseLimit = 0L, displayOrder = 0L, timeoutLimit = 60L
@@ -238,7 +236,7 @@ class ChatScreenStateTest {
             userMessage = "two", imageList = emptyList(), activePersonaId = PERSONA.id,
             activePersona = PERSONA, activeApiConnection = chat.donzi.localtavern.domain.ApiConfig(
                 id = "c1", provider = "test", name = "Test", baseUrl = "https://example.com",
-                apiKey = "key", model = "model", isActive = true, isChatCompletion = true,
+                apiKey = "key", model = "model", isActive = true,
                 lastUsed = 0L, temperature = 1.0, topP = 1.0, topK = 0L,
                 presencePenalty = 0.0, frequencyPenalty = 0.0, contextLimit = 4096L,
                 responseLimit = 0L, displayOrder = 0L, timeoutLimit = 60L
@@ -272,7 +270,7 @@ class ChatScreenStateTest {
             userMessage = "hi", imageList = emptyList(), activePersonaId = PERSONA.id,
             activePersona = PERSONA, activeApiConnection = chat.donzi.localtavern.domain.ApiConfig(
                 id = "c1", provider = "test", name = "Test", baseUrl = "https://example.com",
-                apiKey = "key", model = "model", isActive = true, isChatCompletion = true,
+                apiKey = "key", model = "model", isActive = true,
                 lastUsed = 0L, temperature = 1.0, topP = 1.0, topK = 0L,
                 presencePenalty = 0.0, frequencyPenalty = 0.0, contextLimit = 4096L,
                 responseLimit = 0L, displayOrder = 0L, timeoutLimit = 60L
@@ -303,7 +301,7 @@ class ChatScreenStateTest {
             userMessage = "hi", imageList = emptyList(), activePersonaId = PERSONA.id,
             activePersona = PERSONA, activeApiConnection = chat.donzi.localtavern.domain.ApiConfig(
                 id = "c1", provider = "test", name = "Test", baseUrl = "https://example.com",
-                apiKey = "key", model = "model", isActive = true, isChatCompletion = true,
+                apiKey = "key", model = "model", isActive = true,
                 lastUsed = 0L, temperature = 1.0, topP = 1.0, topK = 0L,
                 presencePenalty = 0.0, frequencyPenalty = 0.0, contextLimit = 4096L,
                 responseLimit = 0L, displayOrder = 0L, timeoutLimit = 60L

@@ -36,7 +36,7 @@ fun ApiConnectionDialog(
     chatClient: ChatClient,
     initialConnection: ApiConfig? = null,
     onDismiss: () -> Unit,
-    onSave: (name: String, baseUrl: String, apiKey: String, model: String, inferenceProvider: String?, quantization: String?, isChatCompletion: Boolean) -> Unit
+    onSave: (name: String, baseUrl: String, apiKey: String, model: String, inferenceProvider: String?, quantization: String?) -> Unit
 ) {
     var apiKey by remember { mutableStateOf("") }
     var name by remember { mutableStateOf(initialConnection?.name ?: "") }
@@ -435,8 +435,7 @@ fun ApiConnectionDialog(
                             apiKey,
                             selectedModelFullId,
                             selectedHostProviders.sorted().joinToString(",").takeIf { it.isNotEmpty() },
-                            quantization.takeIf { it.isNotBlank() },
-                            initialConnection?.isChatCompletion == true || (initialConnection == null && !isLocal)
+                            quantization.takeIf { it.isNotBlank() }
                         )
                     },
                     enabled = baseUrl.isNotBlank() && (isKeyValid || isLocal) && selectedModelFullId.isNotBlank() && modelSearch.isNotBlank()

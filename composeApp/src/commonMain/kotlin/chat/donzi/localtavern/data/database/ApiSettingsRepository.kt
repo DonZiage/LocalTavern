@@ -33,7 +33,7 @@ class ApiSettingsRepository(
         provider: String, name: String, baseUrl: String?, apiKey: String?, model: String?,
         inferenceProvider: String? = null,
         quantization: String? = null,
-        isActive: Boolean = false, isChatCompletion: Boolean = true, temperature: Double = 1.0,
+        isActive: Boolean = false, chatCompletionMode: Int = 0, temperature: Double = 1.0,
         topP: Double = 1.0, topK: Long = 0, presencePenalty: Double = 0.0, frequencyPenalty: Double = 0.0,
         contextLimit: Long = 4096, responseLimit: Long = 1024, timeoutLimit: Long = 60,
         reasoningOverride: Int = 0
@@ -59,11 +59,15 @@ class ApiSettingsRepository(
             queries.insertApiConnection(
                 id = newId, provider = provider, name = name, baseUrl = baseUrl, apiKey = apiKeyCipher.encryptForStorage(apiKey), model = model,
                 inferenceProvider = inferenceProvider, quantization = quantization,
-                isActive = if (shouldActivate) 1L else 0L, isChatCompletion = if (isChatCompletion) 1L else 0L,
+                isActive = if (shouldActivate) 1L else 0L,
+                // The legacy isChatCompletion column mirrors the mode so old
+                // sync peers keep receiving a sensible value.
+                isChatCompletion = if (chatCompletionMode == 2) 0L else 1L,
                 lastUsed = if (shouldActivate) now else 0L, temperature = temperature, topP = topP, topK = topK,
                 presencePenalty = presencePenalty, frequencyPenalty = frequencyPenalty, contextLimit = contextLimit,
                 responseLimit = responseLimit, displayOrder = nextOrder, timeoutLimit = timeoutLimit,
                 reasoningOverride = reasoningOverride.toLong(),
+                chatCompletionMode = chatCompletionMode.toLong(),
                 updatedAt = ts, isDeleted = 0L, syncSeq = nextSyncSeq()
             )
             newId
@@ -80,7 +84,7 @@ class ApiSettingsRepository(
         inferenceProvider = connection.inferenceProvider,
         quantization = connection.quantization,
         isActive = connection.isActive,
-        isChatCompletion = connection.isChatCompletion,
+        chatCompletionMode = connection.chatCompletionMode,
         temperature = connection.temperature,
         topP = connection.topP,
         topK = connection.topK,
@@ -97,7 +101,7 @@ class ApiSettingsRepository(
         id: String, provider: String, name: String, baseUrl: String?, apiKey: String?, model: String?,
         inferenceProvider: String? = null,
         quantization: String? = null,
-        isActive: Boolean, isChatCompletion: Boolean, lastUsed: Long? = null, temperature: Double,
+        isActive: Boolean, chatCompletionMode: Int, lastUsed: Long? = null, temperature: Double,
         topP: Double, topK: Long, presencePenalty: Double, frequencyPenalty: Double, contextLimit: Long,
         responseLimit: Long, displayOrder: Long, timeoutLimit: Long,
         reasoningOverride: Int = 0
@@ -128,11 +132,15 @@ class ApiSettingsRepository(
             queries.updateApiConnection(
                 provider = provider, name = name, baseUrl = baseUrl, apiKey = finalKey, model = model,
                 inferenceProvider = inferenceProvider, quantization = quantization,
-                isActive = if (isActive) 1L else 0L, isChatCompletion = if (isChatCompletion) 1L else 0L,
+                isActive = if (isActive) 1L else 0L,
+                // The legacy isChatCompletion column mirrors the mode so old
+                // sync peers keep receiving a sensible value.
+                isChatCompletion = if (chatCompletionMode == 2) 0L else 1L,
                 temperature = temperature, topP = topP, topK = topK,
                 presencePenalty = presencePenalty, frequencyPenalty = frequencyPenalty, contextLimit = contextLimit,
                 responseLimit = responseLimit, displayOrder = displayOrder, timeoutLimit = timeoutLimit,
                 reasoningOverride = reasoningOverride.toLong(),
+                chatCompletionMode = chatCompletionMode.toLong(),
                 updatedAt = ts, syncSeq = seq, id = id
             )
             // Only touch lastUsed when explicitly provided or when activating the

@@ -2,11 +2,12 @@ package chat.donzi.localtavern.data.pricing
 
 import chat.donzi.localtavern.data.database.ModelPricing
 
-// Bundled price list (USD per 1M tokens) for common cloud models. Patterns are
+// Bundled offline price list (USD per 1M tokens) for common cloud models,
+// used as the fallback when live prices have not been fetched. Patterns are
 // matched as anchored PREFIXES of model names (real ids carry date/version
 // suffixes); the most specific (longest) pattern wins. Prices are approximate
-// list prices and are meant for estimation only; users can override any entry
-// via the ModelPricing table.
+// list prices and are meant for estimation only — cost estimates are derived
+// automatically from this catalog plus the active connection's own limits.
 object PricingCatalog {
 
     // All bundled prices are USD; a helper keeps the table above readable.
@@ -93,8 +94,9 @@ object PricingCatalog {
         usd("OpenRouter", "deepseek-reasoner", 0.55, 2.19)
     )
 
-    // Local inference endpoints are free at the API layer: report a zero-cost
-    // estimate so the UI can say "Local" instead of "unknown".
+    // Local inference endpoints charge nothing at the API layer — and pricing
+    // is irrelevant for them, so they resolve to NO price (null) and the UI
+    // hides every cost readout instead of showing $0.00.
     private val localProviders = setOf(
         "LM Studio", "KoboldCPP", "TabbyAPI", "Oobabooga", "Ollama", "llama.cpp", "vLLM", "OAI-Compatible"
     )
@@ -106,9 +108,7 @@ object PricingCatalog {
         val trimmedProvider = provider?.trim().orEmpty()
         val trimmedModel = model?.trim().orEmpty()
         if (trimmedProvider.isBlank() || trimmedModel.isBlank()) return null
-        if (isLocalProvider(trimmedProvider)) {
-            return ModelPricing(trimmedProvider, trimmedModel, 0.0, 0.0, "USD")
-        }
+        if (isLocalProvider(trimmedProvider)) return null
 
         // Longest matching pattern wins (most specific model first). Patterns
         // are anchored PREFIX matches: real model ids carry date/version
@@ -122,10 +122,5 @@ object PricingCatalog {
             }
             .sortedByDescending { it.modelPattern.length }
         return matches.firstOrNull()
-    }
-
-    fun resolve(provider: String?, model: String?, override: ModelPricing?): ModelPricing? {
-        if (override != null) return override
-        return lookup(provider, model)
     }
 }

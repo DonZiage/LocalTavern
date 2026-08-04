@@ -24,7 +24,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
-import chat.donzi.localtavern.data.database.PricingRepository
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.data.security.ApiKeyCipher
 import chat.donzi.localtavern.data.sync.SyncDiscovery
@@ -36,7 +35,6 @@ import kotlinx.coroutines.launch
 @Composable
 fun SettingsPanelContent(
     apiSettingsRepository: ApiSettingsRepository,
-    pricingRepository: PricingRepository,
     apiKeyCipher: ApiKeyCipher,
     syncService: SyncService,
     syncRepository: SyncRepository,
@@ -99,7 +97,6 @@ fun SettingsPanelContent(
                 ) {
                     ApiConnectionSettings(
                         apiSettingsRepository = apiSettingsRepository,
-                        pricingRepository = pricingRepository,
                         chatClient = chatClient,
                         apiKeyCipher = apiKeyCipher,
                         onApiChanged = onApiChanged

@@ -404,6 +404,15 @@ class SyncRepository(
         // connection on a device becomes active) instead of adopting anything
         // from the wire.
         val storedKey = effectiveApiKey(row.apiKey, existing?.apiKey)
+        // Peers on older builds only send isChatCompletion; bridge their
+        // explicit legacy choice into the mode, auto otherwise.
+        val chatCompletionMode = if (row.chatCompletionMode != 0L) {
+            row.chatCompletionMode
+        } else if (row.isChatCompletion == 0L) {
+            2L
+        } else {
+            0L
+        }
         val seq = clock.nextSyncSeq()
         if (existing == null) {
             // Mirrors ApiSettingsRepository.insertApiConnection: with no
@@ -425,7 +434,7 @@ class SyncRepository(
                 presencePenalty = row.presencePenalty, frequencyPenalty = row.frequencyPenalty,
                 contextLimit = row.contextLimit, responseLimit = row.responseLimit,
                 displayOrder = row.displayOrder, timeoutLimit = row.timeoutLimit,
-                reasoningOverride = row.reasoningOverride, updatedAt = row.updatedAt,
+                reasoningOverride = row.reasoningOverride, chatCompletionMode = chatCompletionMode, updatedAt = row.updatedAt,
                 isDeleted = row.isDeleted, syncSeq = seq
             )
         } else {
@@ -439,6 +448,7 @@ class SyncRepository(
                 frequencyPenalty = row.frequencyPenalty, contextLimit = row.contextLimit,
                 responseLimit = row.responseLimit, displayOrder = row.displayOrder,
                 timeoutLimit = row.timeoutLimit, reasoningOverride = row.reasoningOverride,
+                chatCompletionMode = chatCompletionMode,
                 updatedAt = row.updatedAt, isDeleted = row.isDeleted, syncSeq = seq, id = row.id
             )
         }

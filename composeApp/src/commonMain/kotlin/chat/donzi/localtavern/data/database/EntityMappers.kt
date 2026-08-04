@@ -92,7 +92,7 @@ fun ApiConnection.toDomain(): ApiConfig = ApiConfig(
     inferenceProvider = inferenceProvider,
     quantization = quantization,
     isActive = isActive == 1L,
-    isChatCompletion = isChatCompletion == 1L,
+    chatCompletionMode = chatCompletionMode.toInt(),
     lastUsed = lastUsed,
     temperature = temperature,
     topP = topP,

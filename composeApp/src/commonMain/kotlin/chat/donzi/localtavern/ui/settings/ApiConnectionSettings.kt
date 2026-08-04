@@ -2,20 +2,25 @@ package chat.donzi.localtavern.ui.settings
 import chat.donzi.localtavern.ui.common.CardCarousel
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.domain.ApiConfig
 import chat.donzi.localtavern.data.database.ApiSettingsRepository
 import chat.donzi.localtavern.data.network.ChatClient
+import chat.donzi.localtavern.data.pricing.CostEstimator
+import chat.donzi.localtavern.data.pricing.LivePricingCatalog
+import chat.donzi.localtavern.data.pricing.PricingCatalog
 import chat.donzi.localtavern.data.security.ApiKeyCipher
 import kotlinx.coroutines.launch
 
 @Composable
 fun ApiConnectionSettings(
     apiSettingsRepository: ApiSettingsRepository,
-    pricingRepository: chat.donzi.localtavern.data.database.PricingRepository,
     chatClient: ChatClient,
     apiKeyCipher: ApiKeyCipher,
     onApiChanged: () -> Unit = {}
@@ -39,6 +44,16 @@ fun ApiConnectionSettings(
     LaunchedEffect(refreshTrigger, connections) {
         activeConnection = apiSettingsRepository.getActiveApiConnection()
     }
+
+    // Live snapshot of the active connection's parameters: updated instantly
+    // while the user drags a parameter slider (ParameterControls.onLiveUpdate)
+    // and re-synced whenever the persisted active connection reloads, so the
+    // max prompt cost banner tracks every change in real time.
+    var liveConnection by remember { mutableStateOf<ApiConfig?>(null) }
+    LaunchedEffect(activeConnection) {
+        liveConnection = activeConnection
+    }
+    val displayedConnection = liveConnection ?: activeConnection
 
     val activeIndex = remember(connections, activeConnection) {
         connections.indexOfFirst { it.id == activeConnection?.id }.takeIf { it >= 0 }
@@ -76,23 +91,6 @@ fun ApiConnectionSettings(
                             onApiChanged()
                         }
                     },
-                    onToggleMode = { isChat ->
-                        scope.launch {
-                            apiSettingsRepository.updateApiConnection(
-                                id = connection.id, provider = connection.provider, name = connection.name,
-                                baseUrl = connection.baseUrl, apiKey = connection.apiKey, model = connection.model,
-                                inferenceProvider = connection.inferenceProvider,
-                                quantization = connection.quantization,
-                                isActive = connection.isActive, isChatCompletion = isChat,
-                                temperature = connection.temperature, topP = connection.topP, topK = connection.topK,
-                                presencePenalty = connection.presencePenalty, frequencyPenalty = connection.frequencyPenalty,
-                                contextLimit = connection.contextLimit, responseLimit = connection.responseLimit,
-                                displayOrder = connection.displayOrder, timeoutLimit = connection.timeoutLimit
-                            )
-                            refreshTrigger++
-                            onApiChanged()
-                        }
-                    },
                     onDelete = onDeleteRequest,
                     onEdit = {
                         editingConnection = connection
@@ -103,19 +101,27 @@ fun ApiConnectionSettings(
             }
         )
 
+        // Worst-case request cost for the active connection, right below the
+        // API cards so even casual users see it. Hidden entirely when the
+        // active connection runs local inference.
+        displayedConnection?.let { currentActive ->
+            Spacer(modifier = Modifier.height(16.dp))
+            MaxPromptCostBanner(connection = currentActive)
+        }
+
         activeConnection?.let { currentActive ->
             Spacer(modifier = Modifier.height(24.dp))
 
             ParameterControls(
                 connection = currentActive,
                 apiSettingsRepository = apiSettingsRepository,
-                pricingRepository = pricingRepository,
                 onUpdate = { _ ->
                     // ParameterControls persists the debounced write itself;
                     // this callback only refreshes the UI state afterwards.
                     refreshTrigger++
                     onApiChanged()
-                }
+                },
+                onLiveUpdate = { liveConnection = it }
             )
         }
     }
@@ -124,7 +130,7 @@ fun ApiConnectionSettings(
         ApiConnectionDialog(
             chatClient = chatClient,
             onDismiss = { showAddDialog = false },
-            onSave = { name, baseUrl, apiKey, model, inferenceProvider, quantization, isChatCompletion ->
+            onSave = { name, baseUrl, apiKey, model, inferenceProvider, quantization ->
                 scope.launch {
                     // The repository derives the active flag and display order
                     // from fresh DB state, so a stale UI list cannot wrongly
@@ -138,7 +144,6 @@ fun ApiConnectionSettings(
                         model = model,
                         inferenceProvider = inferenceProvider,
                         quantization = quantization,
-                        isChatCompletion = isChatCompletion,
                         timeoutLimit = 60L
                     )
                     showAddDialog = false
@@ -161,7 +166,7 @@ fun ApiConnectionSettings(
             chatClient = chatClient,
             initialConnection = connectionToEdit,
             onDismiss = { editingConnection = null },
-            onSave = { name, baseUrl, apiKey, model, inferenceProvider, quantization, isChatCompletion ->
+            onSave = { name, baseUrl, apiKey, model, inferenceProvider, quantization ->
                 scope.launch {
                     apiSettingsRepository.updateApiConnection(
                         id = connectionToEdit.id,
@@ -173,7 +178,7 @@ fun ApiConnectionSettings(
                         inferenceProvider = inferenceProvider,
                         quantization = quantization,
                         isActive = connectionToEdit.isActive,
-                        isChatCompletion = isChatCompletion,
+                        chatCompletionMode = connectionToEdit.chatCompletionMode,
                         temperature = connectionToEdit.temperature,
                         topP = connectionToEdit.topP,
                         topK = connectionToEdit.topK,
@@ -240,5 +245,59 @@ fun ApiConnectionSettings(
                 }
             }
         )
+    }
+}
+
+// Worst-case cost of one request for the given connection: the whole context
+// budget filled with prompt tokens plus a full response, priced live. Hidden
+// entirely for local inference models (no price info exists for them).
+@Composable
+private fun MaxPromptCostBanner(connection: ApiConfig) {
+    if (PricingCatalog.isLocalProvider(connection.provider)) return
+
+    // Recompute when fresh live prices land (revision) or when any
+    // cost-relevant setting changes — without remember-key staleness.
+    val pricingRevision by LivePricingCatalog.revision.collectAsState()
+    val cost = remember(
+        pricingRevision,
+        connection.provider, connection.model,
+        connection.contextLimit, connection.responseLimit
+    ) {
+        CostEstimator.estimateMaxPromptCost(
+            provider = connection.provider,
+            model = connection.model,
+            contextLimit = connection.contextLimit,
+            responseLimit = connection.responseLimit
+        )
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Max prompt cost",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "Worst case for one request with the current limits.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+            }
+            Text(
+                text = cost?.let { CostEstimator.formatUsd(it.totalUsd) } ?: "—",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
     }
 }

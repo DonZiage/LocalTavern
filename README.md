@@ -53,7 +53,7 @@ The project exists to solve the "service complexity" problem: most LLM interface
 - **14 commercial providers:** OpenAI, Anthropic, Gemini, Mistral, DeepSeek, OpenRouter, xAI, TogetherAI, Fireworks AI, Perplexity, Cohere, AI21, DreamGen, Mancer. Anthropic speaks its native `/messages` dialect (including extended thinking); everything else uses the OpenAI-compatible API.
 - **Local inference:** Ollama, LM Studio, KoboldCPP, llama.cpp, TabbyAPI, Oobabooga, vLLM, or any OpenAI-compatible local endpoint.
 - **Connection profiles:** multiple API profiles with per-connection parameters, live connection probing (distinguishes auth failures from unreachable endpoints), and a fuzzy-searchable model picker.
-- **Real-time cost estimation** from a bundled per-model price catalog (with per-model user overrides) — shown as an in-flight estimate and stored per message.
+- **Real-time cost estimation** — live cloud prices are fetched automatically from OpenRouter's public models endpoint at startup (bundled offline catalog as fallback), so estimates always track current list prices. Shown as a "Max prompt cost" readout, an in-flight estimate, and stored per message; cost info is hidden entirely for local inference models.
 - **Reasoning mode** for supported models (DeepSeek-R1, OpenAI o-series, Anthropic extended thinking) with Auto/On/Off override per connection. Chain-of-thought is captured, shown in a collapsible section, and syncs across devices: OpenAI o-series gets `reasoning_effort`, Anthropic gets a thinking budget plus the beta header, R1-style models stream `reasoning_content`.
 
 ### Characters & Personas
