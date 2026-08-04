@@ -135,11 +135,24 @@ The project exists to solve the "service complexity" problem: most LLM interface
 composeApp/
 ├── src/
 │   ├── commonMain/      Shared code: UI, controllers, data layer, sync, utils
+│   │   └── chat/donzi/localtavern/
+│   │       ├── controller/      AppContainer (DI), AppState, ChatController, GenerationRunner
+│   │       ├── data/            Repositories (SQLDelight), network, pricing, security, sync
+│   │       ├── domain/          Plain data models
+│   │       ├── ui/
+│   │       │   ├── chat/        Chat UI: components + ChatScreenState (send flow, actions)
+│   │       │   ├── characters/  Characters/personas UI + CharactersPanelState (editor, exports)
+│   │       │   ├── settings/    API connections, parameters, security, pricing, prompt blocks
+│   │       │   ├── sync/        Pairing and sync dialogs
+│   │       │   ├── common/      Shared components (image viewer, carousel, toggles, bubbles)
+│   │       │   ├── layout/      MainScreen + coordinator state (active chat/character)
+│   │       │   └── theme/       Material theme and theme transition
+│   │       └── utils/           Tokenizer, context builder, markdown, character cards, images
 │   ├── androidMain/     Android platform implementations (KeyStore, image picker, …)
 │   ├── desktopMain/     JVM platform implementations (driver, secret storage, …)
 │   ├── iosMain/         iOS platform implementations (Keychain, CryptoKit, …)
 │   ├── commonTest/      Cross-platform tests
-│   └── desktopTest/     JVM-only tests (sync protocol, crypto, migrations)
+│   └── desktopTest/     JVM-only tests (sync protocol, crypto, migrations, UI state + Compose UI)
 ├── iosApp/              Xcode host app for iOS
 └── build.gradle.kts     Multiplatform build config (targets, SQLDelight, packaging)
 ```

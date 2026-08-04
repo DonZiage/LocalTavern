@@ -12,10 +12,6 @@ val ktorVersion = libs.versions.ktor.get()
 kotlin {
     jvmToolchain(17)
 
-    compilerOptions {
-        freeCompilerArgs.add("-Xexpect-actual-classes")
-    }
-
     androidTarget()
 
     jvm("desktop")

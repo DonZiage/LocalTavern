@@ -7,7 +7,6 @@ import chat.donzi.localtavern.data.security.ApiKeyCipher
 import chat.donzi.localtavern.data.database.SyncPeer
 import chat.donzi.localtavern.utils.Hashing
 import chat.donzi.localtavern.utils.deserializeImageList
-import chat.donzi.localtavern.utils.deserializeImageRefs
 import chat.donzi.localtavern.utils.serializeImageList
 import chat.donzi.localtavern.utils.serializeImageRefs
 import app.cash.sqldelight.coroutines.asFlow

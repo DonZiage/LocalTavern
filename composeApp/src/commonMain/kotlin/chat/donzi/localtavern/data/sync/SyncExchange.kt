@@ -14,7 +14,6 @@ import kotlinx.coroutines.IO
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
-import kotlin.time.Clock
 
 // One bidirectional delta exchange with a paired device: send my changes
 // (deltas since the peer's cursor), apply the peer's changes (LWW, resolved

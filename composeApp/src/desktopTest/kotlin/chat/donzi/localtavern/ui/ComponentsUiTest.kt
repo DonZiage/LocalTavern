@@ -1,4 +1,4 @@
-package chat.donzi.localtavern.ui.components
+package chat.donzi.localtavern.ui
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
