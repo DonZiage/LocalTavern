@@ -142,9 +142,11 @@ sqldelight {
     databases {
         create("LocalTavernDB") {
             packageName.set("chat.donzi.localtavern.data.database")
-            // No version override: SQLDelight derives it from the migration
-            // files (0 migrations -> schema version 1), so future .sqm files
-            // in migrations/ bump the schema version automatically.
+            // Schema versioning: no migrations ship yet (schema version 1 IS
+            // the current schema, including the avatarRef columns). Future
+            // schema changes add .sqm files to migrations/ (the first one
+            // named 1.sqm), which every driver runs automatically for older
+            // databases.
         }
     }
 }

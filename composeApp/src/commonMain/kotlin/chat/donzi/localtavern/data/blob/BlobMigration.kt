@@ -2,6 +2,7 @@ package chat.donzi.localtavern.data.blob
 
 import chat.donzi.localtavern.data.database.LocalTavernDB
 import chat.donzi.localtavern.data.database.LogicalClock
+import chat.donzi.localtavern.data.sync.AVATAR_REF_THRESHOLD_BYTES
 import chat.donzi.localtavern.domain.ImageRef
 import chat.donzi.localtavern.utils.Hashing
 import chat.donzi.localtavern.utils.deserializeImageList
@@ -57,6 +58,26 @@ suspend fun migrateMessageImagesToBlobStore(
 suspend fun runBlobGc(database: LocalTavernDB, blobStore: BlobStore) {
     val usedKeys = buildSet {
         database.localTavernDBQueries.selectAllLiveImageRefs().executeAsList().forEach { refsJson ->
+            deserializeImageRefs(refsJson).forEach { add(it.sha256) }
+        }
+        // Sync stages avatars above the inline threshold in the blob store
+        // (see SyncModels.avatarRefForTransport); those keys are live while
+        // the owning row is. LENGTH()-filtered in SQL so small inline avatars
+        // are never loaded into memory.
+        val threshold = AVATAR_REF_THRESHOLD_BYTES
+        database.localTavernDBQueries.selectAllLiveCharacterAvatars(threshold).executeAsList().forEach { bytes ->
+            add(Hashing.sha256Hex(bytes))
+        }
+        database.localTavernDBQueries.selectAllLivePersonaAvatars(threshold).executeAsList().forEach { bytes ->
+            add(Hashing.sha256Hex(bytes))
+        }
+        // Out-of-band avatar refs: a live row that is still waiting for its
+        // avatar bytes holds its ref on the row (the ref column IS the blob
+        // key), so the blob must survive until the row resolves it.
+        database.localTavernDBQueries.selectAllLiveCharacterAvatarRefs().executeAsList().forEach { refsJson ->
+            deserializeImageRefs(refsJson).forEach { add(it.sha256) }
+        }
+        database.localTavernDBQueries.selectAllLivePersonaAvatarRefs().executeAsList().forEach { refsJson ->
             deserializeImageRefs(refsJson).forEach { add(it.sha256) }
         }
     }

@@ -18,13 +18,16 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 // Embedded HTTP server each device runs while sync is enabled. Endpoints:
-//   GET  /hello     -> device identity (for discovery)
+//   GET  /hello     -> device identity (for discovery); a receiver entering
+//                      the PIN step calls it with ?announce=<name> so the
+//                      host's screen can switch from QR to PIN as soon as a
+//                      receiver has connected
 //   POST /pair      -> PIN-authenticated pairing, returns both keys
 //   POST /exchange  -> encrypted bidirectional sync exchange
 //   POST /blob/fetch-> encrypted chunked pull of message-image blobs
 class SyncServer(
     private val port: Int,
-    private val hello: () -> HelloResponse,
+    private val hello: (announcedName: String?) -> HelloResponse,
     private val onPair: suspend (PairRequest, remoteHost: String?) -> PairResponse,
     private val onExchange: suspend (fromDeviceId: String, payload: String, ephemeralPublicKey: String, exchangeId: String) -> ExchangeResponse,
     private val onBlobFetch: suspend (fromDeviceId: String, payload: String, ephemeralPublicKey: String, exchangeId: String) -> BlobFetchResponse
@@ -55,7 +58,7 @@ class SyncServer(
                 })
             }
             routing {
-                get("/hello") { call.respond(hello()) }
+                get("/hello") { call.respond(hello(call.request.queryParameters["announce"])) }
                 post("/pair") {
                     if (!acceptsBodySize(call)) {
                         call.respond(HttpStatusCode.PayloadTooLarge, PairResponse(ok = false, message = "Request too large."))

@@ -60,15 +60,24 @@ fun MainScreen(
     val snackbarHostState = remember { SnackbarHostState() }
 
     val hasPersona = remember(personas) {
-        personas.any { it.name != "User" || !it.description.isNullOrBlank() || it.avatarData != null }
+        // The default "User" persona is no longer stored: the cards only ever
+        // list user-defined personas, so any entry counts.
+        personas.isNotEmpty()
     }
     val hasCharacter = remember(characters) {
         characters.isNotEmpty()
     }
 
+    // The persona actually in use: the active selection when it still exists,
+    // otherwise the first available persona, otherwise the implicit blank
+    // "User" persona (never stored, so it never shows in the persona cards).
+    // Chatting must never be blocked by a missing persona selection.
     val activePersona = remember(personas, activePersonaId) {
-        personas.find { it.id == activePersonaId }
+        personas.firstOrNull { it.id == activePersonaId }
+            ?: personas.firstOrNull()
+            ?: Persona.defaultUser()
     }
+    val effectivePersonaId = activePersona.id
 
     // Live (not one-shot) view of whether an active API connection exists, so
     // a send without a profile can be refused BEFORE the user message is
@@ -92,7 +101,7 @@ fun MainScreen(
         state.trySendMessage(
             userMessage = userMessage,
             imageList = imageList,
-            activePersonaId = activePersonaId,
+            activePersonaId = effectivePersonaId,
             activePersona = activePersona,
             activeApiConnection = activeApiConnection,
             isGenerating = chatState.isGenerating
@@ -127,8 +136,8 @@ fun MainScreen(
         }
     }
 
-    LaunchedEffect(state.activeCharacter, activePersonaId, state.activeSessionId, characters, personas) {
-        state.syncActiveSession(state.activeCharacter, activePersonaId)
+    LaunchedEffect(state.activeCharacter, effectivePersonaId, state.activeSessionId, characters, personas) {
+        state.syncActiveSession(state.activeCharacter, effectivePersonaId)
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -169,7 +178,7 @@ fun MainScreen(
                 DesktopCharactersPanel(
                     state = state,
                     personas = personas,
-                    activePersonaId = activePersonaId,
+                    activePersonaId = effectivePersonaId,
                     characters = characters,
                     drawerWidth = drawerWidth,
                     onPersonaSelect = onPersonaSelect,
@@ -193,7 +202,7 @@ fun MainScreen(
                 deps = deps,
                 state = state,
                 personas = personas,
-                activePersonaId = activePersonaId,
+                activePersonaId = effectivePersonaId,
                 characters = characters,
                 isDarkMode = isDarkMode,
                 onToggleDarkMode = onToggleDarkMode,
@@ -222,7 +231,7 @@ fun MainScreen(
             deps = deps,
             state = state,
             chatState = chatState,
-            activePersonaId = activePersonaId,
+            activePersonaId = effectivePersonaId,
             exportCharacterFromList = exportCharacterFromList,
             onRefreshMessages = { state.refreshMessages() },
             modifier = Modifier.fillMaxSize()

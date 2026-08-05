@@ -4,6 +4,8 @@ import chat.donzi.localtavern.data.blob.BlobStore
 import chat.donzi.localtavern.data.database.ConflictEvent
 import chat.donzi.localtavern.data.database.SyncPeer
 import io.ktor.client.HttpClient
+import io.ktor.client.request.get
+import io.ktor.client.request.parameter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,6 +22,27 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.time.Clock
 
+// Where the HOST is in the pairing sequence. The UI renders a different
+// screen per stage (QR -> PIN -> fingerprint -> paired) so the QR and the PIN
+// never share a screen, and so a receiver's actions are reflected on the
+// host's screen as they happen.
+enum class PairingStage {
+    /** No pairing session active. */
+    Idle,
+
+    /** Host generated a PIN and is showing the QR, waiting for a receiver. */
+    WaitingForReceiver,
+
+    /** A receiver announced itself (GET /hello?announce=): QR is replaced by the PIN. */
+    ReceiverConnected,
+
+    /** The receiver submitted the PIN and the pair request succeeded: fingerprint card shown. */
+    VerifyingPin,
+
+    /** Fingerprint confirmed (either side) or an authenticated exchange arrived: pairing done. */
+    Paired
+}
+
 data class SyncUiState(
     val isServerRunning: Boolean = false,
     val pairingPin: String? = null,
@@ -28,12 +51,21 @@ data class SyncUiState(
     val isSyncing: Boolean = false,
     val statusMessage: String? = null,
     val syncError: String? = null,
+    // Pairing wizard progress on the host side (see PairingStage).
+    val pairingStage: PairingStage = PairingStage.Idle,
+    // Display-only name of the receiver that announced itself (sanitized).
+    val connectedPeerName: String? = null,
     // Fingerprint of the peer that just paired (host and client side), shown
     // for out-of-band comparison until the user confirms it. While it is set,
-    // exchanges with that peer are refused — the peer is not yet trusted.
+    // this device refuses to INITIATE exchanges with that peer — the peer is
+    // not yet trusted. (Incoming authenticated exchanges auto-complete the
+    // pairing instead of being refused: see SyncExchange.onVerifiedExchange.)
     val pendingPeerFingerprint: String? = null,
     val pendingPeerName: String? = null,
     val pendingPeerDeviceId: String? = null,
+    // Name of the peer once pairing completed (survives the pendingPeer*
+    // clear, so the host's success screen can greet the receiver by name).
+    val pairedPeerName: String? = null,
     // Progress of an in-flight image-blob transfer (null when idle).
     val blobProgress: BlobTransferProgress? = null
 )
@@ -80,7 +112,11 @@ class SyncService(
     // Content-addressed blob store: serves image blobs to peers and holds
     // blobs fetched from them. Null (tests) disables out-of-band transfers;
     // envelope refs still sync, but no bytes move.
-    private val blobStore: BlobStore? = null
+    private val blobStore: BlobStore? = null,
+    // Idle-watchdog timing, overridable so tests can prove the server winds
+    // down in seconds instead of minutes.
+    private val idleTimeoutMs: Long = SYNC_IDLE_TIMEOUT_MS,
+    private val watchdogIntervalMs: Long = IDLE_WATCHDOG_INTERVAL_MS
 ) {
     // The identity is mutated by renameDevice/rotateIdentityKey on
     // Dispatchers.IO while server handler threads and the discovery
@@ -141,7 +177,7 @@ class SyncService(
         blobTransfer = blobTransfer,
         advertisedFetchAddress = { pairing.advertisedFetchAddress() },
         noteActivity = { noteActivity() },
-        unconfirmedPeerDeviceId = { _state.value.pendingPeerDeviceId }
+        onVerifiedExchange = { fromDeviceId -> pairing.markPairingComplete(fromDeviceId) }
     )
 
     // High-water mark of the most recent sync/pairing activity; the idle
@@ -151,7 +187,10 @@ class SyncService(
 
     val server = SyncServer(
         port = port,
-        hello = { HelloResponse(deviceId = identity.deviceId, deviceName = identity.deviceName) },
+        hello = { announcedName ->
+            pairing.onHello(announcedName)
+            HelloResponse(deviceId = identity.deviceId, deviceName = identity.deviceName)
+        },
         onPair = { request, remoteHost -> pairing.handlePairRequest(request, remoteHost) },
         onExchange = { fromDeviceId, payload, ephemeralPublicKey, exchangeId ->
             exchange.handleExchange(fromDeviceId, payload, ephemeralPublicKey, exchangeId)
@@ -185,10 +224,10 @@ class SyncService(
         if (idleWatchdog != null) return
         idleWatchdog = scope.launch(Dispatchers.Default) {
             while (isActive) {
-                delay(IDLE_WATCHDOG_INTERVAL_MS)
+                delay(watchdogIntervalMs)
                 val now = Clock.System.now().toEpochMilliseconds()
                 val pinStillValid = pairing.hasActivePin(now)
-                if (!pinStillValid && server.isRunning && now - lastActivityAt >= SYNC_IDLE_TIMEOUT_MS) {
+                if (!pinStillValid && server.isRunning && now - lastActivityAt >= idleTimeoutMs) {
                     _state.update {
                         it.copy(statusMessage = "Sync server stopped after being idle — it restarts automatically when you sync.")
                     }
@@ -231,6 +270,22 @@ class SyncService(
 
     suspend fun connectToDevice(host: String, port: Int, pin: String): Result<String> =
         pairing.connectToDevice(host, port, pin)
+
+    /**
+     * Tells a host (fire-and-forget) that this device is on its PIN step, so
+     * the host's screen swaps its QR for the PIN before the PIN is even
+     * typed. Failures are ignored: the host is told again by the /hello the
+     * pairing call itself performs.
+     */
+    fun announceConnection(host: String, port: Int) {
+        scope.launch {
+            runCatching {
+                httpClient.get("http://$host:$port/hello") {
+                    parameter("announce", identity.deviceName)
+                }
+            }
+        }
+    }
 
     // ---------- Sync exchange (delegated) ----------
 
@@ -284,7 +339,10 @@ class SyncService(
             identity = newIdentity
             repository.clearAllPeers()
             // A pending unconfirmed pairing belongs to the old key; clear it so
-            // the gate does not block the re-pairing flow.
+            // the gate does not block the re-pairing flow — and cancel any
+            // active pairing session (its PIN would still be valid against the
+            // new key, and its stage would leave the wizard on a stale screen).
+            pairing.cancelPairing()
             _state.update {
                 it.copy(
                     statusMessage = "Sync key rotated. Re-pair your devices.",

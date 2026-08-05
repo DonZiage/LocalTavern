@@ -94,7 +94,9 @@ class SyncBlobTransfer(
                 var finalSize = 0
                 var chunkCount = 0
                 var refComplete = false
-                while (!refComplete) {
+                var refSkipped = false
+                var abortAll = false
+                while (!refComplete && !abortAll) {
                     noteActivity()
                     val exchangeId = freshExchangeId()
                     val request = encodeBlobRequest(BlobFetchPayload(
@@ -118,23 +120,23 @@ class SyncBlobTransfer(
                     }.body()
                     if (!response.ok) {
                         // The peer refused the fetch; abandon the remaining refs.
-                        refIndex = pending.size
+                        abortAll = true
                         break
                     }
                     if (response.exchangeId != exchangeId) {
                         // A response from a different exchange context: never
                         // trust it (protects against response swapping).
-                        refIndex = pending.size
+                        abortAll = true
                         break
                     }
 
                     val resultPayload = response.payload ?: run {
-                        refIndex = pending.size
+                        abortAll = true
                         break
                     }
                     val peerEphemeral = runCatching { decodeBase64(response.ephemeralPublicKey) }.getOrNull()
                     if (peerEphemeral == null || peerEphemeral.size != 32) {
-                        refIndex = pending.size
+                        abortAll = true
                         break
                     }
                     val responseKey = channelKeys.inboundChannelKey(peerPublicKey, peerEphemeral)
@@ -143,7 +145,7 @@ class SyncBlobTransfer(
                     )
                     if (result.refIndex != refIndex) {
                         // Protocol drift: never loop on an unexpected index.
-                        refIndex = pending.size
+                        abortAll = true
                         break
                     }
                     if (result.missing.isNotEmpty()) {
@@ -162,15 +164,23 @@ class SyncBlobTransfer(
                         // the transfer instead of reassembling garbage.
                         val chunk = runCatching { decodeBase64(result.data) }.getOrNull()
                         if (chunk == null || chunk.size > CHUNK_BYTES) {
-                            refIndex = pending.size
+                            abortAll = true
                             break
                         }
                         builder.add(chunk)
                         finalSize = result.total
                         chunkCount++
+                        if (finalSize.toLong() > MAX_FETCH_BYTES_PER_REF) {
+                            // The blob is larger than the protocol bound: skip
+                            // just this ref so one oversized file cannot starve
+                            // the remaining refs of the batch.
+                            refSkipped = true
+                            break
+                        }
                     } else if (!result.hasMore) {
                         // Empty blob or offset past the end: nothing to store.
-                        refIndex = pending.size
+                        // One bad ref must not abandon the rest of the batch.
+                        refSkipped = true
                         break
                     } else {
                         // Empty data claiming more chunks: a protocol violation.
@@ -179,15 +189,8 @@ class SyncBlobTransfer(
                         // end yields data="" with hasMore=false), so an empty
                         // chunk with hasMore=true could never terminate — it is
                         // exactly how a buggy or hostile peer would drive this
-                        // loop forever. Abandon the remaining refs.
-                        refIndex = pending.size
-                        break
-                    }
-                    if (offset >= MAX_FETCH_BYTES_PER_REF) {
-                        // Hard cap on the offset space as well as the chunk
-                        // count: even a peer that never sends a byte cannot
-                        // keep this loop iterating past the 64 MB mark.
-                        refIndex = pending.size
+                        // loop forever. Skip the ref instead of looping.
+                        refSkipped = true
                         break
                     }
                     offset += CHUNK_BYTES
@@ -195,14 +198,16 @@ class SyncBlobTransfer(
                     state.update { it.copy(blobProgress = BlobTransferProgress(doneBytes, totalBytes)) }
                     // Bounds against a hostile responder: the reassembly must
                     // never exceed the advertised size (plus one chunk of
-                    // slack), the per-ref chunk count, or the absolute cap.
+                    // slack), the per-ref chunk count, or the absolute cap. An
+                    // over-limit ref is skipped; the rest of the batch still
+                    // transfers.
                     val assembled = builder.sumOf { it.size }
                     val allowedSize = maxOf(ref.size, finalSize.toLong())
                     if (chunkCount > MAX_CHUNKS_PER_REF ||
                         assembled > allowedSize + CHUNK_BYTES ||
                         assembled > MAX_FETCH_BYTES_PER_REF
                     ) {
-                        refIndex = pending.size
+                        refSkipped = true
                         break
                     }
                     if (!result.hasMore) {
@@ -223,6 +228,16 @@ class SyncBlobTransfer(
                         refComplete = true
                     }
                 }
+                if (abortAll) break
+                if (refSkipped) {
+                    // The ref could not be transferred (too large, empty, or
+                    // the peer lied about it): move on to the next ref. It is
+                    // NOT remembered as missing — a later sync re-attempts it.
+                    doneBytes += ref.size
+                    refIndex++
+                    refComplete = true
+                    state.update { it.copy(blobProgress = BlobTransferProgress(doneBytes, totalBytes)) }
+                }
             }
         } finally {
             state.update { it.copy(blobProgress = null) }
@@ -234,7 +249,6 @@ class SyncBlobTransfer(
     // per-ref: the chunk is served at exactly (refIndex, offset); the client
     // advances to the next ref itself.
     suspend fun handleBlobFetch(fromDeviceId: String, encryptedPayload: String, requestEphemeralKey: String, exchangeId: String): BlobFetchResponse {
-        noteActivity()
         try {
             if (exchangeId.isBlank()) {
                 return BlobFetchResponse(ok = false, message = "Missing exchange id.")
@@ -246,6 +260,9 @@ class SyncBlobTransfer(
             }
             val peer = repository.getPeer(fromDeviceId)
                 ?: return BlobFetchResponse(ok = false, message = "Not paired.")
+            // Only validated traffic counts as activity (VULN-014): garbage
+            // from unauthenticated sources must not defeat the idle watchdog.
+            noteActivity()
             val peerKey = peer.publicKey
                 ?: return BlobFetchResponse(ok = false, message = "Peer has no key.")
             val peerEphemeral = runCatching { decodeBase64(requestEphemeralKey) }.getOrNull()

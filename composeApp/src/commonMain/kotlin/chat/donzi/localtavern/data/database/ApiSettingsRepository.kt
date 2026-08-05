@@ -20,10 +20,11 @@ class ApiSettingsRepository(
     private val readDispatcher: CoroutineDispatcher = ioDispatcher
 ) : BaseRepository(database, clock) {
 
-    // Live stream of the active connection so UI checks (e.g. refusing a send
-    // without a profile) never rely on a stale snapshot loaded once.
+    // Live stream of the connection in use. The stream never resolves to null
+    // while any connection exists: an explicitly active one wins, otherwise
+    // the most recently used one, otherwise the first available.
     fun observeActiveApiConnection(): Flow<ApiConfig?> =
-        queries.selectActiveApiConnection().asFlow().mapToOneOrNull(readDispatcher)
+        queries.selectActiveApiConnectionOrFallback().asFlow().mapToOneOrNull(readDispatcher)
             .map { it?.toDomain()?.withDecryptedKey() }
 
     suspend fun getAllApiConnections(): List<ApiConfig> = withContext(readDispatcher) {
@@ -252,10 +253,11 @@ class ApiSettingsRepository(
     }
 
     suspend fun getActiveApiConnection(): ApiConfig? = withContext(readDispatcher) {
-        // No silent fallback to the last-used profile: a connection is active
-        // only when explicitly marked as such, so the UI never claims a
-        // deactivated profile is in use.
-        queries.selectActiveApiConnection().executeAsOneOrNull()?.toDomain()?.withDecryptedKey()
+        // The connection in use: the explicitly active one when it exists,
+        // otherwise the most recently used one, otherwise the first available,
+        // so the app is never without a selected profile while any connection
+        // exists.
+        queries.selectActiveApiConnectionOrFallback().executeAsOneOrNull()?.toDomain()?.withDecryptedKey()
     }
 
     suspend fun updateApiConnectionDisplayOrders(orderedIds: List<String>): Unit = withContext(ioDispatcher) {

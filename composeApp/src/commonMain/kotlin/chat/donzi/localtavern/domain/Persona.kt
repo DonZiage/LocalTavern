@@ -6,6 +6,16 @@ data class Persona(
     val description: String?,
     val avatarData: ByteArray?
 ) {
+    companion object {
+        // The implicit persona used when the user has not defined any persona
+        // yet: a blank profile named "User". It is never stored in the
+        // database, so it can never show up in the persona cards, and it
+        // keeps a stable id so sessions bound to it remain addressable.
+        const val DEFAULT_ID = "localtavern-default-user"
+
+        fun defaultUser(): Persona = Persona(DEFAULT_ID, "User", null, null)
+    }
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other == null || other::class != this::class) return false

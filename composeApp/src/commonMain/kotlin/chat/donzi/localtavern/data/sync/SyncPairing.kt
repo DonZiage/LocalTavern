@@ -5,6 +5,7 @@ import dev.whyoleg.cryptography.random.CryptographyRandom
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.get
+import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
@@ -30,6 +31,13 @@ import kotlin.time.Clock
 // the 6-digit space — minutes on dedicated hardware, which meaningfully
 // raises the bar; the out-of-band fingerprint comparison is the primary
 // defense against an active man-in-the-middle.
+//
+// Rate limiting is two-layered: the per-session budget (MAX_PAIRING_ATTEMPTS)
+// stops brute-forcing one session, and the per-source-IP window below stops a
+// LAN attacker from killing every session the host restarts.
+private const val MAX_IP_ATTEMPTS_PER_WINDOW = 20
+private const val IP_ATTEMPT_WINDOW_MS = 15 * 60 * 1000L
+
 class SyncPairing(
     private val crypto: SyncCrypto,
     private val repository: SyncRepository,
@@ -71,7 +79,14 @@ class SyncPairing(
         activePin.value = null
         pairingFailures.value = 0
         seenPairingNonces = mutableSetOf()
-        state.update { it.copy(pairingPin = null) }
+        state.update {
+            it.copy(
+                pairingPin = null,
+                pairingStage = PairingStage.Idle,
+                connectedPeerName = null,
+                pairedPeerName = null
+            )
+        }
     }
 
     // ---------- Host side ----------
@@ -86,7 +101,17 @@ class SyncPairing(
         pairingFailures.value = 0
         seenPairingNonces = mutableSetOf()
         state.update {
-            it.copy(pairingPin = activePin.value, pairingExpiresAt = pinExpiresAt.value, syncError = null, pendingPeerFingerprint = null, pendingPeerName = null, pendingPeerDeviceId = null)
+            it.copy(
+                pairingPin = activePin.value,
+                pairingExpiresAt = pinExpiresAt.value,
+                pairingStage = PairingStage.WaitingForReceiver,
+                connectedPeerName = null,
+                pairedPeerName = null,
+                syncError = null,
+                pendingPeerFingerprint = null,
+                pendingPeerName = null,
+                pendingPeerDeviceId = null
+            )
         }
     }
 
@@ -94,7 +119,63 @@ class SyncPairing(
         activePin.value = null
         pairingFailures.value = 0
         seenPairingNonces = mutableSetOf()
-        state.update { it.copy(pairingPin = null, pairingExpiresAt = null, pendingPeerFingerprint = null, pendingPeerName = null, pendingPeerDeviceId = null) }
+        state.update {
+            it.copy(
+                pairingPin = null,
+                pairingExpiresAt = null,
+                pairingStage = PairingStage.Idle,
+                connectedPeerName = null,
+                pairedPeerName = null,
+                pendingPeerFingerprint = null,
+                pendingPeerName = null,
+                pendingPeerDeviceId = null
+            )
+        }
+    }
+
+    /**
+     * A receiver entered its PIN step and announced itself to this host
+     * (GET /hello?announce=<name>). Once that happens the host screen swaps
+     * the QR for the PIN, so both users never have to read two things at
+     * once. The announced name is display-only and sanitized: it comes from
+     * an unauthenticated request.
+     */
+    fun onHello(announcedName: String?) {
+        if (activePin.value == null) return
+        state.update {
+            if (it.pairingStage == PairingStage.WaitingForReceiver) {
+                it.copy(
+                    pairingStage = PairingStage.ReceiverConnected,
+                    connectedPeerName = announcedName?.let { name -> DeviceName.sanitize(name) }
+                )
+            } else {
+                it
+            }
+        }
+    }
+
+    /**
+     * An authenticated exchange arrived from the peer whose fingerprint is
+     * still pending: the other side has verified its fingerprint (the only
+     * way it can produce an exchange is by holding the shared secret this
+     * pairing established), so this side's gate opens automatically — the
+     * flow no longer requires both users to press "Fingerprints match" at
+     * the same time.
+     */
+    fun markPairingComplete(fromDeviceId: String) {
+        state.update {
+            if (it.pendingPeerDeviceId == fromDeviceId && it.pendingPeerFingerprint != null) {
+                it.copy(
+                    pairingStage = PairingStage.Paired,
+                    pairedPeerName = it.pendingPeerName,
+                    pendingPeerFingerprint = null,
+                    pendingPeerName = null,
+                    pendingPeerDeviceId = null
+                )
+            } else {
+                it
+            }
+        }
     }
 
     /**
@@ -135,11 +216,48 @@ class SyncPairing(
 
     /** Acknowledges the out-of-band fingerprint comparison after pairing. */
     fun confirmFingerprint() {
-        state.update { it.copy(pendingPeerFingerprint = null, pendingPeerName = null, pendingPeerDeviceId = null) }
+        state.update {
+            it.copy(
+                pairingStage = PairingStage.Paired,
+                pairedPeerName = it.pendingPeerName,
+                pendingPeerFingerprint = null,
+                pendingPeerName = null,
+                pendingPeerDeviceId = null
+            )
+        }
+    }
+
+    // Per-source-IP throttle that SURVIVES pairing sessions. The session
+    // budget (MAX_PAIRING_ATTEMPTS) stops PIN brute-forcing but resets on
+    // every new session, which let a LAN attacker kill every restarted
+    // session with five well-formed wrong guesses (VULN-015). This window
+    // caps how many well-formed attempts ANY single source address can make
+    // overall, so a hammering attacker is throttled instead of chasing the
+    // host through an endless restart loop. Only well-formed attempts count
+    // (malformed ones are rejected before this point); the maps expire by
+    // wall-clock window and are guarded by pairingMutex like the budget.
+    private val ipAttemptCounts = mutableMapOf<String, Int>()
+    private val ipAttemptWindows = mutableMapOf<String, Long>()
+
+    private fun isIpThrottled(ip: String?, now: Long): Boolean {
+        val key = ip ?: "unknown"
+        val windowStart = ipAttemptWindows[key] ?: return false
+        if (now - windowStart > IP_ATTEMPT_WINDOW_MS) return false
+        return (ipAttemptCounts[key] ?: 0) >= MAX_IP_ATTEMPTS_PER_WINDOW
+    }
+
+    private fun recordIpAttempt(ip: String?, now: Long) {
+        val key = ip ?: "unknown"
+        val windowStart = ipAttemptWindows[key]
+        if (windowStart == null || now - windowStart > IP_ATTEMPT_WINDOW_MS) {
+            ipAttemptWindows[key] = now
+            ipAttemptCounts[key] = 1
+        } else {
+            ipAttemptCounts[key] = (ipAttemptCounts[key] ?: 0) + 1
+        }
     }
 
     suspend fun handlePairRequest(request: PairRequest, remoteHost: String?): PairResponse {
-        noteActivity()
         val now = Clock.System.now().toEpochMilliseconds()
         val pin = activePin.value
         if (pin == null || now > pinExpiresAt.value) {
@@ -152,17 +270,24 @@ class SyncPairing(
         val nonce = runCatching { decodeBase64(request.nonce) }.getOrNull()
         val proof = runCatching { decodeBase64(request.pinProof) }.getOrNull()
         if (peerPublicKey == null || peerPublicKey.size != 32 || nonce == null || nonce.isEmpty() || proof == null) {
-            // Malformed payloads count toward the attempt budget too, so an
-            // attacker cannot probe the endpoint without exhausting the
-            // pairing session.
-            pairingMutex.withLock { pairingFailures.value += 1 }
+            // Malformed payloads are rejected WITHOUT consuming the PIN
+            // budget: they cost the host no crypto work and can never be a
+            // PIN guess, so counting them would let any LAN attacker kill a
+            // pairing session with five tiny garbage requests and repeat it
+            // forever (a permanent pairing DoS). Only well-formed attempts
+            // that reach the constant-time verification consume the budget.
             return PairResponse(ok = false, message = "Invalid pairing payload.")
         }
-        // The attempt budget, the replay check and the nonce recording are one
-        // critical section: concurrent requests must not race the 5-attempt
-        // limit, and a replayed nonce must not slip through between the check
-        // and the recording.
+        // A well-formed attempt reached the pairing logic; the throttled
+        // and budgeted checks below run in one critical section.
         val pinOk = pairingMutex.withLock {
+            if (isIpThrottled(remoteHost, now)) {
+                return PairResponse(ok = false, message = "Too many attempts from this address. Wait a few minutes, then restart pairing on the host device.")
+            }
+            recordIpAttempt(remoteHost, now)
+            // A real (non-throttled) pairing attempt is activity: the idle
+            // watchdog must not wind the server down under a live pairing.
+            noteActivity()
             if (pairingFailures.value >= MAX_PAIRING_ATTEMPTS) {
                 return PairResponse(ok = false, message = "Too many failed attempts. Restart pairing on the host device.")
             }
@@ -204,7 +329,12 @@ class SyncPairing(
             )
         )
         state.update {
-            it.copy(pendingPeerFingerprint = fingerprint, pendingPeerName = peerName, pendingPeerDeviceId = request.deviceId)
+            it.copy(
+                pairingStage = PairingStage.VerifyingPin,
+                pendingPeerFingerprint = fingerprint,
+                pendingPeerName = peerName,
+                pendingPeerDeviceId = request.deviceId
+            )
         }
         return PairResponse(
             ok = true,
@@ -220,7 +350,13 @@ class SyncPairing(
     suspend fun connectToDevice(host: String, port: Int, pin: String): Result<String> = withContext(Dispatchers.IO) {
         try {
             val base = "http://$host:$port"
-            val hello: HelloResponse = httpClient.get("$base/hello").body()
+            // The announce query param tells the host a receiver has arrived
+            // even when the UI-side announce call was skipped (e.g. manual
+            // entry without the PIN step): the host swaps its QR for the PIN
+            // as soon as it sees a /hello while a pairing session is active.
+            val hello: HelloResponse = httpClient.get("$base/hello") {
+                parameter("announce", identity.deviceName)
+            }.body()
             if (hello.deviceId == identity.deviceId) error("Cannot pair a device with itself.")
 
             // Fresh nonce per pairing attempt from the CSPRNG: the proof

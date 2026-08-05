@@ -198,6 +198,11 @@ class CharacterRepository(
         // The character editor does not touch the round-trip-only card fields;
         // carry the stored values forward so a save cannot strip them.
         val existing = queries.selectCharacterById(id).executeAsOneOrNull()
+        // A local avatar change (set or removed) supersedes any unresolved
+        // out-of-band ref on the row; the ref must not resurrect the old
+        // avatar. Untouched edits (the ref carried forward unchanged) keep it,
+        // so a pending avatar is not lost by an unrelated save.
+        if (avatarData != existing?.avatarData) queries.clearCharacterAvatarRef(id)
         queries.updateCharacter(
             name = name,
             description = description,
@@ -274,6 +279,10 @@ class CharacterRepository(
     }
 
     suspend fun updatePersona(id: String, name: String, description: String?, avatarData: ByteArray?) = withContext(ioDispatcher) {
+        val existing = queries.selectPersonaByIdAny(id).executeAsOneOrNull()
+        // See updateCharacter: a local avatar change supersedes an unresolved
+        // out-of-band ref; an unrelated save keeps it.
+        if (avatarData != existing?.avatarData) queries.clearPersonaAvatarRef(id)
         queries.updatePersona(
             name = name,
             description = description,

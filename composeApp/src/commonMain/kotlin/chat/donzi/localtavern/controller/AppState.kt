@@ -61,6 +61,25 @@ class AppState(
 
     init {
         retry()
+        // Keep the persisted selection converged at runtime: whenever the
+        // persona list changes (add, edit, delete, sync), re-resolve the
+        // active persona — last selection while it still exists, otherwise
+        // the first available, otherwise the implicit blank "User" persona —
+        // so a selected persona card always exists. retry() owns the initial
+        // load, so this only acts on later emissions.
+        scope.launch {
+            characterRepository.observePersonas().collect { personas ->
+                if (!_isInitialized.value) return@collect
+                val current = _activePersonaId.value
+                val resolved = personas.firstOrNull { it.id == current }?.id
+                    ?: personas.firstOrNull()?.id
+                    ?: Persona.DEFAULT_ID
+                if (resolved != current) {
+                    _activePersonaId.value = resolved
+                    apiSettingsRepository.updateActivePersonaId(resolved)
+                }
+            }
+        }
     }
 
     // Any failure in initialization must surface instead of leaving the app
@@ -70,16 +89,18 @@ class AppState(
         _initError.value = null
         scope.launch {
             try {
-                var currentPersonas = characterRepository.getAllPersonas()
-                if (currentPersonas.isEmpty()) {
-                    characterRepository.insertPersona("User", "", null)
-                    currentPersonas = characterRepository.getAllPersonas()
-                }
+                val currentPersonas = characterRepository.getAllPersonas()
 
                 val settings = apiSettingsRepository.getAppSettings()
-                var pId = settings.activePersonaId
-                if (pId == null && currentPersonas.isNotEmpty()) {
-                    pId = currentPersonas.first().id
+                // The active persona must never dangle: the last selection
+                // wins while its persona still exists, otherwise the first
+                // available persona takes over, otherwise the implicit blank
+                // "User" persona (never stored, never shown in the cards).
+                val pId = settings.activePersonaId
+                    ?.takeIf { stored -> currentPersonas.any { it.id == stored } }
+                    ?: currentPersonas.firstOrNull()?.id
+                    ?: Persona.DEFAULT_ID
+                if (pId != settings.activePersonaId) {
                     apiSettingsRepository.updateActivePersonaId(pId)
                 }
                 _activePersonaId.value = pId
@@ -120,7 +141,7 @@ class AppState(
             characterRepository.deletePersona(personaId)
             if (_activePersonaId.value == personaId) {
                 val remainingPersonas = characterRepository.getAllPersonas()
-                val nextPersonaId = remainingPersonas.firstOrNull()?.id
+                val nextPersonaId = remainingPersonas.firstOrNull()?.id ?: Persona.DEFAULT_ID
                 _activePersonaId.value = nextPersonaId
                 apiSettingsRepository.updateActivePersonaId(nextPersonaId)
             }

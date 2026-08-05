@@ -25,9 +25,9 @@ actual class DriverFactory {
 
         // The JDBC driver has no built-in schema versioning, so create/migrate
         // against PRAGMA user_version manually. (Android and iOS drivers manage
-        // this themselves.) The migration history was reset: the schema is
-        // created fresh at version 1, and future .sqm files dropped into
-        // migrations/ will be run here for older databases.
+        // this themselves.) Version 1 is the current schema; future schema
+        // changes ship as .sqm files in migrations/ and are run here for older
+        // databases.
         val currentVersion = readUserVersion(driver)
         if (currentVersion < LocalTavernDB.Schema.version) {
             val hasTables = queryRow(driver, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'CharacterEntity';") > 0L

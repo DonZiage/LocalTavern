@@ -7,6 +7,7 @@ import chat.donzi.localtavern.data.security.ApiKeyCipher
 import chat.donzi.localtavern.data.database.SyncPeer
 import chat.donzi.localtavern.utils.Hashing
 import chat.donzi.localtavern.utils.deserializeImageList
+import chat.donzi.localtavern.utils.deserializeImageRefs
 import chat.donzi.localtavern.utils.serializeImageList
 import chat.donzi.localtavern.utils.serializeImageRefs
 import app.cash.sqldelight.coroutines.asFlow
@@ -195,89 +196,174 @@ class SyncRepository(
     /** All rows changed after [since] (including tombstones), in one batch. */
     suspend fun collectDelta(since: Long): SyncChanges = collectDeltaBatched(since, Long.MAX_VALUE).changes
 
+    // (syncSeq, estimated wire bytes) of one sequence group, as computed by
+    // the SQL delta-group queries (see LocalTavernDB.sq).
+    private data class GroupSize(val seq: Long, val size: Long)
+
     /**
      * All rows changed after [since] (including tombstones), cut to at most
      * [budgetBytes] of estimated wire bytes and ordered by sync sequence.
      *
-     * The cut lands on a sequence boundary: rows that share a syncSeq (a
-     * local write and a peer's applied row can collide under SQLite's
-     * serialized stamping) form one atomic group and always ship together,
-     * because the peer's cursor advances to maxSeq + 1 — splitting a group
-     * would strand the leftover row below the cursor forever.
+     * The cut is decided on SQL-computed (sequence, estimated size) groups
+     * BEFORE any row is materialized: only the rows that actually ship are
+     * fetched. Draining a huge backlog therefore does bounded work per round
+     * no matter how large the library is (the previous implementation
+     * re-materialized every pending row of all six tables on every round).
      *
-     * The returned batch is sequence-closed: every local row with
+     * The cut lands on a sequence boundary: rows that share a syncSeq (a local
+     * write and a peer's applied row can collide under SQLite's serialized
+     * stamping) form one atomic group and always ship together, because the
+     * peer's cursor advances to maxSeq + 1 — splitting a group would strand
+     * the leftover row below the cursor forever.
+     *
+     * The returned batch is sequence-closed: every row with
      * syncSeq <= batch.changes.maxSyncSeq is in the batch, so the peer's
-     * cursor (maxSeq + 1) is exact and the next batch resumes without gaps
-     * or duplicates. [hasMore] is true when rows remain above the cut.
-     * Batches are small enough that a large library (hundreds of characters
-     * with avatars) never has to ride in one envelope: the receiver of such
-     * an envelope would otherwise have to hold several times its size in
-     * memory while decoding, which exhausts mobile heaps mid-exchange.
+     * cursor (maxSeq + 1) is exact and the next batch resumes without gaps or
+     * duplicates. [hasMore] is true when rows remain above the cut.
+     *
+     * A single group larger than MAX_SAFE_GROUP_PLAINTEXT_BYTES cannot fit any
+     * envelope: the peer's server rejects oversized bodies with 413, which
+     * would cut the sync and freeze the cursor forever (the pre-fix size-limit
+     * failure). Such a group is never shipped: the batch comes back empty with
+     * [hasMore] = true and the exchange reports a clear error instead.
      */
     suspend fun collectDeltaBatched(since: Long, budgetBytes: Long = DELTA_BUDGET_BYTES): DeltaBatch = withContext(readDispatcher) {
-        val characters = queries.selectCharacterDeltas(since).executeAsList()
-        val personas = queries.selectPersonaDeltas(since).executeAsList()
-        val sessions = queries.selectSessionDeltas(since).executeAsList()
-        val messages = queries.selectMessageDeltas(since).executeAsList()
-        val apiConnections = queries.selectApiConnectionDeltas(since).executeAsList()
-        val promptBlocks = queries.selectPromptBlockDeltas(since).executeAsList()
-
-        // Rank the union of all six tables by syncSeq (each table is already
-        // ordered by syncSeq, see the delta queries) so the budget cut is
-        // taken on the GLOBAL sequence order.
-        val ranking = ArrayList<RankedRow>(
-            characters.size + personas.size + sessions.size + messages.size + apiConnections.size + promptBlocks.size
-        )
-        characters.forEach { ranking.add(RankedRow(it.syncSeq, it.estimatedWireSize())) }
-        personas.forEach { ranking.add(RankedRow(it.syncSeq, it.estimatedWireSize())) }
-        sessions.forEach { ranking.add(RankedRow(it.syncSeq, it.estimatedWireSize())) }
-        messages.forEach { ranking.add(RankedRow(it.syncSeq, it.estimatedWireSize())) }
-        apiConnections.forEach { ranking.add(RankedRow(it.syncSeq, it.estimatedWireSize())) }
-        promptBlocks.forEach { ranking.add(RankedRow(it.syncSeq, it.estimatedWireSize())) }
-        ranking.sortBy { it.seq }
+        // Group sizes come straight from SQL (no row materialization). The
+        // estimates mirror what the rows will put on the wire, including the
+        // avatar threshold (big avatars ship as small refs, see
+        // SyncModels.avatarRefForTransport), so the cut below is byte-accurate
+        // before any row is fetched.
+        val groups = ArrayList<GroupSize>()
+        queries.selectCharacterDeltaGroups(ROW_OVERHEAD, AVATAR_REF_THRESHOLD_BYTES, AVATAR_REF_WIRE_ESTIMATE, since).executeAsList()
+            .forEach { groups.add(GroupSize(it.seq, it.size)) }
+        queries.selectPersonaDeltaGroups(ROW_OVERHEAD, AVATAR_REF_THRESHOLD_BYTES, AVATAR_REF_WIRE_ESTIMATE, since).executeAsList()
+            .forEach { groups.add(GroupSize(it.seq, it.size)) }
+        queries.selectSessionDeltaGroups(ROW_OVERHEAD, since).executeAsList()
+            .forEach { groups.add(GroupSize(it.seq, it.size)) }
+        queries.selectMessageDeltaGroups(ROW_OVERHEAD, since).executeAsList()
+            .forEach { groups.add(GroupSize(it.seq, it.size)) }
+        queries.selectApiConnectionDeltaGroups(ROW_OVERHEAD, since).executeAsList()
+            .forEach { groups.add(GroupSize(it.seq, it.size)) }
+        queries.selectPromptBlockDeltaGroups(ROW_OVERHEAD, since).executeAsList()
+            .forEach { groups.add(GroupSize(it.seq, it.size)) }
+        groups.sortBy { it.seq }
 
         // Walk whole sequence groups: the first group always ships (it is the
-        // atomic minimum), and a group is never split by the budget.
-        var cutSeq = Long.MIN_VALUE
+        // atomic minimum) unless it cannot fit any envelope at all, and a
+        // group is never split by the budget.
+        var cutSeq: Long? = null
         var total = 0L
         var index = 0
-        while (index < ranking.size) {
-            val seq = ranking[index].seq
+        while (index < groups.size) {
+            val seq = groups[index].seq
             var groupBytes = 0L
-            while (index < ranking.size && ranking[index].seq == seq) {
-                groupBytes += ranking[index].size
+            while (index < groups.size && groups[index].seq == seq) {
+                groupBytes += groups[index].size
                 index++
             }
+            if (groupBytes > MAX_SAFE_GROUP_PLAINTEXT_BYTES) break
             if (total > 0 && total + groupBytes > budgetBytes) break
             total += groupBytes
             cutSeq = seq
         }
+        if (cutSeq == null) {
+            // Nothing pending, or the first group cannot ride any envelope:
+            // the batch must stay empty (an oversized envelope would be
+            // rejected with 413 and freeze the cursor), and hasMore tells the
+            // exchange to fail with a clear error instead of looping.
+            return@withContext DeltaBatch(changes = SyncChanges(), hasMore = groups.isNotEmpty())
+        }
 
         // Sequence-closed slice: every row at or below the cut. Only the
-        // shipped rows are mapped to wire DTOs (the tail is left as raw rows).
-        val shippedCharacters = characters.takeWhile { it.syncSeq <= cutSeq }
-        val shippedPersonas = personas.takeWhile { it.syncSeq <= cutSeq }
-        val shippedSessions = sessions.takeWhile { it.syncSeq <= cutSeq }
-        val shippedMessages = messages.takeWhile { it.syncSeq <= cutSeq }
-        val shippedApiConnections = apiConnections.takeWhile { it.syncSeq <= cutSeq }
-        val shippedPromptBlocks = promptBlocks.takeWhile { it.syncSeq <= cutSeq }
+        // shipped rows are fetched and mapped to wire DTOs (the tail is never
+        // materialized).
+        val shippedCharacters = queries.selectCharacterDeltaRows(since, cutSeq).executeAsList()
+        val shippedPersonas = queries.selectPersonaDeltaRows(since, cutSeq).executeAsList()
+        val shippedSessions = queries.selectSessionDeltaRows(since, cutSeq).executeAsList()
+        val shippedMessages = queries.selectMessageDeltaRows(since, cutSeq).executeAsList()
+        val shippedApiConnections = queries.selectApiConnectionDeltaRows(since, cutSeq).executeAsList()
+        val shippedPromptBlocks = queries.selectPromptBlockDeltaRows(since, cutSeq).executeAsList()
 
         DeltaBatch(
             changes = SyncChanges(
-                characters = shippedCharacters.map { it.toSync() },
-                personas = shippedPersonas.map { it.toSync() },
+                characters = shippedCharacters.map { it.toSync(blobStore) },
+                personas = shippedPersonas.map { it.toSync(blobStore) },
                 sessions = shippedSessions.map { it.toSync() },
                 messages = shippedMessages.map { it.toSync() },
                 apiConnections = shippedApiConnections.map { it.toSync(apiKeyCipher) },
                 promptBlocks = shippedPromptBlocks.map { it.toSync() }
             ),
-            hasMore = shippedCharacters.size < characters.size ||
-                shippedPersonas.size < personas.size ||
-                shippedSessions.size < sessions.size ||
-                shippedMessages.size < messages.size ||
-                shippedApiConnections.size < apiConnections.size ||
-                shippedPromptBlocks.size < promptBlocks.size
+            hasMore = groups.any { it.seq > cutSeq }
         )
+    }
+
+    // ---------- Out-of-band blob resolution ----------
+
+    /**
+     * Every avatar ref this device is still waiting for: rows whose avatar
+     * bytes are absent but whose ref survived on the row (an earlier fetch
+     * failed, or the ref arrived from a peer that had no bytes). The exchange
+     * re-fetches these against the current peer on every sync round, so a
+     * missed avatar heals on the next sync instead of being lost forever.
+     */
+    suspend fun getMissingAvatarRefs(): List<SyncImageRef> = withContext(readDispatcher) {
+        val refs = ArrayList<SyncImageRef>()
+        queries.selectCharactersWithMissingAvatar().executeAsList().forEach { row ->
+            deserializeImageRefs(row.avatarRef).forEach { refs.add(SyncImageRef(it.sha256, it.size)) }
+        }
+        queries.selectPersonasWithMissingAvatar().executeAsList().forEach { row ->
+            deserializeImageRefs(row.avatarRef).forEach { refs.add(SyncImageRef(it.sha256, it.size)) }
+        }
+        refs
+    }
+
+    /**
+     * Every message-image ref carried by a live row, for the same retry path:
+     * blobs that failed to arrive are re-attempted against the current peer
+     * on every sync round (fetchMissingBlobs skips refs already in the store).
+     */
+    suspend fun getMissingImageRefs(): List<SyncImageRef> = withContext(readDispatcher) {
+        val refs = ArrayList<SyncImageRef>()
+        queries.selectAllLiveImageRefs().executeAsList().forEach { refsJson ->
+            deserializeImageRefs(refsJson).forEach { refs.add(SyncImageRef(it.sha256, it.size)) }
+        }
+        refs
+    }
+
+    /**
+     * Restores the avatar bytes of rows whose blob has arrived in [blobStore]:
+     * the row's avatar is filled and its ref cleared. Only rows that STILL
+     * carry the same ref, still have no bytes and are not tombstoned are
+     * touched, so a newer local avatar or a newer ref is never overwritten.
+     * Returns the number of filled rows.
+     */
+    suspend fun fillMissingAvatars(blobStore: BlobStore?): Int = withContext(ioDispatcher) {
+        if (blobStore == null) return@withContext 0
+        // Blob reads are file I/O: resolve the bytes BEFORE the transaction.
+        val pendingCharacters = queries.selectCharactersWithMissingAvatar().executeAsList().mapNotNull { row ->
+            val ref = deserializeImageRefs(row.avatarRef).firstOrNull() ?: return@mapNotNull null
+            // Keys from the wire are canonical SHA-256 hex before any file
+            // access (the blob store resolves keys as file names).
+            if (!Hashing.isValidSha256Hex(ref.sha256)) return@mapNotNull null
+            val bytes = blobStore.read(ref.sha256) ?: return@mapNotNull null
+            row.id to (row.avatarRef to bytes)
+        }
+        val pendingPersonas = queries.selectPersonasWithMissingAvatar().executeAsList().mapNotNull { row ->
+            val ref = deserializeImageRefs(row.avatarRef).firstOrNull() ?: return@mapNotNull null
+            if (!Hashing.isValidSha256Hex(ref.sha256)) return@mapNotNull null
+            val bytes = blobStore.read(ref.sha256) ?: return@mapNotNull null
+            row.id to (row.avatarRef to bytes)
+        }
+        var filled = 0
+        database.transaction {
+            pendingCharacters.forEach { (id, refJsonAndBytes) ->
+                if (queries.updateCharacterAvatarData(refJsonAndBytes.second, id, refJsonAndBytes.first).value > 0L) filled++
+            }
+            pendingPersonas.forEach { (id, refJsonAndBytes) ->
+                if (queries.updatePersonaAvatarData(refJsonAndBytes.second, id, refJsonAndBytes.first).value > 0L) filled++
+            }
+        }
+        filled
     }
 
     // ---------- Applying remote changes (LWW) ----------
@@ -298,6 +384,13 @@ class SyncRepository(
      * (updatedAt); on exact ties the lexicographically greater deviceId wins,
      * which both sides resolve identically so they converge.
      *
+     * Rows that carry an out-of-band avatar ref get their bytes from
+     * [resolvedAvatars] (sha256 -> bytes): the exchange fetches them from the
+     * sender through /blob/fetch BEFORE applying (see SyncExchange), so the
+     * row lands in the database with its avatar already materialized. A ref
+     * the sender could not serve resolves to null and the row lands without
+     * an avatar rather than blocking the sync.
+     *
      * Afterwards the device's logical clock absorbs the envelope's highest
      * timestamp — even for rows rejected as stale — so a subsequent local
      * edit always out-stamps the version it was caused by, regardless of how
@@ -311,7 +404,7 @@ class SyncRepository(
      * are not touched — their version loses, and the winning version will
      * arrive from its author.
      */
-    suspend fun applyChanges(changes: SyncChanges, peerDeviceId: String) = withContext(ioDispatcher) {
+    suspend fun applyChanges(changes: SyncChanges, peerDeviceId: String, resolvedAvatars: Map<String, ByteArray?> = emptyMap()) = withContext(ioDispatcher) {
         // Message image blobs are written to the store BEFORE the row touches
         // the database (crash-safe ordering: a row never references a missing
         // blob). Tombstoned rows are not persisted — their refs are dropped,
@@ -334,8 +427,8 @@ class SyncRepository(
             PreparedMessage(row, serializeImageRefs(refs))
         }
         database.transaction {
-            changes.characters.forEach { row -> apply(row, peerDeviceId) }
-            changes.personas.forEach { row -> apply(row, peerDeviceId) }
+            changes.characters.forEach { row -> apply(row, peerDeviceId, resolvedAvatars) }
+            changes.personas.forEach { row -> apply(row, peerDeviceId, resolvedAvatars) }
             changes.sessions.forEach { row -> apply(row, peerDeviceId) }
             preparedMessages.forEach { apply(it.row, peerDeviceId, it.refsJson) }
             changes.apiConnections.forEach { row -> apply(row, peerDeviceId) }
@@ -345,10 +438,6 @@ class SyncRepository(
     }
 
     private data class PreparedMessage(val row: SyncMessage, val refsJson: String?)
-
-    // (syncSeq, estimated wire bytes) of one pending row, used to rank the
-    // delta union for the batch cut.
-    private data class RankedRow(val seq: Long, val size: Long)
 
     // Legacy wire images (serialized byte-list BLOB) -> content-addressed
     // blobs + references. Only writes blobs that are not already stored.
@@ -398,7 +487,7 @@ class SyncRepository(
         queries.updateAppliedRowMax(incomingUpdatedAt, rowId, peerDeviceId)
     }
 
-    private fun apply(row: SyncCharacter, peerDeviceId: String) {
+    private fun apply(row: SyncCharacter, peerDeviceId: String, resolvedAvatars: Map<String, ByteArray?>) {
         val existing = queries.selectCharacterByIdAny(row.id).executeAsOneOrNull()
         if (existing != null) {
             noteIncoming(row.id, TABLE_CHARACTER, peerDeviceId, existing.updatedAt, row.updatedAt)
@@ -411,13 +500,31 @@ class SyncRepository(
         // cursor hint for the sender; here it must be local so it can always
         // be forwarded.
         val seq = clock.nextSyncSeq()
+        // Out-of-band avatars arrive pre-fetched by the exchange. A ref the
+        // sender could not serve (or a fetch that failed) leaves the row
+        // WITHOUT bytes but WITH the ref stored on the row, so a later sync
+        // re-fetches and fills it (see getMissingAvatarRefs / fillMissingAvatars).
+        // Tombstones carry no avatar state at all.
+        val resolved = row.avatarRef?.let { resolvedAvatars[it.sha256] }
+        val avatarData = if (row.isDeleted == 1L) null else (resolved ?: row.avatarData)
+        // Refs from the wire are filtered to the canonical SHA-256 hex shape
+        // before anything is stored: the column is later used for blob-store
+        // file reads (see fillMissingAvatars), and an unvalidated key is a
+        // path-traversal primitive.
+        val avatarRef = if (row.isDeleted == 1L || avatarData != null || row.avatarRef == null ||
+            !Hashing.isValidSha256Hex(row.avatarRef.sha256)
+        ) {
+            null
+        } else {
+            serializeImageRefs(listOf(chat.donzi.localtavern.domain.ImageRef(row.avatarRef.sha256, row.avatarRef.size)))
+        }
         if (existing == null) {
             queries.insertCharacterFull(
                 id = row.id, name = row.name, description = row.description,
                 personality = row.personality, scenario = row.scenario, firstMes = row.firstMes,
                 mesExample = row.mesExample, creatorNotes = row.creatorNotes, altGreetings = row.altGreetings,
-                avatarData = row.avatarData, isAssistant = row.isAssistant, updatedAt = row.updatedAt,
-                isDeleted = row.isDeleted, systemPrompt = row.systemPrompt,
+                avatarData = avatarData, avatarRef = avatarRef, isAssistant = row.isAssistant,
+                updatedAt = row.updatedAt, isDeleted = row.isDeleted, systemPrompt = row.systemPrompt,
                 postHistoryInstructions = row.postHistoryInstructions, creator = row.creator,
                 characterVersion = row.characterVersion, tags = row.tags, extensions = row.extensions,
                 characterBook = row.characterBook, syncSeq = seq
@@ -427,8 +534,8 @@ class SyncRepository(
                 name = row.name, description = row.description, personality = row.personality,
                 scenario = row.scenario, firstMes = row.firstMes, mesExample = row.mesExample,
                 creatorNotes = row.creatorNotes, altGreetings = row.altGreetings,
-                avatarData = row.avatarData, isAssistant = row.isAssistant, updatedAt = row.updatedAt,
-                isDeleted = row.isDeleted, systemPrompt = row.systemPrompt,
+                avatarData = avatarData, avatarRef = avatarRef, isAssistant = row.isAssistant,
+                updatedAt = row.updatedAt, isDeleted = row.isDeleted, systemPrompt = row.systemPrompt,
                 postHistoryInstructions = row.postHistoryInstructions, creator = row.creator,
                 characterVersion = row.characterVersion, tags = row.tags, extensions = row.extensions,
                 characterBook = row.characterBook, syncSeq = seq, id = row.id
@@ -436,7 +543,7 @@ class SyncRepository(
         }
     }
 
-    private fun apply(row: SyncPersona, peerDeviceId: String) {
+    private fun apply(row: SyncPersona, peerDeviceId: String, resolvedAvatars: Map<String, ByteArray?>) {
         val existing = queries.selectPersonaByIdAny(row.id).executeAsOneOrNull()
         if (existing != null) {
             noteIncoming(row.id, TABLE_PERSONA, peerDeviceId, existing.updatedAt, row.updatedAt)
@@ -445,16 +552,28 @@ class SyncRepository(
             queries.insertAppliedRow(row.id, peerDeviceId, row.updatedAt)
         }
         val seq = clock.nextSyncSeq()
+        val resolved = row.avatarRef?.let { resolvedAvatars[it.sha256] }
+        val avatarData = if (row.isDeleted == 1L) null else (resolved ?: row.avatarData)
+        // Wire refs are shape-validated before storing (see the character
+        // apply): the column feeds blob-store file reads.
+        val avatarRef = if (row.isDeleted == 1L || avatarData != null || row.avatarRef == null ||
+            !Hashing.isValidSha256Hex(row.avatarRef.sha256)
+        ) {
+            null
+        } else {
+            serializeImageRefs(listOf(chat.donzi.localtavern.domain.ImageRef(row.avatarRef.sha256, row.avatarRef.size)))
+        }
         if (existing == null) {
             queries.insertPersonaFull(
                 id = row.id, name = row.name, description = row.description,
-                avatarData = row.avatarData, updatedAt = row.updatedAt, isDeleted = row.isDeleted,
-                syncSeq = seq
+                avatarData = avatarData, avatarRef = avatarRef, updatedAt = row.updatedAt,
+                isDeleted = row.isDeleted, syncSeq = seq
             )
         } else {
             queries.upsertPersonaFull(
-                name = row.name, description = row.description, avatarData = row.avatarData,
-                updatedAt = row.updatedAt, isDeleted = row.isDeleted, syncSeq = seq, id = row.id
+                name = row.name, description = row.description, avatarData = avatarData,
+                avatarRef = avatarRef, updatedAt = row.updatedAt, isDeleted = row.isDeleted,
+                syncSeq = seq, id = row.id
             )
         }
     }

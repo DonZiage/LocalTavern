@@ -9,6 +9,12 @@ CREATE TABLE CharacterEntity (
     creatorNotes TEXT,
     altGreetings TEXT,
     avatarData BLOB,
+    -- Out-of-band avatar ref (imageRefs-style JSON of one SyncImageRef) when
+    -- the row's avatar bytes are NOT available locally: the ref travels with
+    -- the row so a later fetch can restore the bytes (see
+    -- SyncRepository.getMissingAvatarRefs). Mutually exclusive with
+    -- avatarData: bytes present -> ref NULL, and vice versa.
+    avatarRef TEXT,
     isAssistant INTEGER NOT NULL DEFAULT 0,
     updatedAt INTEGER NOT NULL DEFAULT 0,
     isDeleted INTEGER NOT NULL DEFAULT 0,
@@ -30,6 +36,9 @@ CREATE TABLE PersonaEntity (
     name TEXT NOT NULL,
     description TEXT,
     avatarData BLOB,
+    -- Out-of-band avatar ref (imageRefs-style JSON of one SyncImageRef) when
+    -- the avatar bytes are not available locally; see CharacterEntity.
+    avatarRef TEXT,
     updatedAt INTEGER NOT NULL DEFAULT 0,
     isDeleted INTEGER NOT NULL DEFAULT 0,
     syncSeq INTEGER NOT NULL DEFAULT 0
@@ -258,6 +267,16 @@ selectActiveApiConnection:
 -- displayOrder makes the pick deterministic if the "exactly one active row"
 -- invariant is ever violated (e.g. by an older sync merge).
 SELECT * FROM ApiConnection WHERE isActive = 1 AND isDeleted = 0 ORDER BY displayOrder ASC LIMIT 1;
+
+selectActiveApiConnectionOrFallback:
+-- The app must never be left without a selected profile while any connection
+-- exists: an explicitly active connection wins, otherwise the most recently
+-- used one ("the last"), otherwise the first by display order. displayOrder
+-- makes the pick deterministic when lastUsed ties at 0 (never used).
+SELECT * FROM ApiConnection
+WHERE isDeleted = 0
+ORDER BY isActive DESC, lastUsed DESC, displayOrder ASC
+LIMIT 1;
 
 selectApiConnectionById:
 SELECT * FROM ApiConnection WHERE id = ? AND isDeleted = 0 LIMIT 1;
@@ -493,6 +512,25 @@ SELECT * FROM MessageEntity WHERE imageData IS NOT NULL;
 selectAllLiveImageRefs:
 SELECT imageRefs FROM MessageEntity WHERE imageRefs IS NOT NULL AND isDeleted = 0;
 
+-- GC key collection for avatar blobs: sync stages avatars above the inline
+-- threshold (see SyncModels.AVATAR_REF_THRESHOLD_BYTES) in the blob store, so
+-- those keys are live while the owning row is. LENGTH() keeps the scan from
+-- loading small (inline) avatars into memory.
+selectAllLiveCharacterAvatars:
+SELECT avatarData FROM CharacterEntity WHERE isDeleted = 0 AND avatarData IS NOT NULL AND LENGTH(avatarData) > ?;
+
+selectAllLivePersonaAvatars:
+SELECT avatarData FROM PersonaEntity WHERE isDeleted = 0 AND avatarData IS NOT NULL AND LENGTH(avatarData) > ?;
+
+-- GC key collection for out-of-band avatar refs: a live row that still holds
+-- an unresolved ref keeps its blob (the ref column IS the key), so the bytes
+-- survive until the row resolves them or the row is deleted/edited away.
+selectAllLiveCharacterAvatarRefs:
+SELECT avatarRef FROM CharacterEntity WHERE isDeleted = 0 AND avatarRef IS NOT NULL;
+
+selectAllLivePersonaAvatarRefs:
+SELECT avatarRef FROM PersonaEntity WHERE isDeleted = 0 AND avatarRef IS NOT NULL;
+
 -- ==========================================
 -- Sync Peers
 -- ==========================================
@@ -558,25 +596,79 @@ UPDATE SyncPeer SET isDeleted = 1, updatedAt = ? WHERE isDeleted = 0;
 -- .collectDeltaBatched) cuts the union on a sequence boundary, and the
 -- per-table prefix below that boundary is exactly the slice it ships. The
 -- syncSeq index makes the scan ordered and bounded.
+--
+-- The delta cut is decided on GROUP SIZES computed here in SQL (no row
+-- materialization): each table reports one (seq, estimated wire bytes) tuple
+-- per sequence group. The estimate mirrors SyncModels' row estimates,
+-- including the avatar threshold (avatars above it ride out of band as small
+-- content-addressed refs), so the batch cut is byte-accurate BEFORE any row
+-- is fetched and the row fetch below is bounded to the rows that actually
+-- ship. Parameters: ?1 row-overhead, ?2 avatar inline threshold, ?3 avatar
+-- ref wire estimate, ?4 delta cursor.
 -- ==========================================
 
-selectCharacterDeltas:
-SELECT * FROM CharacterEntity WHERE syncSeq >= ? ORDER BY syncSeq ASC;
+selectCharacterDeltaGroups:
+SELECT syncSeq AS seq,
+       ?1 + LENGTH(COALESCE(name, '')) + LENGTH(COALESCE(description, '')) +
+       LENGTH(COALESCE(personality, '')) + LENGTH(COALESCE(scenario, '')) +
+       LENGTH(COALESCE(firstMes, '')) + LENGTH(COALESCE(mesExample, '')) +
+       LENGTH(COALESCE(creatorNotes, '')) + LENGTH(COALESCE(altGreetings, '')) +
+       LENGTH(COALESCE(systemPrompt, '')) + LENGTH(COALESCE(postHistoryInstructions, '')) +
+       LENGTH(COALESCE(creator, '')) + LENGTH(COALESCE(characterVersion, '')) +
+       LENGTH(COALESCE(tags, '')) + LENGTH(COALESCE(extensions, '')) +
+       LENGTH(COALESCE(characterBook, '')) +
+       COALESCE(CASE WHEN LENGTH(avatarData) > ?2 THEN ?3 ELSE (LENGTH(avatarData) * 4) / 3 END, 0) AS size
+FROM CharacterEntity WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
 
-selectPersonaDeltas:
-SELECT * FROM PersonaEntity WHERE syncSeq >= ? ORDER BY syncSeq ASC;
+selectPersonaDeltaGroups:
+SELECT syncSeq AS seq,
+       ?1 + LENGTH(COALESCE(name, '')) + LENGTH(COALESCE(description, '')) +
+       COALESCE(CASE WHEN LENGTH(avatarData) > ?2 THEN ?3 ELSE (LENGTH(avatarData) * 4) / 3 END, 0) AS size
+FROM PersonaEntity WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
 
-selectSessionDeltas:
-SELECT * FROM ChatSession WHERE syncSeq >= ? ORDER BY syncSeq ASC;
+selectSessionDeltaGroups:
+SELECT syncSeq AS seq,
+       ?1 + LENGTH(characterId) + LENGTH(personaId) + LENGTH(COALESCE(title, '')) +
+       LENGTH(COALESCE(currentMessageId, '')) + LENGTH(COALESCE(parentSessionId, '')) AS size
+FROM ChatSession WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
 
-selectMessageDeltas:
-SELECT * FROM MessageEntity WHERE syncSeq >= ? ORDER BY syncSeq ASC;
+selectMessageDeltaGroups:
+SELECT syncSeq AS seq,
+       ?1 + LENGTH(sessionId) + LENGTH(role) + LENGTH(content) +
+       LENGTH(COALESCE(parentId, '')) + LENGTH(COALESCE(reasoningText, '')) +
+       LENGTH(COALESCE(imageRefs, '')) AS size
+FROM MessageEntity WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
 
-selectApiConnectionDeltas:
-SELECT * FROM ApiConnection WHERE syncSeq >= ? ORDER BY syncSeq ASC;
+selectApiConnectionDeltaGroups:
+SELECT syncSeq AS seq,
+       ?1 + LENGTH(provider) + LENGTH(name) + LENGTH(COALESCE(baseUrl, '')) +
+       LENGTH(COALESCE(apiKey, '')) + LENGTH(COALESCE(model, '')) +
+       LENGTH(COALESCE(inferenceProvider, '')) + LENGTH(COALESCE(quantization, '')) AS size
+FROM ApiConnection WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
 
-selectPromptBlockDeltas:
-SELECT * FROM PromptBlockEntity WHERE syncSeq >= ? ORDER BY syncSeq ASC;
+selectPromptBlockDeltaGroups:
+SELECT syncSeq AS seq, ?1 + LENGTH(name) + LENGTH(template) AS size
+FROM PromptBlockEntity WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
+
+-- Rows of one table within a decided batch cut (a complete sequence
+-- boundary): the bounded fetch only ever materializes the rows that ship.
+selectCharacterDeltaRows:
+SELECT * FROM CharacterEntity WHERE syncSeq >= ? AND syncSeq <= ? ORDER BY syncSeq;
+
+selectPersonaDeltaRows:
+SELECT * FROM PersonaEntity WHERE syncSeq >= ? AND syncSeq <= ? ORDER BY syncSeq;
+
+selectSessionDeltaRows:
+SELECT * FROM ChatSession WHERE syncSeq >= ? AND syncSeq <= ? ORDER BY syncSeq;
+
+selectMessageDeltaRows:
+SELECT * FROM MessageEntity WHERE syncSeq >= ? AND syncSeq <= ? ORDER BY syncSeq;
+
+selectApiConnectionDeltaRows:
+SELECT * FROM ApiConnection WHERE syncSeq >= ? AND syncSeq <= ? ORDER BY syncSeq;
+
+selectPromptBlockDeltaRows:
+SELECT * FROM PromptBlockEntity WHERE syncSeq >= ? AND syncSeq <= ? ORDER BY syncSeq;
 
 -- Highest device-local sync sequence across every synced table (tombstones
 -- included: they carry sequences too). Cursors are stored as maxSeq + 1, so
@@ -620,23 +712,50 @@ upsertCharacterFull:
 UPDATE CharacterEntity
 SET name = ?, description = ?, personality = ?, scenario = ?, firstMes = ?,
     mesExample = ?, creatorNotes = ?, altGreetings = ?, avatarData = ?,
-    isAssistant = ?, updatedAt = ?, isDeleted = ?, systemPrompt = ?,
+    avatarRef = ?, isAssistant = ?, updatedAt = ?, isDeleted = ?, systemPrompt = ?,
     postHistoryInstructions = ?, creator = ?, characterVersion = ?, tags = ?,
     extensions = ?, characterBook = ?, syncSeq = ?
 WHERE id = ?;
 
 insertCharacterFull:
-INSERT INTO CharacterEntity(id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant, updatedAt, isDeleted, systemPrompt, postHistoryInstructions, creator, characterVersion, tags, extensions, characterBook, syncSeq)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO CharacterEntity(id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, avatarRef, isAssistant, updatedAt, isDeleted, systemPrompt, postHistoryInstructions, creator, characterVersion, tags, extensions, characterBook, syncSeq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 upsertPersonaFull:
 UPDATE PersonaEntity
-SET name = ?, description = ?, avatarData = ?, updatedAt = ?, isDeleted = ?, syncSeq = ?
+SET name = ?, description = ?, avatarData = ?, avatarRef = ?, updatedAt = ?, isDeleted = ?, syncSeq = ?
 WHERE id = ?;
 
 insertPersonaFull:
-INSERT INTO PersonaEntity(id, name, description, avatarData, updatedAt, isDeleted, syncSeq)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+INSERT INTO PersonaEntity(id, name, description, avatarData, avatarRef, updatedAt, isDeleted, syncSeq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+-- A local avatar edit (set or removed) supersedes any unresolved out-of-band
+-- ref on the row; the ref column must not resurrect the old avatar.
+clearCharacterAvatarRef:
+UPDATE CharacterEntity SET avatarRef = NULL WHERE id = ?;
+
+clearPersonaAvatarRef:
+UPDATE PersonaEntity SET avatarRef = NULL WHERE id = ?;
+
+-- Rows still waiting for their avatar bytes: ref set, bytes absent. The
+-- exchange re-fetches these refs from a peer on every sync round (see
+-- SyncExchange.retryMissingBlobs) and fills them once the bytes land.
+selectCharactersWithMissingAvatar:
+SELECT id, avatarRef FROM CharacterEntity WHERE isDeleted = 0 AND avatarRef IS NOT NULL AND avatarData IS NULL;
+
+selectPersonasWithMissingAvatar:
+SELECT id, avatarRef FROM PersonaEntity WHERE isDeleted = 0 AND avatarRef IS NOT NULL AND avatarData IS NULL;
+
+-- Fills the avatar bytes of a row that is still waiting for THIS ref and has
+-- no bytes yet (a newer local avatar or ref is never overwritten).
+updateCharacterAvatarData:
+UPDATE CharacterEntity SET avatarData = ?, avatarRef = NULL
+WHERE id = ? AND avatarRef = ? AND avatarData IS NULL AND isDeleted = 0;
+
+updatePersonaAvatarData:
+UPDATE PersonaEntity SET avatarData = ?, avatarRef = NULL
+WHERE id = ? AND avatarRef = ? AND avatarData IS NULL AND isDeleted = 0;
 
 upsertSessionFull:
 UPDATE ChatSession

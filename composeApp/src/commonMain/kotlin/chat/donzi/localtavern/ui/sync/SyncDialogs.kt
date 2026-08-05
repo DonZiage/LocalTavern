@@ -3,6 +3,7 @@ package chat.donzi.localtavern.ui.sync
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CameraAlt
@@ -13,17 +14,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.data.sync.DiscoveredPeer
 import chat.donzi.localtavern.data.sync.DeviceName
 import chat.donzi.localtavern.data.sync.PairPayload
+import chat.donzi.localtavern.data.sync.PairingStage
 import chat.donzi.localtavern.data.sync.SYNC_PORT
 import chat.donzi.localtavern.data.sync.SyncDiscovery
 import chat.donzi.localtavern.data.sync.SyncService
 import chat.donzi.localtavern.data.sync.launchQrScanner
 import chat.donzi.localtavern.data.sync.supportsQrScanning
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+private const val PIN_LENGTH = 6
 
 // The two roles a device can take during pairing. The host advertises and
 // shows the QR/PIN; the receiver scans or picks it and types the PIN.
@@ -32,6 +38,98 @@ private enum class SyncRole { Host, Receiver }
 // Receiver-side sub-steps: find a host (scan QR / pick from the list), enter
 // its info manually, then enter the PIN shown on the host's screen.
 private enum class ReceiverStep { Find, Manual, Pin }
+
+// Receiver-side state after the fingerprint was confirmed: the initial sync
+// runs inside the dialog (with a spinner) instead of the dialog silently
+// closing and the sync failing in the background.
+private enum class PostPairState { Syncing, Success, Failed }
+
+// An animated "waiting" line: the app never sits silently while something is
+// in flight — every wait shows a spinner so the user knows the screen is
+// live.
+@Composable
+private fun WaitingRow(text: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+// A spinner card shown while the app is doing something the user waits on
+// (initial sync): a full-width surface so the state change is unmissable.
+@Composable
+private fun WaitingCard(title: String, detail: String) {
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.padding(12.dp)
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+            Column(horizontalAlignment = Alignment.Start) {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+// Reveals the raw addresses a receiver can type in manually, next to the
+// QR/PIN. Hidden by default so the QR-first host screen stays clean.
+@Composable
+private fun HostConnectionInfoToggle(
+    show: Boolean,
+    onToggle: () -> Unit,
+    addresses: List<String>
+) {
+    TextButton(onClick = onToggle) {
+        Text(if (show) "Hide connection info" else "Not connecting?")
+    }
+    if (show) {
+        if (addresses.isEmpty()) {
+            Text(
+                text = "Address unknown — check your device's network settings.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            )
+        } else {
+            Text(
+                text = "To connect manually, enter one of these addresses on the other device:",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            addresses.forEach { address ->
+                Text(
+                    text = address,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+            Text(
+                text = "Port: $SYNC_PORT",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            )
+        }
+    }
+}
 
 // Shows the fingerprint of the peer that just paired. The SAME string must be
 // visible on the other device; if they differ, someone intercepted the
@@ -150,6 +248,12 @@ internal fun SyncFlowDialog(
     var isConnecting by remember { mutableStateOf(false) }
     var pairedPeerId by remember { mutableStateOf<String?>(null) }
 
+    // Post-fingerprint state: the initial sync runs INSIDE the dialog with a
+    // spinner, so pairing never ends in a silent background failure.
+    var postPair by remember { mutableStateOf<PostPairState?>(null) }
+    var postPairError by remember { mutableStateOf<String?>(null) }
+    var postPairPeerId by remember { mutableStateOf<String?>(null) }
+
     // Host-side toggle: reveals the manual connection info next to the QR.
     var showHostInfo by remember { mutableStateOf(false) }
 
@@ -193,6 +297,9 @@ internal fun SyncFlowDialog(
         statusIsError = false
         isConnecting = false
         pairedPeerId = null
+        postPair = null
+        postPairError = null
+        postPairPeerId = null
         showHostInfo = false
     }
 
@@ -204,6 +311,9 @@ internal fun SyncFlowDialog(
         receiverStep = ReceiverStep.Pin
         status = "Host found: $selectedDeviceName. Now enter the PIN shown on its screen."
         statusIsError = false
+        // Tell the host a receiver has arrived so its QR is replaced by the
+        // PIN immediately — both users stop juggling two things at once.
+        syncService.announceConnection(payload.host, payload.port)
     }
 
     fun selectDiscoveredPeer(peer: DiscoveredPeer) {
@@ -214,6 +324,7 @@ internal fun SyncFlowDialog(
         receiverStep = ReceiverStep.Pin
         status = "Selected: ${peer.deviceName}. Enter the PIN shown on its screen."
         statusIsError = false
+        syncService.announceConnection(peer.address, peer.syncPort)
     }
 
     fun pair() {
@@ -233,27 +344,40 @@ internal fun SyncFlowDialog(
         }
     }
 
-    // Set when pairing succeeds; used to run the initial sync once the
-    // fingerprint has been confirmed.
-    fun confirmFingerprintAndSync() {
-        syncService.confirmFingerprint()
-        val peerId = pairedPeerId
-        pairedPeerId = null
+    fun runInitialSync() {
+        postPairError = null
+        postPair = PostPairState.Syncing
+        val peerId = postPairPeerId
         scope.launch {
-            status = if (peerId != null) {
-                syncService.syncNow(peerId).fold(
-                    onSuccess = { "Paired and synced." },
-                    onFailure = { "Paired, but initial sync failed: ${it.message}" }
-                )
+            val result = if (peerId != null) syncService.syncNow(peerId) else Result.success("Paired.")
+            if (result.isSuccess) {
+                postPair = PostPairState.Success
+                delay(1200)
+                close()
             } else {
-                "Paired."
+                postPair = PostPairState.Failed
+                postPairError = result.exceptionOrNull()?.message
             }
         }
-        onDismiss()
+    }
+
+    // Set when pairing succeeds; used to run the initial sync once the
+    // fingerprint has been confirmed. The dialog STAYS OPEN while the sync
+    // runs (spinner), shows the outcome, and only closes on success — a
+    // failed initial sync can no longer happen silently in the background.
+    fun confirmFingerprintAndSync() {
+        syncService.confirmFingerprint()
+        postPairPeerId = pairedPeerId ?: postPairPeerId
+        pairedPeerId = null
+        runInitialSync()
+    }
+
+    fun retryInitialSync() {
+        runInitialSync()
     }
 
     AlertDialog(
-        onDismissRequest = { if (!isConnecting) close() },
+        onDismissRequest = { if (!isConnecting && postPair != PostPairState.Syncing) close() },
         title = {
             Text(
                 when (step) {
@@ -344,34 +468,114 @@ internal fun SyncFlowDialog(
                 ) {
                     val pin = syncState.pairingPin
                     val qrPayload = remember(syncState.pairingPin) { syncService.pairingQrPayload() }
-                    if (pendingFingerprint != null) {
-                        FingerprintConfirmation(
-                            fingerprint = pendingFingerprint,
-                            peerName = syncState.pendingPeerName ?: "the other device",
-                            onConfirm = { syncService.confirmFingerprint() }
-                        )
-                    } else if (pin != null && qrPayload != null) {
-                        Text(
-                            text = "On the other device choose \u201cReceiver\u201d, scan this QR code, then enter the PIN below.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = pin,
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        QrCodeImage(text = qrPayload)
-                        Text(
-                            text = "The QR and PIN expire after 5 minutes.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                        )
-                        TextButton(onClick = { showHostInfo = !showHostInfo }) {
-                            Text(if (showHostInfo) "Hide connection info" else "Not connecting?")
+                    when {
+                        // The receiver submitted the PIN: compare fingerprints.
+                        // The other side may complete the pairing on its own —
+                        // then this card is replaced by the success screen live.
+                        pendingFingerprint != null -> {
+                            FingerprintConfirmation(
+                                fingerprint = pendingFingerprint,
+                                peerName = syncState.pendingPeerName ?: "the other device",
+                                onConfirm = { syncService.confirmFingerprint() }
+                            )
+                            Text(
+                                text = "The other device entered the PIN. Once the fingerprints are compared, either device can complete the pairing.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                        if (showHostInfo) {
+                        // Fingerprint confirmed (either side) or the receiver's
+                        // first authenticated exchange arrived: pairing done.
+                        syncState.pairingStage == PairingStage.Paired -> {
+                            Surface(
+                                shape = MaterialTheme.shapes.medium,
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        text = "Paired with ${syncState.pairedPeerName ?: "the other device"}",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "Pairing complete — syncing continues in the background.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            TextButton(onClick = { close() }) { Text("Done") }
+                        }
+                        // A receiver announced itself: the QR is replaced by
+                        // the PIN — never both on screen at once.
+                        syncState.pairingStage == PairingStage.ReceiverConnected -> {
+                            val receiver = syncState.connectedPeerName
+                            Text(
+                                text = if (receiver != null)
+                                    "Receiver connected ($receiver) — enter this PIN on the other device:"
+                                else
+                                    "Receiver connected — enter this PIN on the other device:",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (pin != null) {
+                                Text(
+                                    text = pin,
+                                    style = MaterialTheme.typography.headlineMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            Text(
+                                text = "The PIN expires after 5 minutes.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                            )
+                            HostConnectionInfoToggle(
+                                show = showHostInfo,
+                                onToggle = { showHostInfo = !showHostInfo },
+                                addresses = syncState.localAddresses
+                            )
+                        }
+                        // Waiting for a receiver: QR only, PIN stays hidden.
+                        pin != null && qrPayload != null -> {
+                            Text(
+                                text = "On the other device choose \u201cReceiver\u201d and scan this QR code.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            QrCodeImage(text = qrPayload)
+                            WaitingRow("Waiting for the other device to connect…")
+                            Text(
+                                text = "The QR expires after 5 minutes.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                            )
+                            HostConnectionInfoToggle(
+                                show = showHostInfo,
+                                onToggle = { showHostInfo = !showHostInfo },
+                                addresses = syncState.localAddresses
+                            )
+                        }
+                        // No LAN address is known, so no QR can be shown: the
+                        // PIN and addresses are the only way in.
+                        else -> {
+                            Text(
+                                text = "Enter this PIN and the device address on the other device.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (pin != null) {
+                                Text(
+                                    text = pin,
+                                    style = MaterialTheme.typography.headlineMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
                             if (syncState.localAddresses.isEmpty()) {
                                 Text(
                                     text = "Address unknown — check your device's network settings.",
@@ -379,66 +583,82 @@ internal fun SyncFlowDialog(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                 )
                             } else {
-                                Text(
-                                    text = "To connect manually, enter one of these addresses on the other device:",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
                                 syncState.localAddresses.forEach { address ->
                                     Text(
                                         text = address,
                                         style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        fontFamily = FontFamily.Monospace
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
-                                Text(
-                                    text = "Port: $SYNC_PORT",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                )
-                            }
-                        }
-                    } else {
-                        Text(
-                            text = "Enter this PIN and the device address on the other device.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        if (pin != null) {
-                            Text(
-                                text = pin,
-                                style = MaterialTheme.typography.headlineMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                        if (syncState.localAddresses.isEmpty()) {
-                            Text(
-                                text = "Address unknown — check your device's network settings.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                            )
-                        } else {
-                            syncState.localAddresses.forEach { address ->
-                                Text(
-                                    text = address,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
                             }
                         }
                     }
                 }
                 SyncRole.Receiver -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (pendingFingerprint != null) {
-                        FingerprintConfirmation(
-                            fingerprint = pendingFingerprint,
-                            peerName = syncState.pendingPeerName ?: "the other device",
-                            onConfirm = { confirmFingerprintAndSync() }
+                    // After the fingerprint is confirmed the initial sync runs
+                    // HERE, with a spinner — never silently in the background.
+                    when (postPair) {
+                        PostPairState.Syncing -> WaitingCard(
+                            title = "Syncing with ${selectedDeviceName ?: "the host"}…",
+                            detail = "Exchanging data for the first time."
                         )
-                    } else {
+                        PostPairState.Success -> Surface(
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    "Paired and synced with ${selectedDeviceName ?: "the host"}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    "All devices are up to date. This screen closes automatically.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        PostPairState.Failed -> Surface(
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    "Initial sync failed",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = postPairError ?: "Unknown error.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Button(onClick = { retryInitialSync() }, modifier = Modifier.fillMaxWidth()) {
+                                    Text("Retry sync")
+                                }
+                            }
+                        }
+                        null -> {
+                            if (pendingFingerprint != null) {
+                                FingerprintConfirmation(
+                                    fingerprint = pendingFingerprint,
+                                    peerName = syncState.pendingPeerName ?: "the other device",
+                                    onConfirm = { confirmFingerprintAndSync() }
+                                )
+                                Text(
+                                    text = "Confirming also starts the initial sync with the host.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            } else {
                         when (receiverStep) {
                             // Step 2: find the host — scan its QR or pick it
                             // from the list of devices found on the network.
@@ -558,9 +778,14 @@ internal fun SyncFlowDialog(
                                 }
                                 OutlinedTextField(
                                     value = pin,
-                                    onValueChange = { pin = it },
+                                    // Digits only, exactly PIN_LENGTH: the PIN
+                                    // is a 6-digit number, and the numeric
+                                    // keypad (NumberPassword) is what deploys
+                                    // on mobile for it.
+                                    onValueChange = { pin = it.filter { char -> char.isDigit() }.take(PIN_LENGTH) },
                                     label = { Text("Pairing PIN from host's screen") },
                                     visualTransformation = PasswordVisualTransformation(),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                                     modifier = Modifier.fillMaxWidth(),
                                     singleLine = true
                                 )
@@ -574,6 +799,8 @@ internal fun SyncFlowDialog(
                             color = if (statusIsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                         )
                     }
+                        }
+                    }
                 }
             }
         },
@@ -582,10 +809,14 @@ internal fun SyncFlowDialog(
                 null -> TextButton(onClick = { close() }) { Text("Cancel") }
                 SyncRole.Host -> TextButton(onClick = { close() }) { Text("Done") }
                 SyncRole.Receiver -> {
-                    if (pendingFingerprint != null) {
-                        TextButton(onClick = { close() }) { Text("Cancel") }
-                    } else {
-                        when (receiverStep) {
+                    when {
+                        // Initial sync in flight: no confirm action, dialog is
+                        // locked until it settles.
+                        postPair == PostPairState.Syncing -> Unit
+                        // Success/failure reached: a Done button closes it.
+                        postPair != null -> TextButton(onClick = { close() }) { Text("Done") }
+                        pendingFingerprint != null -> TextButton(onClick = { close() }) { Text("Cancel") }
+                        else -> when (receiverStep) {
                             ReceiverStep.Find -> {
                                 // Picking a device or scanning moves on; no
                                 // confirm action needed here.
@@ -594,6 +825,9 @@ internal fun SyncFlowDialog(
                                 onClick = {
                                     cameFromManual = true
                                     receiverStep = ReceiverStep.Pin
+                                    // Tell the host a receiver is on its way so
+                                    // its QR is replaced by the PIN.
+                                    syncService.announceConnection(host.trim(), port.trim().toIntOrNull() ?: SYNC_PORT)
                                 },
                                 enabled = host.isNotBlank()
                             ) { Text("Continue") }
@@ -601,6 +835,10 @@ internal fun SyncFlowDialog(
                                 onClick = { pair() },
                                 enabled = host.isNotBlank() && pin.isNotBlank() && !isConnecting
                             ) {
+                                if (isConnecting) {
+                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                }
                                 Text(if (isConnecting) "Pairing…" else "Pair")
                             }
                         }
@@ -609,7 +847,7 @@ internal fun SyncFlowDialog(
             }
         },
         dismissButton = {
-            if (step != null && !isConnecting) {
+            if (step != null && !isConnecting && postPair != PostPairState.Syncing) {
                 TextButton(onClick = { goBack() }) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))

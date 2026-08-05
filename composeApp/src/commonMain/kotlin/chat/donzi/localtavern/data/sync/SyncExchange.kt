@@ -37,10 +37,12 @@ class SyncExchange(
     private val blobTransfer: SyncBlobTransfer,
     private val advertisedFetchAddress: () -> String?,
     private val noteActivity: () -> Unit,
-    // Device id whose pairing fingerprint is still awaiting out-of-band
-    // confirmation; while set, exchanges with that peer are refused (the
-    // peer is not yet trusted). Null = nothing pending.
-    private val unconfirmedPeerDeviceId: () -> String? = { null }
+    // Fired once an exchange from a pending (fingerprint-unconfirmed) peer
+    // has been AUTHENTICATED: the sender must hold the shared secret this
+    // pairing established, which proves the other side has verified its
+    // fingerprint. The pairing layer uses this to auto-complete the gate, so
+    // the flow works even when the two users confirm at different times.
+    private val onVerifiedExchange: (fromDeviceId: String) -> Unit = { }
 ) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
@@ -103,6 +105,13 @@ class SyncExchange(
                 // restores from an older backup its fresh rows would otherwise
                 // be stamped below the peer's frozen cursor and never shipped.
                 val myBatch = repository.collectDeltaBatched(repository.saneDeltaCutoff(peer.peerReceivedCursor), DELTA_BUDGET_BYTES)
+                if (myBatch.changes.isEmpty && myBatch.hasMore) {
+                    // The first atomic group is too large for any envelope: it
+                    // must not ride a body the peer's server would reject
+                    // (413), or the cursor would freeze and every later sync
+                    // would fail identically. Fail loudly instead.
+                    error("A row on this device is too large to sync. Edit or remove it, then sync again.")
+                }
                 val channelKey = channelKeys.outboundChannelKey(peerPublicKey)
                 val exchangeId = freshExchangeId()
                 val envelope = SyncEnvelope(
@@ -157,16 +166,47 @@ class SyncExchange(
                     crypto.decrypt(responseKey, aad(from = peer.deviceId, to = identity.deviceId, exchangeId = exchangeId), decodeBase64(responsePayload))
                 )
 
+                // Out-of-band avatar refs are pulled from the sender, but NOT
+                // synchronously (mirror of the server side of VULN-011): the
+                // sender's advertised address is attacker-controlled, and a
+                // blackholed address would otherwise hang this user-initiated
+                // sync for the whole socket timeout. The fetch runs in the
+                // background; the rows land with their refs and heal once the
+                // fetch completes (fillMissingAvatars) or on a later round.
+                val advertisedAddress = responseEnvelope.fetchAddress ?: address
                 if (!responseEnvelope.changes.isEmpty) {
-                    repository.applyChanges(responseEnvelope.changes, peerDeviceId = peer.deviceId)
+                    val avatarRefs = responseEnvelope.changes.characters.mapNotNull { it.avatarRef } +
+                        responseEnvelope.changes.personas.mapNotNull { it.avatarRef }
+                    if (avatarRefs.isNotEmpty() && blobStore != null) {
+                        scope.launch {
+                            runCatching { blobTransfer.fetchMissingBlobs(peerId, advertisedAddress, avatarRefs, peerPublicKey) }
+                            repository.fillMissingAvatars(blobStore)
+                        }
+                    }
+                    val resolvedAvatars = if (blobStore != null) {
+                        avatarRefs.associate { it.sha256 to blobStore.read(it.sha256) }
+                    } else {
+                        emptyMap()
+                    }
+                    repository.applyChanges(responseEnvelope.changes, peerDeviceId = peer.deviceId, resolvedAvatars = resolvedAvatars)
                 }
                 // Pull image blobs referenced by the received rows out of band
-                // (chunked, authenticated). The peer's stored address is used;
-                // envelope.fetchAddress is only used server-side (the responder
-                // cannot know the initiator's stored address).
+                // (chunked, authenticated), from the advertised address — in
+                // the background for the same reason as the avatar fetch.
                 val refs = responseEnvelope.changes.messages.flatMap { it.imageRefs }
                 if (refs.isNotEmpty() && blobStore != null) {
-                    blobTransfer.fetchMissingBlobs(peerId, address, refs, peerPublicKey)
+                    scope.launch {
+                        runCatching { blobTransfer.fetchMissingBlobs(peerId, advertisedAddress, refs, peerPublicKey) }
+                    }
+                }
+                // Rows whose out-of-band blobs are still missing (avatars whose
+                // fetch failed in an earlier round, message images that never
+                // arrived) are re-attempted against this peer: the refs live on
+                // the rows, so a successful fetch heals them for good. Runs in
+                // the background — the advertised address must not hang the
+                // sync round.
+                scope.launch {
+                    runCatching { retryMissingBlobs(peerId, peerPublicKey, advertisedAddress) }
                 }
                 // The peer's new display name (if any), authenticated by the
                 // exchange: only the device holding the paired key can have
@@ -193,7 +233,6 @@ class SyncExchange(
     }
 
     suspend fun handleExchange(fromDeviceId: String, encryptedPayload: String, requestEphemeralKey: String, exchangeId: String): ExchangeResponse {
-        noteActivity()
         try {
             if (exchangeId.isBlank()) {
                 return ExchangeResponse(ok = false, message = "Missing exchange id.")
@@ -204,11 +243,12 @@ class SyncExchange(
                 // rejected at the door.
                 return ExchangeResponse(ok = false, message = "Invalid device id.")
             }
-            if (unconfirmedPeerDeviceId() == fromDeviceId) {
-                return ExchangeResponse(ok = false, message = "Confirm the pairing fingerprint on this device before syncing.")
-            }
             val peer = repository.getPeer(fromDeviceId)
                 ?: return ExchangeResponse(ok = false, message = "Not paired.")
+            // Only traffic that passes validation counts as activity: an
+            // unauthenticated attacker spamming garbage must not be able to
+            // keep the idle watchdog from winding the server down (VULN-014).
+            noteActivity()
             val peerKey = peer.publicKey
                 ?: return ExchangeResponse(ok = false, message = "Peer has no key.")
             val peerEphemeral = runCatching { decodeBase64(requestEphemeralKey) }.getOrNull()
@@ -229,27 +269,63 @@ class SyncExchange(
             if (!checkAndMarkExchangeSeen(fromDeviceId, exchangeId)) {
                 return ExchangeResponse(ok = false, message = "Replayed exchange.")
             }
+            // Authenticated: the sender holds the paired static secret. If its
+            // fingerprint was still pending on this side, this exchange IS the
+            // other side's confirmation — complete the pairing.
+            onVerifiedExchange(fromDeviceId)
             // Authenticated display-name update (see syncNow): never touches
             // cursors or deltas, so renaming cannot disturb sync state.
             DeviceName.sanitize(envelope.fromDeviceName.orEmpty())?.let { name ->
                 repository.updatePeerName(fromDeviceId, name)
             }
 
+            // Out-of-band avatar refs are pulled from the sender, but NOT
+            // synchronously: the sender's advertised address is
+            // attacker-controlled (any paired peer), and a peer whose server
+            // accepts connections but never answers would hold this handler
+            // hostage for the socket timeout — stalling every other exchange
+            // on this device. The fetch runs in the background; the rows land
+            // with their refs in place and heal on a later round
+            // (retryMissingBlobs), exactly like the message-image path below.
+            val avatarRefs = envelope.changes.characters.mapNotNull { it.avatarRef } +
+                envelope.changes.personas.mapNotNull { it.avatarRef }
+            val senderAddress = envelope.fetchAddress ?: peer.lastKnownAddress
+            if (avatarRefs.isNotEmpty() && senderAddress != null && blobStore != null) {
+                scope.launch {
+                    runCatching { blobTransfer.fetchMissingBlobs(fromDeviceId, senderAddress, avatarRefs, peerKey) }
+                    repository.fillMissingAvatars(blobStore)
+                }
+            }
+            val resolvedAvatars = if (blobStore != null) {
+                avatarRefs.associate { it.sha256 to blobStore.read(it.sha256) }
+            } else {
+                emptyMap()
+            }
+
             val applyResult = runCatching {
-                repository.applyChanges(envelope.changes, peerDeviceId = fromDeviceId)
+                repository.applyChanges(envelope.changes, peerDeviceId = fromDeviceId, resolvedAvatars = resolvedAvatars)
             }
             if (applyResult.isFailure) {
                 return ExchangeResponse(ok = false, message = "Failed to apply changes.")
             }
             // The sender referenced image blobs this device may not have; pull
-            // them from the sender's advertised address WITHOUT blocking the
-            // exchange round-trip (the response goes out first, the blobs
-            // follow in the background and land as placeholders until then).
+            // them from the sender WITHOUT blocking the exchange round-trip
+            // (the response goes out first, the blobs follow in the background
+            // and land as placeholders until then).
             val pendingRefs = envelope.changes.messages.flatMap { it.imageRefs }
-            val senderAddress = envelope.fetchAddress
             if (pendingRefs.isNotEmpty() && senderAddress != null && blobStore != null) {
                 scope.launch {
                     runCatching { blobTransfer.fetchMissingBlobs(fromDeviceId, senderAddress, pendingRefs, peerKey) }
+                }
+            }
+            // Rows whose out-of-band blobs are still missing are re-attempted
+            // against the sender on every round (see syncNow) — in the
+            // background, for the same reason as the avatar fetch above: the
+            // sender's address is attacker-controlled and must not be able to
+            // hold this handler hostage while a blackholed fetch times out.
+            if (senderAddress != null && blobStore != null) {
+                scope.launch {
+                    runCatching { retryMissingBlobs(fromDeviceId, peerKey, senderAddress) }
                 }
             }
             val newReceivedCursor = nextReceivedCursor(peer.receivedCursor, envelope.changes)
@@ -268,6 +344,12 @@ class SyncExchange(
             // restored from an older backup its cursor is stale-high and would
             // skip every row this device has written since, permanently.
             val myBatch = repository.collectDeltaBatched(repository.saneDeltaCutoff(envelope.cursor), DELTA_BUDGET_BYTES)
+            if (myBatch.changes.isEmpty && myBatch.hasMore) {
+                // My first atomic group cannot fit any envelope: an oversized
+                // response would be rejected by the initiator's pre-parse
+                // check and cut the sync. Report it clearly instead.
+                return ExchangeResponse(ok = false, message = "A row on this device is too large to sync. Edit or remove it, then sync again.")
+            }
             val myExchangeKey = channelKeys.outboundChannelKey(peerKey)
             val responseEnvelope = SyncEnvelope(
                 fromDeviceId = identity.deviceId,
@@ -291,6 +373,25 @@ class SyncExchange(
         } catch (e: Exception) {
             return ExchangeResponse(ok = false, message = e.message ?: "Sync failed.")
         }
+    }
+
+    /**
+     * Re-attempts every out-of-band blob this device is still missing against
+     * the current peer, then fills the rows whose bytes have arrived.
+     *
+     * The refs live on the rows (character/persona avatarRef columns, message
+     * imageRefs), so a fetch that failed in an earlier round — transient
+     * network error, stale address, or the peer being temporarily unreachable
+     * — heals on the next sync instead of being lost forever. Refuse/failure
+     * is tolerated: a peer that genuinely cannot serve a ref simply leaves
+     * the row waiting for the next round.
+     */
+    private suspend fun retryMissingBlobs(peerId: String, peerPublicKey: ByteArray, fetchAddress: String?) {
+        if (fetchAddress == null || blobStore == null) return
+        val refs = repository.getMissingAvatarRefs() + repository.getMissingImageRefs()
+        if (refs.isEmpty()) return
+        runCatching { blobTransfer.fetchMissingBlobs(peerId, fetchAddress, refs, peerPublicKey) }
+        repository.fillMissingAvatars(blobStore)
     }
 
     /**
@@ -322,8 +423,10 @@ class SyncExchange(
         const val REPLAY_WINDOW_MS = 10 * 60 * 1000L
         const val MAX_SEEN_EXCHANGES = 256
         // Safety valve on the multi-round drain loop: each round carries at
-        // most DELTA_BUDGET_BYTES, so this bounds one sync to ~3 GB of
+        // most DELTA_BUDGET_BYTES, so this bounds one sync to ~30 GB of
         // deltas — far beyond any real library, and a clear error beyond it.
-        const val MAX_SYNC_ROUNDS = 1000
+        // (Delta collection is bounded per round, so even very large libraries
+        // drain in a reasonable number of cheap rounds.)
+        const val MAX_SYNC_ROUNDS = 10_000
     }
 }

@@ -1,5 +1,6 @@
 package chat.donzi.localtavern.data.sync
 
+import chat.donzi.localtavern.data.blob.BlobStore
 import chat.donzi.localtavern.data.database.ApiConnection
 import chat.donzi.localtavern.data.database.CharacterEntity
 import chat.donzi.localtavern.data.database.ChatSession
@@ -7,6 +8,7 @@ import chat.donzi.localtavern.data.database.MessageEntity
 import chat.donzi.localtavern.data.database.PersonaEntity
 import chat.donzi.localtavern.data.database.PromptBlockEntity
 import chat.donzi.localtavern.data.security.ApiKeyCipher
+import chat.donzi.localtavern.utils.Hashing
 import chat.donzi.localtavern.utils.deserializeImageRefs
 import kotlinx.serialization.Serializable
 
@@ -34,6 +36,28 @@ internal const val MAX_SYNC_BODY_BYTES = 16L * 1024 * 1024
 // for the response.
 internal const val DELTA_BUDGET_BYTES = 3L * 1024 * 1024
 
+// A row's avatar rides inline (legacy peers receive it) until this size;
+// above it the bytes travel OUT of band as a content-addressed ref, so a huge
+// avatar can never inflate an envelope past the body cap (the pre-fix crash
+// vector: a ~9 MB avatar blew 16 MB after base64+encryption).
+internal const val AVATAR_REF_THRESHOLD_BYTES = 512L * 1024
+
+// JSON wire size of one SyncImageRef ({"sha256":"<64 hex>","size":n}), used by
+// the delta group-size estimates in SQL.
+internal const val AVATAR_REF_WIRE_ESTIMATE = 150L
+
+// A single atomic sequence group may exceed the batch budget (the first group
+// always ships), but only up to this plaintext bound: an envelope is roughly
+// 4/3 × plaintext, so 8 MB keeps every envelope well under the body cap even
+// with base64/JSON overhead. A group beyond it cannot ride any envelope and
+// the exchange reports a clear error instead of being cut by a 413.
+internal const val MAX_SAFE_GROUP_PLAINTEXT_BYTES = 8L * 1024 * 1024
+
+// Fixed per-row overhead of the SQL delta-group size estimates (field names,
+// numbers, braces, escaping margin). Being slightly generous only means a
+// batch cuts a little early, which is safe.
+internal const val ROW_OVERHEAD = 200L
+
 // Row snapshots exchanged during sync. ByteArray fields are base64-encoded
 // by kotlinx.serialization automatically (avatars, message images, keys).
 
@@ -49,6 +73,11 @@ data class SyncCharacter(
     val creatorNotes: String?,
     val altGreetings: String?,
     val avatarData: ByteArray?,
+    // Avatars above the inline threshold ride OUT of band as a
+    // content-addressed ref (avatarData is then null); the bytes are pulled
+    // from the sender through the /blob/fetch protocol like message images.
+    // Default keeps envelopes from older peers parseable.
+    val avatarRef: SyncImageRef? = null,
     val isAssistant: Long,
     val updatedAt: Long,
     val isDeleted: Long,
@@ -68,6 +97,8 @@ data class SyncPersona(
     val name: String,
     val description: String?,
     val avatarData: ByteArray?,
+    // Same out-of-band avatar transport as SyncCharacter.avatarRef.
+    val avatarRef: SyncImageRef? = null,
     val updatedAt: Long,
     val isDeleted: Long,
     val syncSeq: Long = 0
@@ -381,22 +412,63 @@ private fun isPlainHostname(host: String): Boolean {
 // bytes travel out of band through /blob/fetch, so envelopes stay small and
 // delta collection never loads image bytes into memory. (Legacy peers that
 // ship inline imageData are still understood on the receiving side.)
+// Avatars follow the same rule once they exceed the inline threshold: the
+// bytes are staged in the local blob store and the envelope carries a ref.
 
-internal fun CharacterEntity.toSync() = SyncCharacter(
-    id = id, name = name, description = description, personality = personality ?: "",
-    scenario = scenario ?: "", firstMes = firstMes, mesExample = mesExample,
-    creatorNotes = creatorNotes, altGreetings = altGreetings, avatarData = avatarData,
-    isAssistant = isAssistant, updatedAt = updatedAt, isDeleted = isDeleted,
-    syncSeq = syncSeq,
-    systemPrompt = systemPrompt, postHistoryInstructions = postHistoryInstructions,
-    creator = creator, characterVersion = characterVersion, tags = tags,
-    extensions = extensions, characterBook = characterBook
-)
+internal suspend fun CharacterEntity.toSync(blobStore: BlobStore?): SyncCharacter {
+    val avatar = wireAvatar(blobStore, avatarData, avatarRef)
+    return SyncCharacter(
+        id = id, name = name, description = description, personality = personality ?: "",
+        scenario = scenario ?: "", firstMes = firstMes, mesExample = mesExample,
+        creatorNotes = creatorNotes, altGreetings = altGreetings, avatarData = avatar.first,
+        avatarRef = avatar.second,
+        isAssistant = isAssistant, updatedAt = updatedAt, isDeleted = isDeleted,
+        syncSeq = syncSeq,
+        systemPrompt = systemPrompt, postHistoryInstructions = postHistoryInstructions,
+        creator = creator, characterVersion = characterVersion, tags = tags,
+        extensions = extensions, characterBook = characterBook
+    )
+}
 
-internal fun PersonaEntity.toSync() = SyncPersona(
-    id = id, name = name, description = description, avatarData = avatarData,
-    updatedAt = updatedAt, isDeleted = isDeleted, syncSeq = syncSeq
-)
+internal suspend fun PersonaEntity.toSync(blobStore: BlobStore?): SyncPersona {
+    val avatar = wireAvatar(blobStore, avatarData, avatarRef)
+    return SyncPersona(
+        id = id, name = name, description = description, avatarData = avatar.first,
+        avatarRef = avatar.second, updatedAt = updatedAt, isDeleted = isDeleted, syncSeq = syncSeq
+    )
+}
+
+// What the wire carries for a row's avatar: the row's BYTES are authoritative
+// (staged out of band as a ref when oversized, inline otherwise); a row whose
+// bytes are missing but that still holds an unresolved ref (a fetch that
+// failed on a peer) re-ships that ref so a peer that has the blob can serve
+// it. Mutually exclusive by construction: avatarData is the same row property
+// the ref was stored against.
+private suspend fun wireAvatar(
+    blobStore: BlobStore?,
+    avatarData: ByteArray?,
+    avatarRef: String?
+): Pair<ByteArray?, SyncImageRef?> {
+    if (avatarData != null) return avatarRefForTransport(avatarData, blobStore)
+    if (avatarRef != null) {
+        // The ref column is imageRefs-style JSON of exactly one ref.
+        val stored = deserializeImageRefs(avatarRef).firstOrNull() ?: return null to null
+        return null to SyncImageRef(sha256 = stored.sha256, size = stored.size)
+    }
+    return null to null
+}
+
+// Avatars larger than the inline threshold ride out of band as
+// content-addressed refs: the bytes are staged in the local blob store (once)
+// and the peer pulls them through /blob/fetch with hash verification. Smaller
+// avatars stay inline so legacy peers keep receiving them. A null store
+// (tests) ships the bytes inline regardless of size.
+internal suspend fun avatarRefForTransport(bytes: ByteArray?, store: BlobStore?): Pair<ByteArray?, SyncImageRef?> {
+    if (bytes == null || bytes.size <= AVATAR_REF_THRESHOLD_BYTES || store == null) return bytes to null
+    val hash = Hashing.sha256Hex(bytes)
+    if (store.read(hash) == null) store.write(hash, bytes)
+    return null to SyncImageRef(sha256 = hash, size = bytes.size.toLong())
+}
 
 internal fun ChatSession.toSync() = SyncSession(
     id = id, characterId = characterId, personaId = personaId, title = title,
@@ -448,42 +520,3 @@ internal fun PromptBlockEntity.toSync() = SyncPromptBlock(
     isCustom = isCustom, displayOrder = displayOrder, updatedAt = updatedAt,
     isDeleted = isDeleted, syncSeq = syncSeq
 )
-
-// ---------- Wire-size estimates ----------
-//
-// Rough upper bounds of the JSON-encoded size of each row, used by
-// SyncRepository.collectDeltaBatched to cut a delta on a byte budget BEFORE
-// the wire DTOs are materialized (the tail of the batch is never mapped).
-// Bytes account for base64 expansion (4/3); text lengths are close to their
-// UTF-8/JSON size; the fixed overhead covers field names, numbers, braces and
-// escaping margin. Being slightly generous only means a batch cuts a little
-// early, which is safe.
-
-private const val ROW_OVERHEAD = 200L
-
-internal fun CharacterEntity.estimatedWireSize(): Long = ROW_OVERHEAD +
-    name.length + (description?.length ?: 0) + (personality?.length ?: 0) +
-    (scenario?.length ?: 0) + (firstMes?.length ?: 0) + (mesExample?.length ?: 0) +
-    (creatorNotes?.length ?: 0) + (altGreetings?.length ?: 0) +
-    (systemPrompt?.length ?: 0) + (postHistoryInstructions?.length ?: 0) +
-    (creator?.length ?: 0) + (characterVersion?.length ?: 0) +
-    (tags?.length ?: 0) + (extensions?.length ?: 0) + (characterBook?.length ?: 0) +
-    (avatarData?.size?.toLong() ?: 0L) * 4 / 3
-
-internal fun PersonaEntity.estimatedWireSize(): Long = ROW_OVERHEAD +
-    name.length + (description?.length ?: 0) + (avatarData?.size?.toLong() ?: 0L) * 4 / 3
-
-internal fun ChatSession.estimatedWireSize(): Long = ROW_OVERHEAD +
-    characterId.length + personaId.length + (title?.length ?: 0) +
-    (currentMessageId?.length ?: 0) + (parentSessionId?.length ?: 0)
-
-internal fun MessageEntity.estimatedWireSize(): Long = ROW_OVERHEAD +
-    sessionId.length + role.length + content.length + (parentId?.length ?: 0) +
-    (reasoningText?.length ?: 0) + (imageRefs?.length ?: 0)
-
-internal fun ApiConnection.estimatedWireSize(): Long = ROW_OVERHEAD +
-    provider.length + name.length + (baseUrl?.length ?: 0) + (apiKey?.length ?: 0) +
-    (model?.length ?: 0) + (inferenceProvider?.length ?: 0) + (quantization?.length ?: 0)
-
-internal fun PromptBlockEntity.estimatedWireSize(): Long = ROW_OVERHEAD +
-    name.length + template.length
