@@ -7,7 +7,7 @@ LocalTavern is a standalone, privacy-focused LLM interface that runs as a **nati
 The project exists to solve the "service complexity" problem: most LLM interfaces require Python/Node.js environments or cloud accounts. LocalTavern is a simple, native binary — zero dependency, zero telemetry, and your configuration synced across **your own** devices over **your own** network.
 
 - **License:** GPL-3.0
-- **Current version:** 0.6.0
+- **Current version:** 0.6.4
 - **Backend:** Kotlin 2.3.21, Compose Multiplatform 1.10.3
 
 ---

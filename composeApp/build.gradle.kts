@@ -96,8 +96,8 @@ android {
         applicationId = "chat.donzi.localtavern"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 56
-        versionName = "0.6.0"
+        versionCode = 60
+        versionName = "0.6.4"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -119,7 +119,21 @@ compose.desktop {
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Rpm
             )
             packageName = "LocalTavern"
-            packageVersion = "0.6.0"
+            packageVersion = "0.6.4"
+            vendor = "DonZiage"
+            description = "LocalTavern - a standalone, privacy-focused LLM interface running fully local, with encrypted peer-to-peer sync across your devices."
+            windows {
+                iconFile.set(file("src/desktopMain/resources/icons/icon.ico"))
+            }
+            linux {
+                iconFile.set(file("src/desktopMain/resources/icons/icon.png"))
+                appCategory = "Chat"
+                debMaintainer = "DonZiage <zzgrtx@gmail.com>"
+                rpmLicenseType = "GPL-3.0"
+            }
+            macOS {
+                iconFile.set(file("src/desktopMain/resources/icons/icon.icns"))
+            }
         }
     }
 }

@@ -7,12 +7,16 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import chat.donzi.localtavern.data.database.DriverFactory
 import chat.donzi.localtavern.ui.App
+import localtavern.composeapp.generated.resources.Res
+import localtavern.composeapp.generated.resources.app_icon
+import org.jetbrains.compose.resources.painterResource
 
 fun main() = application {
     val windowState = rememberWindowState(placement = WindowPlacement.Maximized)
     Window(
         onCloseRequest = ::exitApplication,
         title = "LocalTavern",
+        icon = painterResource(Res.drawable.app_icon),
         state = windowState
     ) {
         var isDarkTheme by remember { mutableStateOf(true) }
