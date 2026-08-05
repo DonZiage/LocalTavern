@@ -10,14 +10,15 @@ import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.Foundation.NSData
 import platform.Foundation.NSURL
+import platform.Foundation.dataWithContentsOfURL
 import platform.UIKit.UIApplication
 import platform.UIKit.UIDocumentPickerDelegateProtocol
 import platform.UIKit.UIDocumentPickerViewController
 import platform.UIKit.UIWindow
+import platform.UniformTypeIdentifiers.UTTypeArchive
 import platform.UniformTypeIdentifiers.UTTypeData
 import platform.UniformTypeIdentifiers.UTTypeImage
 import platform.UniformTypeIdentifiers.UTTypeJSON
-import platform.UniformTypeIdentifiers.UTTypeZip
 import platform.darwin.NSObject
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_global_queue
@@ -69,10 +70,10 @@ actual fun rememberCharacterCardPickerLauncher(
         {
             val picker = UIDocumentPickerViewController(
                 forOpeningContentTypes = listOf(
-                    UTTypeImage.identifier,
-                    UTTypeJSON.identifier,
-                    UTTypeZip.identifier,
-                    UTTypeData.identifier
+                    UTTypeImage,
+                    UTTypeJSON,
+                    UTTypeArchive,
+                    UTTypeData
                 ),
                 asCopy = true
             )
@@ -133,7 +134,7 @@ actual fun rememberLorebookPickerLauncher(
     return remember {
         {
             val picker = UIDocumentPickerViewController(
-                forOpeningContentTypes = listOf(UTTypeJSON.identifier, UTTypeData.identifier),
+                forOpeningContentTypes = listOf(UTTypeJSON, UTTypeData),
                 asCopy = true
             )
             picker.allowsMultipleSelection = false

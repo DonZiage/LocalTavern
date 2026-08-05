@@ -185,7 +185,7 @@ class SyncCryptoTest {
         // RFC 4231 test case 2: key = "Jefe", data = "what do ya want for nothing?"
         val expected = "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
         val hmac = crypto.hmacSha256("Jefe".encodeToByteArray(), "what do ya want for nothing?".encodeToByteArray())
-        assertEquals(expected, hmac.joinToString("") { "%02x".format(it) })
+        assertEquals(expected, hmac.joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') })
     }
 }
 

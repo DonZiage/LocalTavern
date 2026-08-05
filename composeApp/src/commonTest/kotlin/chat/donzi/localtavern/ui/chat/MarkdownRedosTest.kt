@@ -3,6 +3,7 @@ package chat.donzi.localtavern.ui.chat
 import androidx.compose.ui.graphics.Color
 import kotlin.test.Test
 import kotlin.test.assertTrue
+import kotlin.time.TimeSource
 
 // Red-team probe: a long run of "[" must not cause quadratic regex
 // backtracking in the inline renderer. LLM output is untrusted (prompt
@@ -18,9 +19,9 @@ class MarkdownRedosTest {
     @Test
     fun longRunOfOpenBrackets_parsesInLinearTime() {
         val attack = "[".repeat(100_000)
-        val start = System.nanoTime()
+        val start = TimeSource.Monotonic.markNow()
         val blocks = parseMarkdown(attack, style)
-        val elapsedMs = (System.nanoTime() - start) / 1_000_000
+        val elapsedMs = start.elapsedNow().inWholeMilliseconds
         println("REDOS-PROBE elapsedMs=$elapsedMs blocks=${blocks.size}")
         assertTrue(
             elapsedMs < 2_000,

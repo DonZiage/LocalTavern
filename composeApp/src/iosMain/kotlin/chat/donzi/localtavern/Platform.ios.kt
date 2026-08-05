@@ -87,7 +87,7 @@ actual fun openDeviceSecuritySettings() = Unit
 
 actual fun appVersionName(): String {
     val info = NSBundle.mainBundle.infoDictionary
-    return (info?.objectForKey("CFBundleShortVersionString") as? String) ?: "dev build"
+    return (info?.get("CFBundleShortVersionString") as? String) ?: "dev build"
 }
 
 actual fun appDatabasePath(): String {

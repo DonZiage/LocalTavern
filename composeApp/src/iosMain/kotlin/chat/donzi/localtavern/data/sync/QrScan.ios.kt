@@ -5,18 +5,20 @@ import platform.AVFoundation.AVCaptureConnection
 import platform.AVFoundation.AVCaptureDevice
 import platform.AVFoundation.AVCaptureDeviceInput
 import platform.AVFoundation.AVCaptureMetadataOutput
-import platform.AVFoundation.AVCaptureMetadataOutputObjectsProtocol
+import platform.AVFoundation.AVCaptureMetadataOutputObjectsDelegateProtocol
+import platform.AVFoundation.AVCaptureOutput
 import platform.AVFoundation.AVCaptureSession
 import platform.AVFoundation.AVCaptureVideoPreviewLayer
 import platform.AVFoundation.AVLayerVideoGravityResizeAspectFill
 import platform.AVFoundation.AVMediaTypeVideo
 import platform.AVFoundation.AVMetadataMachineReadableCodeObject
 import platform.AVFoundation.AVMetadataObjectTypeQRCode
-import platform.Foundation.NSObject
+import platform.Foundation.NSURL
 import platform.UIKit.UIApplication
 import platform.UIKit.UIColor
 import platform.UIKit.UIViewController
 import platform.UIKit.UIWindow
+import platform.darwin.NSObject
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_main_queue
 import platform.darwin.dispatch_queue_create
@@ -25,10 +27,10 @@ actual val supportsQrScanning: Boolean = true
 
 private class QrScanDelegate(
     private val onFound: (String) -> Unit
-) : NSObject(), AVCaptureMetadataOutputObjectsProtocol {
-    override fun captureOutput(output: AVCaptureMetadataOutput, didOutputMetadataObjects: List<*>, fromConnection: AVCaptureConnection) {
+) : NSObject(), AVCaptureMetadataOutputObjectsDelegateProtocol {
+    override fun captureOutput(output: AVCaptureOutput, didOutputMetadataObjects: List<*>, fromConnection: AVCaptureConnection) {
         for (obj in didOutputMetadataObjects) {
-            val code = obj as? AVCaptureMetadataMachineReadableCodeObject ?: continue
+            val code = obj as? AVMetadataMachineReadableCodeObject ?: continue
             val value = code.stringValue ?: continue
             if (value.startsWith("localtavern://pair")) {
                 onFound(value)
@@ -106,7 +108,7 @@ private class QrScanViewController(
 @OptIn(ExperimentalForeignApi::class)
 actual fun launchQrScanner(onResult: (String?) -> Unit) {
     val window = UIApplication.sharedApplication.windows
-        .firstOrNull { (it as? UIWindow)?.isKeyWindow == true } as? UIWindow
+        .firstOrNull { (it as? UIWindow)?.isKeyWindow() == true } as? UIWindow
     val root = window?.rootViewController
     if (root == null) {
         onResult(null)
@@ -116,7 +118,7 @@ actual fun launchQrScanner(onResult: (String?) -> Unit) {
     val scanner = QrScanViewController { text ->
         if (dismissed) return@QrScanViewController
         dismissed = true
-        root.dismissViewControllerAnimated(true, null) {
+        root.dismissViewControllerAnimated(true) {
             onResult(text)
         }
     }
