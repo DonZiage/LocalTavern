@@ -35,16 +35,25 @@ class SyncBlobTransfer(
 
     private val identity get() = identityProvider()
 
-    // Ref hashes the peer reported as not serving; they are not re-fetched
-    // during this app session (they would only be re-reported missing).
+    // Ref hashes that the peer at a given fetch address reported as not
+    // serving; they are not re-fetched from THAT address during this app
+    // session (they would only be re-reported missing). Keyed per address so
+    // one peer's failure can never poison fetches from another peer that
+    // holds the blob — a ref reported missing by a ref-only device (whose own
+    // fetch failed) is still fetched from a device that actually has it.
     private val knownMissingRefs = mutableSetOf<String>()
     private val knownMissingMutex = Mutex()
 
-    private suspend fun isRefKnownMissing(hash: String): Boolean =
-        knownMissingMutex.withLock { hash in knownMissingRefs }
+    private suspend fun isRefKnownMissing(address: String, hash: String): Boolean =
+        knownMissingMutex.withLock { "$address|$hash" in knownMissingRefs }
 
-    private suspend fun rememberMissingRefs(refs: List<String>) {
-        knownMissingMutex.withLock { knownMissingRefs.addAll(refs) }
+    private suspend fun rememberMissingRefs(address: String, refs: List<String>) {
+        knownMissingMutex.withLock {
+            refs.forEach { ref ->
+                if (knownMissingRefs.size >= MAX_KNOWN_MISSING_REFS) return@withLock
+                knownMissingRefs.add("$address|$ref")
+            }
+        }
     }
 
     // Upper bounds on a single ref fetch: a malicious peer could otherwise
@@ -54,6 +63,10 @@ class SyncBlobTransfer(
     private companion object {
         const val MAX_CHUNKS_PER_REF = 128
         const val MAX_FETCH_BYTES_PER_REF = 64L * 1024 * 1024
+        // Upper bound on the session memory of (address, ref) pairs reported
+        // missing: a hostile peer could otherwise keep growing the set
+        // forever by claiming ever-new refs.
+        const val MAX_KNOWN_MISSING_REFS = 4096
     }
 
     /**
@@ -74,9 +87,10 @@ class SyncBlobTransfer(
         val validatedAddress = validateFetchAddress(address) ?: return
         val host = validatedAddress.first
         val port = validatedAddress.second
+        val fetchAddress = "$host:$port"
         val pending = refs
             .filter { Hashing.isValidSha256Hex(it.sha256) }
-            .filter { store.read(it.sha256) == null && !isRefKnownMissing(it.sha256) }
+            .filter { store.read(it.sha256) == null && !isRefKnownMissing(fetchAddress, it.sha256) }
         if (pending.isEmpty()) return
 
         val totalBytes = pending.sumOf { it.size }
@@ -149,7 +163,7 @@ class SyncBlobTransfer(
                         break
                     }
                     if (result.missing.isNotEmpty()) {
-                        rememberMissingRefs(result.missing)
+                        rememberMissingRefs(fetchAddress, result.missing)
                         doneBytes += ref.size
                         refIndex++
                         refComplete = true

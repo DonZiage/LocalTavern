@@ -426,9 +426,35 @@ class SyncRepository(
             }
             PreparedMessage(row, serializeImageRefs(refs))
         }
+        // The out-of-band avatar fetch is asynchronous: an incoming winning
+        // row whose ref bytes have not landed yet (resolvedAvatars misses the
+        // ref) must NOT destroy the avatar bytes this device already holds —
+        // a slow or failed fetch would otherwise wipe every character avatar
+        // the receiving device had, for the whole library at once. When the
+        // existing bytes hash to the wire ref they ARE the referenced content
+        // (SHA-256 verified), so they are kept and the ref is redundant.
+        // Resolved before the transaction: hashing is CPU work, not a
+        // statement.
+        val matchingBytesByRowId = HashMap<String, ByteArray>()
+        changes.characters.forEach { row ->
+            if (row.isDeleted != 1L && row.avatarRef != null && resolvedAvatars[row.avatarRef.sha256] == null) {
+                val bytes = queries.selectCharacterByIdAny(row.id).executeAsOneOrNull()?.avatarData
+                if (bytes != null && Hashing.sha256Hex(bytes) == row.avatarRef.sha256) {
+                    matchingBytesByRowId[row.id] = bytes
+                }
+            }
+        }
+        changes.personas.forEach { row ->
+            if (row.isDeleted != 1L && row.avatarRef != null && resolvedAvatars[row.avatarRef.sha256] == null) {
+                val bytes = queries.selectPersonaByIdAny(row.id).executeAsOneOrNull()?.avatarData
+                if (bytes != null && Hashing.sha256Hex(bytes) == row.avatarRef.sha256) {
+                    matchingBytesByRowId[row.id] = bytes
+                }
+            }
+        }
         database.transaction {
-            changes.characters.forEach { row -> apply(row, peerDeviceId, resolvedAvatars) }
-            changes.personas.forEach { row -> apply(row, peerDeviceId, resolvedAvatars) }
+            changes.characters.forEach { row -> apply(row, peerDeviceId, resolvedAvatars, matchingBytesByRowId[row.id]) }
+            changes.personas.forEach { row -> apply(row, peerDeviceId, resolvedAvatars, matchingBytesByRowId[row.id]) }
             changes.sessions.forEach { row -> apply(row, peerDeviceId) }
             preparedMessages.forEach { apply(it.row, peerDeviceId, it.refsJson) }
             changes.apiConnections.forEach { row -> apply(row, peerDeviceId) }
@@ -487,7 +513,7 @@ class SyncRepository(
         queries.updateAppliedRowMax(incomingUpdatedAt, rowId, peerDeviceId)
     }
 
-    private fun apply(row: SyncCharacter, peerDeviceId: String, resolvedAvatars: Map<String, ByteArray?>) {
+    private fun apply(row: SyncCharacter, peerDeviceId: String, resolvedAvatars: Map<String, ByteArray?>, matchingBytes: ByteArray?) {
         val existing = queries.selectCharacterByIdAny(row.id).executeAsOneOrNull()
         if (existing != null) {
             noteIncoming(row.id, TABLE_CHARACTER, peerDeviceId, existing.updatedAt, row.updatedAt)
@@ -504,9 +530,12 @@ class SyncRepository(
         // sender could not serve (or a fetch that failed) leaves the row
         // WITHOUT bytes but WITH the ref stored on the row, so a later sync
         // re-fetches and fills it (see getMissingAvatarRefs / fillMissingAvatars).
-        // Tombstones carry no avatar state at all.
+        // Tombstones carry no avatar state at all. [matchingBytes] are the
+        // bytes this device already held for the same content (hash-verified
+        // against the ref in applyChanges): they are kept so an unresolved ref
+        // never discards an avatar this device already has.
         val resolved = row.avatarRef?.let { resolvedAvatars[it.sha256] }
-        val avatarData = if (row.isDeleted == 1L) null else (resolved ?: row.avatarData)
+        val avatarData = if (row.isDeleted == 1L) null else (resolved ?: matchingBytes ?: row.avatarData)
         // Refs from the wire are filtered to the canonical SHA-256 hex shape
         // before anything is stored: the column is later used for blob-store
         // file reads (see fillMissingAvatars), and an unvalidated key is a
@@ -543,7 +572,7 @@ class SyncRepository(
         }
     }
 
-    private fun apply(row: SyncPersona, peerDeviceId: String, resolvedAvatars: Map<String, ByteArray?>) {
+    private fun apply(row: SyncPersona, peerDeviceId: String, resolvedAvatars: Map<String, ByteArray?>, matchingBytes: ByteArray?) {
         val existing = queries.selectPersonaByIdAny(row.id).executeAsOneOrNull()
         if (existing != null) {
             noteIncoming(row.id, TABLE_PERSONA, peerDeviceId, existing.updatedAt, row.updatedAt)
@@ -552,8 +581,11 @@ class SyncRepository(
             queries.insertAppliedRow(row.id, peerDeviceId, row.updatedAt)
         }
         val seq = clock.nextSyncSeq()
+        // See the character apply: hash-verified existing bytes are kept over
+        // an unresolved ref so an async fetch never discards an avatar this
+        // device already has.
         val resolved = row.avatarRef?.let { resolvedAvatars[it.sha256] }
-        val avatarData = if (row.isDeleted == 1L) null else (resolved ?: row.avatarData)
+        val avatarData = if (row.isDeleted == 1L) null else (resolved ?: matchingBytes ?: row.avatarData)
         // Wire refs are shape-validated before storing (see the character
         // apply): the column feeds blob-store file reads.
         val avatarRef = if (row.isDeleted == 1L || avatarData != null || row.avatarRef == null ||
