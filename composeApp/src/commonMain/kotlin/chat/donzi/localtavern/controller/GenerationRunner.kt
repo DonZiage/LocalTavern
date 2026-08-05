@@ -150,6 +150,14 @@ class GenerationRunner(
                 else -> isReasoningModel(activeConnection.model)
             }
 
+            // The transport socket idle timeout must cover the same silent
+            // window the app-level first-token grace allows, or a
+            // socket-enforcing engine (CIO, OkHttp, Darwin) kills a thinking
+            // model at 1x before the app grace could apply. Post-first-token
+            // the app-level idle timer (plain 1x) is the authoritative bound.
+            val socketTimeoutSeconds = if (timeoutLimitSeconds <= 0L) 0L
+            else timeoutLimitSeconds * if (reasoningEnabled) 4 else 2
+
             // Before the FIRST token, a longer grace applies: reasoning models
             // legitimately "think" in silence for minutes (Anthropic extended
             // thinking, R1-style) before emitting anything, and the idle timer
@@ -204,7 +212,7 @@ class GenerationRunner(
                         params = generationParams, provider = activeConnection.provider,
                         inferenceProvider = activeConnection.inferenceProvider,
                         quantization = activeConnection.quantization,
-                        timeoutSeconds = activeConnection.timeoutLimit
+                        timeoutSeconds = socketTimeoutSeconds
                     ).collect { chunk -> tokenChannel.send(chunk) }
                 } catch (e: Exception) {
                     tokenChannel.close(e)
@@ -239,11 +247,17 @@ class GenerationRunner(
 
                     val chunk = channelResult.getOrNull() ?: break
 
-                    // Any progress resets the idle timer.
-                    lastTokenAt = TimeSource.Monotonic.markNow()
-                    hasFirstToken = true
                     chunk.content?.let { responseBuilder.append(it) }
                     chunk.reasoning?.let { reasoningBuilder.append(it) }
+
+                    // Only chunks that actually carry text (or reasoning)
+                    // count as progress: blank-content deltas would otherwise
+                    // reset the idle timer forever, letting a server that
+                    // streams empty chunks livelock past the timeout.
+                    if (!chunk.content.isNullOrBlank() || !chunk.reasoning.isNullOrBlank()) {
+                        lastTokenAt = TimeSource.Monotonic.markNow()
+                        hasFirstToken = true
+                    }
 
                     val now = Clock.System.now().toEpochMilliseconds()
                     // Throttle UI and DB updates so fast token streams do not
@@ -292,7 +306,7 @@ class GenerationRunner(
                             isChatCompletion = isChatCompletion, params = generationParams,
                             provider = activeConnection.provider, inferenceProvider = activeConnection.inferenceProvider,
                             quantization = activeConnection.quantization,
-                            timeoutSeconds = activeConnection.timeoutLimit
+                            timeoutSeconds = socketTimeoutSeconds
                         )
                     }
                     if (recovered.text.isBlank()) {

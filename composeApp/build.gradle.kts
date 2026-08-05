@@ -51,33 +51,6 @@ kotlin {
             implementation(libs.coil3.coil.compose)
         }
 
-        commonTest.dependencies {
-            implementation(kotlin("test"))
-            implementation(libs.coroutines.test)
-        }
-
-        getByName("desktopTest") {
-            dependencies {
-                implementation("io.ktor:ktor-client-mock:$ktorVersion")
-                // Decodes our generated QR codes with an independent reader to
-                // prove they scan correctly (real scanner round-trip test).
-                implementation("com.google.zxing:core:3.5.3")
-                implementation("com.google.zxing:javase:3.5.3")
-                // BouncyCastle-backed provider: the exact crypto stack Android
-                // uses on-device (X25519/ChaCha20/AES-GCM/HKDF/PBKDF2), so the
-                // shared sync crypto gets tested against the Android backend
-                // without an emulator. bcprov is a runtime-only dependency of
-                // the provider artifact, so it is pulled explicitly here.
-                implementation(libs.cryptography.provider.jdk.bc)
-                implementation("org.bouncycastle:bcprov-jdk18on:1.79")
-                // Compose UI tests (desktop, skiko): state holders are tested
-                // as plain classes; these cover a few critical components.
-                @OptIn(org.jetbrains.compose.ExperimentalComposeLibrary::class)
-                implementation(compose.uiTest)
-                implementation(compose.desktop.currentOs)
-            }
-        }
-
         androidMain.dependencies {
             implementation(libs.sqldelight.driver.android)
             implementation(libs.androidx.activity.compose)

@@ -69,6 +69,14 @@ class ChatClient(private val httpClient: HttpClient) {
     // only on the per-model endpoint details API (GET /models/{id}/endpoints);
     // the catalog's id prefix is the publisher, not the serving provider.
     suspend fun fetchModelEndpoints(baseUrl: String, apiKey: String, modelId: String, provider: String? = null): List<ModelEndpointInfo> {
+        // modelId is a catalog-controlled path segment appended after
+        // /models/: reject dot-segment traversal (plain and percent-encoded)
+        // so a hostile id cannot redirect the keyed request to another path on
+        // the provider host. Slashes are legal ("openai/gpt-4o"), only ".."
+        // segments are refused.
+        if (modelId.split('/').any { it.equals("..", ignoreCase = true) || it.contains("%2e", ignoreCase = true) }) {
+            return emptyList()
+        }
         val apiStyle = apiStyleForProvider(provider)
         return try {
             val response = httpClient.get("${baseUrl.trimEnd('/')}/models/${modelId.trimStart('/')}/endpoints") {

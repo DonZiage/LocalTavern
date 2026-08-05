@@ -200,6 +200,21 @@ object ContextManager {
             if (availableTokens - msgTokens >= 0) {
                 selectedHistory.add(msg)
                 availableTokens -= msgTokens
+            } else if (selectedHistory.isEmpty()) {
+                // The newest message alone exceeds the budget: it is the one
+                // the model is answering, so it must not be dropped whole like
+                // older history. Truncate its text to the remaining budget,
+                // dropping the images first when they eat it entirely.
+                val imageTokens = msg.images.size * TOKENS_PER_IMAGE
+                var textBudget = availableTokens - imageTokens - 4
+                val truncated = if (textBudget >= 1) {
+                    msg.copy(content = tokenizer.truncateByTokens(msg.content, textBudget))
+                } else {
+                    textBudget = (availableTokens - 4).coerceAtLeast(1)
+                    msg.copy(content = tokenizer.truncateByTokens(msg.content, textBudget), images = emptyList())
+                }
+                selectedHistory.add(truncated)
+                break
             } else {
                 break
             }
