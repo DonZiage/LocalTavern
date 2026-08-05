@@ -97,10 +97,13 @@ class SyncServer(
     }
 
     // Early rejection of oversized bodies via Content-Length (the Ktor client
-    // always sends it for JSON bodies); true streaming bodies without a
-    // declared length are rare here and bounded by the receive above.
+    // always sends it for JSON bodies). A body WITHOUT a declared length
+    // (chunked transfer encoding, raw streaming) cannot be size-checked up
+    // front: call.receive() would buffer it in full before the handler runs,
+    // so accepting it would let any LAN peer stream an unbounded body past
+    // the cap and exhaust the device. Such requests are rejected outright.
     private fun acceptsBodySize(call: io.ktor.server.application.ApplicationCall): Boolean {
-        val length = call.request.headers[HttpHeaders.ContentLength]?.toLongOrNull() ?: return true
+        val length = call.request.headers[HttpHeaders.ContentLength]?.toLongOrNull() ?: return false
         return length in 0..MAX_REQUEST_BYTES
     }
 
