@@ -20,40 +20,44 @@ object LorebookParser {
     /** Parses a SillyTavern "characterBook" object into a [Lorebook]. */
     fun parse(characterBook: JsonObject?): Lorebook {
         if (characterBook == null) return Lorebook()
-        val entries = characterBook["entries"]
-            ?.takeIf { it is JsonArray }
-            ?.jsonArray
-            ?.mapNotNull { element -> parseEntry(element) }
-            ?: emptyList()
-        return Lorebook(
-            name = characterBook["name"]?.jsonPrimitive?.contentOrNull,
-            description = characterBook["description"]?.jsonPrimitive?.contentOrNull,
-            entries = entries
-        )
+        val entries = runCatching {
+            characterBook["entries"]
+                ?.takeIf { it is JsonArray }
+                ?.jsonArray
+                ?.mapNotNull { element -> runCatching { parseEntry(element) }.getOrNull() }
+                ?: emptyList()
+        }.getOrElse { emptyList() }
+        return runCatching {
+            Lorebook(
+                name = (characterBook["name"] as? JsonPrimitive)?.contentOrNull,
+                description = (characterBook["description"] as? JsonPrimitive)?.contentOrNull,
+                entries = entries
+            )
+        }.getOrElse { Lorebook(entries = entries) }
     }
 
     private fun parseEntry(element: JsonElement): LorebookEntry? {
         if (element !is JsonObject) return null
         return LorebookEntry(
-            id = element["id"]?.jsonPrimitive?.longOrNull,
-            name = element["name"]?.jsonPrimitive?.contentOrNull ?: "",
+            id = (element["id"] as? JsonPrimitive)?.longOrNull,
+            name = (element["name"] as? JsonPrimitive)?.contentOrNull ?: "",
             keys = parseStringList(element["keys"]),
             secondaryKeys = parseStringList(element["secondary_keys"]),
-            content = element["content"]?.jsonPrimitive?.contentOrNull ?: "",
-            enabled = element["enabled"]?.jsonPrimitive?.booleanOrNull ?: true,
-            constant = element["constant"]?.jsonPrimitive?.booleanOrNull ?: false,
-            selective = element["selective"]?.jsonPrimitive?.booleanOrNull ?: false,
-            caseSensitive = element["case_sensitive"]?.jsonPrimitive?.booleanOrNull ?: false,
-            insertionOrder = element["insertion_order"]?.jsonPrimitive?.longOrNull,
-            position = element["position"]?.jsonPrimitive?.contentOrNull,
-            priority = element["priority"]?.jsonPrimitive?.longOrNull,
-            comment = element["comment"]?.jsonPrimitive?.contentOrNull
+            content = (element["content"] as? JsonPrimitive)?.contentOrNull ?: "",
+            enabled = (element["enabled"] as? JsonPrimitive)?.booleanOrNull ?: true,
+            constant = (element["constant"] as? JsonPrimitive)?.booleanOrNull ?: false,
+            selective = (element["selective"] as? JsonPrimitive)?.booleanOrNull ?: false,
+            caseSensitive = (element["case_sensitive"] as? JsonPrimitive)?.booleanOrNull ?: false,
+            insertionOrder = (element["insertion_order"] as? JsonPrimitive)?.longOrNull,
+            position = (element["position"] as? JsonPrimitive)?.contentOrNull,
+            priority = (element["priority"] as? JsonPrimitive)?.longOrNull,
+            comment = (element["comment"] as? JsonPrimitive)?.contentOrNull
         )
     }
 
     private fun parseStringList(element: JsonElement?): List<String> {
         if (element !is JsonArray) return emptyList()
-        return element.mapNotNull { it.jsonPrimitive.contentOrNull }
+        return element.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
     }
 
     /** Serializes a [Lorebook] back into the SillyTavern characterBook shape. */

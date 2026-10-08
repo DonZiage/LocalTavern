@@ -40,8 +40,8 @@ class LivePricingFetcher(private val httpClient: HttpClient) {
             val body = response.body<OpenRouterModelsResponse>()
             body.data.mapNotNull { model ->
                 val price = model.pricing ?: return@mapNotNull null
-                val promptPerToken = price.prompt?.toDoubleOrNull() ?: return@mapNotNull null
-                val completionPerToken = price.completion?.toDoubleOrNull() ?: return@mapNotNull null
+                val promptPerToken = price.prompt?.toDoubleOrNull()?.takeIf { it.isFinite() } ?: return@mapNotNull null
+                val completionPerToken = price.completion?.toDoubleOrNull()?.takeIf { it.isFinite() } ?: return@mapNotNull null
                 val parts = model.id.split("/")
                 if (parts.size < 2) return@mapNotNull null
                 ModelPricing(

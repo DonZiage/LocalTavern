@@ -64,18 +64,27 @@ object PassphrasePolicy {
         }
 
         // Letter rules: no adjacent duplicate, no mirrored (palindrome) span.
-        val letters = passphrase.toList()
-        for (index in 1 until letters.size) {
-            if (letters[index].letterKey() == letters[index - 1].letterKey()) {
+        // The compared ENDPOINTS must be letters (so "!!", "11" or a double
+        // space never trip the letter rules — digits have their own
+        // RepeatedDigit rule, symbols have no repeat rule at all). Interior
+        // characters of a mirror span may be anything (digits inside the span
+        // still count: "Sab3ba" is a mirror), compared by identity.
+        val chars = passphrase.toList()
+        for (index in 1 until chars.size) {
+            val a = chars[index - 1]
+            val b = chars[index]
+            if (a.isLetter() && b.isLetter() && a.lowercaseChar() == b.lowercaseChar()) {
                 issues.add(Issue.RepeatedLetter)
                 break
             }
         }
-        for (i in 0 until letters.size) {
+        for (i in 0 until chars.size) {
+            if (!chars[i].isLetter()) continue
             var mirrored = false
-            for (j in i + 2 until letters.size) {
-                if (letters[i].letterKey() != letters[j].letterKey()) continue
-                if (isPalindrome(letters, i, j)) {
+            for (j in i + 2 until chars.size) {
+                if (!chars[j].isLetter()) continue
+                if (chars[i].letterKey() != chars[j].letterKey()) continue
+                if (isPalindrome(chars, i, j)) {
                     mirrored = true
                     break
                 }

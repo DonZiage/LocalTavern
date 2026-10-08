@@ -43,6 +43,15 @@ class ApiSettingsRepository(
         val newId = generateUuid()
         val now = currentTimeMillis()
         val ts = nextTimestamp()
+        // A new key that cannot be encrypted while the backend claims
+        // protection (locked passphrase, lost keystore key) must fail LOUDLY:
+        // storing a null silently drops the secret the user just typed with a
+        // success return (the update path keeps the old key and returns false
+        // instead — but an insert has no old key to keep).
+        if (!apiKey.isNullOrBlank() && apiKeyCipher.isProtected) {
+            val probe = apiKeyCipher.encryptForStorage(apiKey)
+                ?: throw IllegalStateException("API key could not be encrypted and was not saved: the security store is unavailable.")
+        }
         // The active flag and display order are derived from fresh DB state
         // inside the transaction, never from possibly-stale UI state: a new
         // connection must not be wrongly activated when the UI's connection

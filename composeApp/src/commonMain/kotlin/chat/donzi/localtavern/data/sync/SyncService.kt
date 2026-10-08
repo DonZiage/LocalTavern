@@ -257,7 +257,34 @@ class SyncService(
 
     fun startPairing() = pairing.startPairing()
 
-    fun cancelPairing() = pairing.cancelPairing()
+    /**
+     * Ends the pairing session. If a fingerprint is still pending, its peer
+     * row is removed first: pairing creates the peer BEFORE the out-of-band
+     * check, so leaving the row would let a later sync treat an unverified
+     * device as trusted. Suspends so the removal completes before the caller
+     * proceeds (tests assert immediately after).
+     */
+    suspend fun cancelPairing() {
+        val pendingId = _state.value.pendingPeerDeviceId
+        if (pendingId != null && _state.value.pendingPeerFingerprint != null) {
+            runCatching { repository.deletePeer(pendingId) }
+        }
+        pairing.cancelPairing()
+    }
+
+    /**
+     * Rejects the currently pending (fingerprint-unconfirmed) pairing and
+     * removes its peer row. Same as cancelPairing() — kept as a named alias
+     * so UI code reads as an explicit security decision.
+     */
+    suspend fun rejectPendingPairing() = cancelPairing()
+
+    /**
+     * Dismisses the pairing dialog safely: removes the unverified peer when
+     * one is pending, otherwise just ends the session. UI close/back actions
+     * should call this instead of pairing.cancelPairing().
+     */
+    suspend fun dismissPairing() = cancelPairing()
 
     /**
      * The text to encode in the pairing QR code: this device's address, id and

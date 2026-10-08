@@ -40,6 +40,7 @@ fun SyncSettingsSection(
 
     var showSyncDialog by remember { mutableStateOf(false) }
     var showRotateDialog by remember { mutableStateOf(false) }
+    var peerPendingRemoval by remember { mutableStateOf<SyncPeer?>(null) }
 
     // A big sync runs for minutes: keep the screen on so the OS power
     // optimizations cannot sleep or freeze the app mid-transfer.
@@ -70,7 +71,7 @@ fun SyncSettingsSection(
         ) {
             Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(16.dp))
             Spacer(modifier = Modifier.width(8.dp))
-            Text("Sync")
+            Text(if (peers.isEmpty()) "Pair new device" else "Pair another device")
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -87,7 +88,7 @@ fun SyncSettingsSection(
                             onEnsureSyncRunning()
                             syncService.syncNowAsync(peer.deviceId)
                         },
-                        onRemove = { scope.launch { syncRepository.deletePeer(peer.deviceId) } }
+                        onRemove = { peerPendingRemoval = peer }
                     )
                 }
             }
@@ -179,6 +180,31 @@ fun SyncSettingsSection(
         RotateKeyDialog(
             syncService = syncService,
             onDismiss = { showRotateDialog = false }
+        )
+    }
+
+    peerPendingRemoval?.let { peer ->
+        AlertDialog(
+            onDismissRequest = { peerPendingRemoval = null },
+            title = { Text("Remove ${peer.name}?") },
+            text = {
+                Text(
+                    "This device will no longer sync. You will need to pair again to reconnect it.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch { syncRepository.deletePeer(peer.deviceId) }
+                        peerPendingRemoval = null
+                    }
+                ) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { peerPendingRemoval = null }) { Text("Cancel") }
+            }
         )
     }
 }

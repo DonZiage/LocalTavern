@@ -8,9 +8,17 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+
+// Explicit JSON nulls (role-only deltas, tool-call shapes) are absent values,
+// not the four-character string "null": JsonNull.jsonPrimitive.content is the
+// literal "null", so every optional string here must go through contentOrNull.
+internal fun kotlinx.serialization.json.JsonElement.stringOrNull(): String? =
+    if (this is JsonNull) null else (this as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
 
 // Parses the SSE body of a chat-completion response into StreamChunk events.
 // OpenAI and Anthropic event shapes differ only in the deltas they carry; the
@@ -43,14 +51,14 @@ internal suspend fun FlowCollector<StreamChunk>.processResponseStream(
             val element = json.parseToJsonElement(data)
 
             if (apiStyle == ApiStyle.Anthropic) {
-                val eventType = element.jsonObject["type"]?.jsonPrimitive?.content
+                val eventType = element.jsonObject["type"]?.stringOrNull()
                 when (eventType) {
                     "content_block_delta" -> {
                         val delta = element.jsonObject["delta"]?.jsonObject
-                        val deltaType = delta?.get("type")?.jsonPrimitive?.content
+                        val deltaType = delta?.get("type")?.stringOrNull()
                         when (deltaType) {
                             "text_delta" -> {
-                                val text = delta.get("text")?.jsonPrimitive?.content
+                                val text = delta.get("text")?.stringOrNull()
                                 if (text != null) {
                                     emittedAnyToken = true
                                     emit(StreamChunk(content = text))
@@ -59,7 +67,7 @@ internal suspend fun FlowCollector<StreamChunk>.processResponseStream(
                             "thinking_delta" -> {
                                 // Anthropic extended thinking: the model's
                                 // chain of thought arrives before the text.
-                                val thinking = delta.get("thinking")?.jsonPrimitive?.content
+                                val thinking = delta.get("thinking")?.stringOrNull()
                                 if (thinking != null) {
                                     emittedAnyToken = true
                                     emit(StreamChunk(reasoning = thinking))
@@ -71,18 +79,18 @@ internal suspend fun FlowCollector<StreamChunk>.processResponseStream(
                         sawTerminator = true
                     }
                     "error" -> {
-                        val errorMessage = element.jsonObject["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content
+                        val errorMessage = element.jsonObject["error"]?.jsonObject?.get("message")?.stringOrNull()
                         throw ApiRequestException("API error: ${errorMessage ?: "Unknown error"}")
                     }
                 }
             } else {
-                val errorMessage = element.jsonObject["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content
+                val errorMessage = element.jsonObject["error"]?.jsonObject?.get("message")?.stringOrNull()
                 if (!errorMessage.isNullOrBlank()) {
                     throw ApiRequestException("API error: $errorMessage")
                 }
                 if (isChatCompletion) {
                     val delta = element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("delta")?.jsonObject
-                    val content = delta?.get("content")?.jsonPrimitive?.content
+                    val content = delta?.get("content")?.stringOrNull()
                     if (content != null) {
                         emittedAnyToken = true
                         emit(StreamChunk(content = content))
@@ -90,13 +98,13 @@ internal suspend fun FlowCollector<StreamChunk>.processResponseStream(
                     // DeepSeek-R1 and reasoning-capable OpenAI-compatible
                     // endpoints stream the chain of thought in
                     // reasoning_content before the visible text.
-                    val reasoning = delta?.get("reasoning_content")?.jsonPrimitive?.content
+                    val reasoning = delta?.get("reasoning_content")?.stringOrNull()
                     if (reasoning != null) {
                         emittedAnyToken = true
                         emit(StreamChunk(reasoning = reasoning))
                     }
                 } else {
-                    val text = element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("text")?.jsonPrimitive?.content
+                    val text = element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("text")?.stringOrNull()
                     if (text != null) {
                         emittedAnyToken = true
                         emit(StreamChunk(content = text))

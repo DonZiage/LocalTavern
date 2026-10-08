@@ -195,25 +195,27 @@ class ChatClient(private val httpClient: HttpClient) {
             val element = json.parseToJsonElement(bodyText)
             if (apiStyle == ApiStyle.Anthropic) {
                 // Content blocks may interleave "thinking" and "text" blocks.
+                // Explicit JSON nulls are absent values, not the literal
+                // "null" (see stringOrNull in StreamProcessor).
                 val blocks = element.jsonObject["content"]?.jsonArray
-                val text = blocks?.mapNotNull { it.jsonObject["text"]?.jsonPrimitive?.content }?.joinToString("")
+                val text = blocks?.mapNotNull { (it as? JsonObject)?.get("text")?.stringOrNull() }?.joinToString("")
                     ?.takeIf { it.isNotBlank() }
                     ?: bodyText
                 val reasoning = blocks
-                    ?.mapNotNull { it.jsonObject["thinking"]?.jsonPrimitive?.content }
+                    ?.mapNotNull { (it as? JsonObject)?.get("thinking")?.stringOrNull() }
                     ?.joinToString("")
                     ?.takeIf { it.isNotBlank() }
                 ChatResponse(text, reasoning)
             } else if (isChatCompletion) {
                 val message = element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("message")?.jsonObject
-                val text = message?.get("content")?.jsonPrimitive?.content?.takeIf { it.isNotBlank() } ?: bodyText
+                val text = message?.get("content")?.stringOrNull()?.takeIf { it.isNotBlank() } ?: bodyText
                 // DeepSeek-R1 and OpenAI-compatible reasoning endpoints report
                 // the chain of thought in reasoning_content.
-                val reasoning = message?.get("reasoning_content")?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+                val reasoning = message?.get("reasoning_content")?.stringOrNull()?.takeIf { it.isNotBlank() }
                 ChatResponse(text, reasoning)
             } else {
                 ChatResponse(
-                    element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("text")?.jsonPrimitive?.content ?: bodyText
+                    element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("text")?.stringOrNull() ?: bodyText
                 )
             }
         } catch (_: Exception) {
@@ -225,7 +227,7 @@ class ChatClient(private val httpClient: HttpClient) {
         return try {
             val text = response.bodyAsText()
             val element = json.parseToJsonElement(text)
-            val apiMessage = element.jsonObject["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content
+            val apiMessage = element.jsonObject["error"]?.jsonObject?.get("message")?.stringOrNull()
             if (!apiMessage.isNullOrBlank()) {
                 "API error: $apiMessage"
             } else if (text.isNotBlank()) {

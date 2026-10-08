@@ -18,7 +18,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.data.sync.DiscoveredPeer
-import chat.donzi.localtavern.data.sync.DeviceName
 import chat.donzi.localtavern.data.sync.PairPayload
 import chat.donzi.localtavern.data.sync.PairingStage
 import chat.donzi.localtavern.data.sync.SYNC_PORT
@@ -26,6 +25,7 @@ import chat.donzi.localtavern.data.sync.SyncDiscovery
 import chat.donzi.localtavern.data.sync.SyncService
 import chat.donzi.localtavern.data.sync.launchQrScanner
 import chat.donzi.localtavern.data.sync.supportsQrScanning
+import chat.donzi.localtavern.data.sync.validateFetchAddress
 import chat.donzi.localtavern.utils.KeepScreenOn
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -99,7 +99,7 @@ private fun HostConnectionInfoToggle(
     addresses: List<String>
 ) {
     TextButton(onClick = onToggle) {
-        Text(if (show) "Hide connection info" else "Not connecting?")
+        Text(if (show) "Hide connection info" else "Show connection info")
     }
     if (show) {
         if (addresses.isEmpty()) {
@@ -139,7 +139,8 @@ private fun HostConnectionInfoToggle(
 private fun FingerprintConfirmation(
     fingerprint: String,
     peerName: String,
-    onConfirm: () -> Unit
+    onConfirm: () -> Unit,
+    onReject: () -> Unit
 ) {
     Surface(
         shape = MaterialTheme.shapes.medium,
@@ -162,7 +163,7 @@ private fun FingerprintConfirmation(
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Compare this with the fingerprint shown on the other device. If they match, pairing is secure.",
+                text = "Compare this with the fingerprint shown on the other device. Only continue when both screens show the same code.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -170,12 +171,15 @@ private fun FingerprintConfirmation(
             Button(onClick = onConfirm, modifier = Modifier.fillMaxWidth()) {
                 Text("Fingerprints match")
             }
+            TextButton(onClick = onReject, modifier = Modifier.fillMaxWidth()) {
+                Text("Don't match — remove this device")
+            }
         }
     }
 }
 
 // Step 1 of the sync dialog: pick which role this device plays. Host on top,
-// Receiver below.
+// Receiver below. The two devices must pick OPPOSITE roles.
 @Composable
 private fun RoleChoiceContent(
     onPickHost: () -> Unit,
@@ -183,7 +187,7 @@ private fun RoleChoiceContent(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
-            text = "Pick a role for this device: the host shares characters and settings, the receiver joins the host.",
+            text = "Pick opposite roles on your two devices: one shows a code, the other enters it.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -194,8 +198,8 @@ private fun RoleChoiceContent(
             Icon(Icons.Default.Devices, contentDescription = null, modifier = Modifier.size(20.dp))
             Spacer(modifier = Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
-                Text("Host", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                Text("Show a QR code the other device scans", style = MaterialTheme.typography.bodySmall)
+                Text("Show pairing code", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                Text("The other device scans or types it", style = MaterialTheme.typography.bodySmall)
             }
         }
         Button(
@@ -205,8 +209,8 @@ private fun RoleChoiceContent(
             Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(20.dp))
             Spacer(modifier = Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
-                Text("Receiver", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                Text("Scan the host's QR code to pair", style = MaterialTheme.typography.bodySmall)
+                Text("Enter pairing code", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                Text("Scan the other device's code", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -230,17 +234,16 @@ internal fun SyncFlowDialog(
 
     val pendingFingerprint = syncState.pendingPeerFingerprint
 
-    // This device's display name: editable here so it can be set the very
-    // first time the user pairs. All pairing surfaces (QR, discovery,
-    // hello, pair request/response) read it live.
+    // Display-only device name (renaming lives in App Settings — the dialog
+    // stays focused on pairing).
     val deviceName by syncService.deviceName.collectAsState()
-    var editingName by remember { mutableStateOf(false) }
-    var nameDraft by remember { mutableStateOf("") }
 
-    // Receiver-side form state.
+    // Receiver-side form state. Manual entry is ONE field ("192.168.1.5" or
+    // "192.168.1.5:47324") — the port defaults and rarely needs changing.
     var receiverStep by remember { mutableStateOf(ReceiverStep.Find) }
     var host by remember { mutableStateOf("") }
     var port by remember { mutableStateOf(SYNC_PORT.toString()) }
+    var manualAddress by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
     var selectedDeviceName by remember { mutableStateOf<String?>(null) }
     var cameFromManual by remember { mutableStateOf(false) }
@@ -269,12 +272,17 @@ internal fun SyncFlowDialog(
     }
 
     fun close() {
-        syncService.cancelPairing()
-        onDismiss()
+        scope.launch {
+            syncService.dismissPairing()
+            onDismiss()
+        }
     }
 
     fun backToRoleChoice() {
-        syncService.cancelPairing()
+        // Leaving the fingerprint step removes the unverified peer (see
+        // SyncService.cancelPairing): a device that was never verified must
+        // not linger as trusted.
+        scope.launch { syncService.dismissPairing() }
         step = null
     }
 
@@ -295,6 +303,7 @@ internal fun SyncFlowDialog(
         receiverStep = ReceiverStep.Find
         host = ""
         port = SYNC_PORT.toString()
+        manualAddress = ""
         pin = ""
         selectedDeviceName = null
         cameFromManual = false
@@ -306,6 +315,17 @@ internal fun SyncFlowDialog(
         postPairError = null
         postPairPeerId = null
         showHostInfo = false
+    }
+
+    // Parses the single manual-address field: "192.168.1.5" or
+    // "192.168.1.5:47324". Returns null when it is not a bare host[:port].
+    fun parseManualAddress(input: String): Pair<String, Int>? {
+        val trimmed = input.trim()
+        if (trimmed.isEmpty()) return null
+        // validateFetchAddress expects "host:port" and rejects schemes,
+        // paths, credentials and whitespace — reuse it as the single gate.
+        val withPort = if (':' in trimmed) trimmed else "$trimmed:$SYNC_PORT"
+        return validateFetchAddress(withPort)
     }
 
     fun applyPayload(payload: PairPayload) {
@@ -386,11 +406,11 @@ internal fun SyncFlowDialog(
         title = {
             Text(
                 when (step) {
-                    null -> "Sync"
-                    SyncRole.Host -> "You are the Host"
+                    null -> "Pair devices"
+                    SyncRole.Host -> "Show pairing code"
                     SyncRole.Receiver -> when (receiverStep) {
-                        ReceiverStep.Find -> "You are the Receiver"
-                        ReceiverStep.Manual -> "Enter the host's info"
+                        ReceiverStep.Find -> "Enter pairing code"
+                        ReceiverStep.Manual -> "Enter address manually"
                         ReceiverStep.Pin -> "Enter the pairing PIN"
                     }
                 }
@@ -409,63 +429,11 @@ internal fun SyncFlowDialog(
                             step = SyncRole.Receiver
                         }
                     )
-                    Surface(
-                        shape = MaterialTheme.shapes.medium,
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Text(
-                                "This device's name",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = deviceName,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                TextButton(
-                                    onClick = {
-                                        nameDraft = deviceName
-                                        editingName = true
-                                    }
-                                ) { Text("Rename") }
-                            }
-                            if (editingName) {
-                                OutlinedTextField(
-                                    value = nameDraft,
-                                    onValueChange = { nameDraft = it.take(DeviceName.MAX_LENGTH) },
-                                    label = { Text("Device name") },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.End
-                                ) {
-                                    TextButton(onClick = { editingName = false }) { Text("Cancel") }
-                                    Button(
-                                        onClick = {
-                                            scope.launch { syncService.renameDevice(nameDraft.trim()) }
-                                            editingName = false
-                                        },
-                                        enabled = nameDraft.isNotBlank()
-                                    ) { Text("Save") }
-                                }
-                            }
-                            Text(
-                                text = "Shown to other devices while pairing and in the paired-device list. Changing it never affects pairing or sync.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+                    Text(
+                        text = "This device ($deviceName) appears under this name on the other screen. To rename it, use App Settings.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
                 SyncRole.Host -> Column(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -481,7 +449,8 @@ internal fun SyncFlowDialog(
                             FingerprintConfirmation(
                                 fingerprint = pendingFingerprint,
                                 peerName = syncState.pendingPeerName ?: "the other device",
-                                onConfirm = { syncService.confirmFingerprint() }
+                                onConfirm = { syncService.confirmFingerprint() },
+                                onReject = { scope.launch { syncService.rejectPendingPairing() } }
                             )
                             Text(
                                 text = "The other device entered the PIN. Once the fingerprints are compared, either device can complete the pairing.",
@@ -548,7 +517,7 @@ internal fun SyncFlowDialog(
                         // Waiting for a receiver: QR only, PIN stays hidden.
                         pin != null && qrPayload != null -> {
                             Text(
-                                text = "On the other device choose \u201cReceiver\u201d and scan this QR code.",
+                                text = "On the other device choose \u201cEnter pairing code\u201d and scan this QR code.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -656,7 +625,8 @@ internal fun SyncFlowDialog(
                                 FingerprintConfirmation(
                                     fingerprint = pendingFingerprint,
                                     peerName = syncState.pendingPeerName ?: "the other device",
-                                    onConfirm = { confirmFingerprintAndSync() }
+                                    onConfirm = { confirmFingerprintAndSync() },
+                                    onReject = { scope.launch { syncService.rejectPendingPairing() } }
                                 )
                                 Text(
                                     text = "Confirming also starts the initial sync with the host.",
@@ -691,11 +661,11 @@ internal fun SyncFlowDialog(
                                     ) {
                                         Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp))
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Scan the host's QR code")
+                                        Text("Scan the pairing code")
                                     }
                                 } else {
                                     Text(
-                                        text = "Scan this host's QR code with your phone, or pick the host below.",
+                                        text = "Scan the pairing code with your phone, or pick the device below.",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -729,29 +699,25 @@ internal fun SyncFlowDialog(
                                     Spacer(modifier = Modifier.height(4.dp))
                                 }
 
-                                TextButton(onClick = { receiverStep = ReceiverStep.Manual }) {
-                                    Text("Can't find the device?")
+                                TextButton(onClick = {
+                                    manualAddress = if (host.isNotBlank()) "$host:$port" else ""
+                                    receiverStep = ReceiverStep.Manual
+                                }) {
+                                    Text("Enter address manually")
                                 }
                             }
-                            // Step 2b: the host was not found automatically —
-                            // type its address and port by hand.
+                            // Step 2b: the code was not scanned — type the
+                            // address shown on the other screen by hand.
                             ReceiverStep.Manual -> {
                                 Text(
-                                    text = "Enter the host's address and port as shown on its screen:",
+                                    text = "Enter the address shown on the other screen (port is optional, default $SYNC_PORT):",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 OutlinedTextField(
-                                    value = host,
-                                    onValueChange = { host = it },
-                                    label = { Text("Host (IP or hostname)") },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true
-                                )
-                                OutlinedTextField(
-                                    value = port,
-                                    onValueChange = { port = it },
-                                    label = { Text("Port") },
+                                    value = manualAddress,
+                                    onValueChange = { manualAddress = it },
+                                    label = { Text("Address, e.g. 192.168.1.5") },
                                     modifier = Modifier.fillMaxWidth(),
                                     singleLine = true
                                 )
@@ -828,13 +794,24 @@ internal fun SyncFlowDialog(
                             }
                             ReceiverStep.Manual -> TextButton(
                                 onClick = {
-                                    cameFromManual = true
-                                    receiverStep = ReceiverStep.Pin
-                                    // Tell the host a receiver is on its way so
-                                    // its QR is replaced by the PIN.
-                                    syncService.announceConnection(host.trim(), port.trim().toIntOrNull() ?: SYNC_PORT)
+                                    val parsed = parseManualAddress(manualAddress)
+                                    if (parsed == null) {
+                                        status = "Enter a valid address, e.g. 192.168.1.5."
+                                        statusIsError = true
+                                    } else {
+                                        host = parsed.first
+                                        port = parsed.second.toString()
+                                        selectedDeviceName = "$host:$port"
+                                        cameFromManual = true
+                                        receiverStep = ReceiverStep.Pin
+                                        status = null
+                                        statusIsError = false
+                                        // Tell the host a receiver is on its way so
+                                        // its QR is replaced by the PIN.
+                                        syncService.announceConnection(host, parsed.second)
+                                    }
                                 },
-                                enabled = host.isNotBlank()
+                                enabled = manualAddress.isNotBlank()
                             ) { Text("Continue") }
                             ReceiverStep.Pin -> TextButton(
                                 onClick = { pair() },

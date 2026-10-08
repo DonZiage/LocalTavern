@@ -266,6 +266,14 @@ class SyncPairing(
         if (request.deviceId == identity.deviceId) {
             return PairResponse(ok = false, message = "Cannot pair a device with itself.")
         }
+        // Device ids are embedded unescaped in the AEAD associated data of
+        // every exchange, so anything outside the generated alphabet is
+        // rejected here — matching the /exchange and /blob/fetch gates. A
+        // paired-but-unsyncable peer (accepted here, refused everywhere else)
+        // must never be created.
+        if (!isValidDeviceId(request.deviceId)) {
+            return PairResponse(ok = false, message = "Invalid device id.")
+        }
         val peerPublicKey = runCatching { decodeBase64(request.publicKey) }.getOrNull()
         val nonce = runCatching { decodeBase64(request.nonce) }.getOrNull()
         val proof = runCatching { decodeBase64(request.pinProof) }.getOrNull()
@@ -381,6 +389,8 @@ class SyncPairing(
             if (!response.ok || response.publicKey.isBlank()) {
                 error(response.message.ifBlank { "Pairing rejected." })
             }
+            if (!isValidDeviceId(response.deviceId)) error("Invalid device id from peer.")
+            if (response.deviceId == identity.deviceId) error("Cannot pair a device with itself.")
             val peerKey = decodeBase64(response.publicKey)
             check(peerKey.size == 32) { "Invalid public key from peer." }
 

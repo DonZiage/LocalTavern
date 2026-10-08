@@ -152,7 +152,7 @@ class ScreenSmokeTest {
                 )
             }
             onNodeWithText("This device: Smoke Laptop").assertExists()
-            onNodeWithText("Sync").assertExists()
+            onNodeWithText("Pair new device").assertExists()
             onNodeWithText("Sync Key").assertExists()
             // An empty peer list shows the pairing entry point via the Sync
             // button; no crash with a fresh (peerless) database.

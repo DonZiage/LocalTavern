@@ -148,7 +148,11 @@ fun parseMarkdown(text: String, style: MarkdownStyle): List<MarkdownBlock> {
                     val line = lines[i].trim()
                     if (!ORDERED_ITEM.containsMatchIn(line)) break
                     val number = line.takeWhile { it.isDigit() }.toIntOrNull() ?: 1
-                    items.add("$number.  ${line.substringAfter('.').trimStart()}")
+                    // Strip either marker style ("1. " or "1) "): the regex
+                    // accepts both, so the strip must too — substringAfter('.')
+                    // alone leaked "1)" markers into the output.
+                    val afterMarker = line.dropWhile { it.isDigit() }.drop(1).trimStart()
+                    items.add("$number.  $afterMarker")
                     i++
                 }
                 blocks.add(MarkdownBlock(renderInline(items.joinToString("\n"), style, SpanStyle())))

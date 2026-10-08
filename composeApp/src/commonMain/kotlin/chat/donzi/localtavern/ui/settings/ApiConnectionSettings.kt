@@ -148,17 +148,26 @@ fun ApiConnectionSettings(
                     // The repository derives the active flag and display order
                     // from fresh DB state, so a stale UI list cannot wrongly
                     // activate the new connection or collide on ordering.
+                    // Encryption can still fail even when the store looks
+                    // available (transient backend error): the repository
+                    // throws instead of storing a keyless row, and the error
+                    // is surfaced here so the typed key is never lost silent.
                     val isFirstConnection = connections.isEmpty()
-                    apiSettingsRepository.insertApiConnection(
-                        provider = ProviderCatalog.detectProviderFromBaseUrl(baseUrl),
-                        name = name,
-                        baseUrl = baseUrl,
-                        apiKey = apiKey,
-                        model = model,
-                        inferenceProvider = inferenceProvider,
-                        quantization = quantization,
-                        timeoutLimit = 60L
-                    )
+                    try {
+                        apiSettingsRepository.insertApiConnection(
+                            provider = ProviderCatalog.detectProviderFromBaseUrl(baseUrl),
+                            name = name,
+                            baseUrl = baseUrl,
+                            apiKey = apiKey,
+                            model = model,
+                            inferenceProvider = inferenceProvider,
+                            quantization = quantization,
+                            timeoutLimit = 60L
+                        )
+                    } catch (e: Exception) {
+                        keySaveError = e.message ?: "Your API key could not be encrypted and was not saved."
+                        return@launch
+                    }
                     showAddDialog = false
                     refreshTrigger++
                     onApiChanged()

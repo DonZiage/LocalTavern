@@ -37,6 +37,12 @@ data class PairPayload(
             if (port !in 1..65535) return null
             val deviceId = params["d"] ?: return null
             if (deviceId.isBlank() || host.isBlank()) return null
+            // The host lands in "http://$host:$port/..." URLs (announce +
+            // pairing), so it must be a bare host:port like the sync fetch
+            // addresses are — a decoded '/', '@', '?', '#' or whitespace
+            // would change the host/path/query/authority of the keyed
+            // request. Reuse the fetch-address gate (same package).
+            if (validateFetchAddress("$host:$port") == null) return null
             return PairPayload(host = host, port = port, deviceId = deviceId, deviceName = params["n"] ?: "")
         }
     }
