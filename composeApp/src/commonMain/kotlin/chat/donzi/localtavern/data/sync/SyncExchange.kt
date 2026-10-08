@@ -144,7 +144,15 @@ class SyncExchange(
                 if (responseLength != null && responseLength > MAX_SYNC_BODY_BYTES) {
                     error("Sync response is too large (${responseLength / 1024 / 1024} MB). Update the other device to sync large libraries.")
                 }
-                val response: ExchangeResponse = httpResponse.body()
+                // A response WITHOUT a declared length (chunked transfer
+                // encoding) cannot be size-checked up front: stream it with a
+                // hard cap instead of buffering blindly, or an unbounded body
+                // kills the app mid-sync.
+                val response: ExchangeResponse = if (responseLength != null) {
+                    httpResponse.body()
+                } else {
+                    decodeEnvelopeResponse(httpResponse.readCappedBytes(MAX_SYNC_BODY_BYTES))
+                }
 
                 if (!response.ok) error(response.message.ifBlank { "Sync rejected by peer." })
                 if (response.exchangeId != exchangeId) {
@@ -415,6 +423,9 @@ class SyncExchange(
 
     private fun decodeEnvelope(bytes: ByteArray): SyncEnvelope =
         json.decodeFromString(SyncEnvelope.serializer(), bytes.decodeToString())
+
+    private fun decodeEnvelopeResponse(bytes: ByteArray): ExchangeResponse =
+        json.decodeFromString(ExchangeResponse.serializer(), bytes.decodeToString())
 
     private companion object {
         // Exchange ids are only meaningful within minutes of an exchange; a

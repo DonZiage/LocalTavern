@@ -370,6 +370,10 @@ class SyncRepository(
 
     // Table names stored on ConflictEvent rows; shown to the user verbatim.
     private companion object {
+        // Rows committed per sub-transaction in applyChanges: bounds how long
+        // one commit holds the single write connection (200 small rows commit
+        // in milliseconds, whatever the total batch size).
+        const val APPLY_TX_CHUNK_ROWS = 200
         const val TABLE_CHARACTER = "Character"
         const val TABLE_PERSONA = "Persona"
         const val TABLE_SESSION = "Chat"
@@ -452,14 +456,36 @@ class SyncRepository(
                 }
             }
         }
-        database.transaction {
-            changes.characters.forEach { row -> apply(row, peerDeviceId, resolvedAvatars, matchingBytesByRowId[row.id]) }
-            changes.personas.forEach { row -> apply(row, peerDeviceId, resolvedAvatars, matchingBytesByRowId[row.id]) }
-            changes.sessions.forEach { row -> apply(row, peerDeviceId) }
-            preparedMessages.forEach { apply(it.row, peerDeviceId, it.refsJson) }
-            changes.apiConnections.forEach { row -> apply(row, peerDeviceId) }
-            changes.promptBlocks.forEach { row -> apply(row, peerDeviceId) }
-            clock.absorb(changes.maxUpdatedAt)
+        // A single envelope batch can carry thousands of small rows within
+        // its byte budget; committing them all in one SQLite transaction
+        // would hold the single write connection for seconds on a mobile
+        // device (ANR, watchdog kill) and pin the whole batch in memory.
+        // Each chunk commits on its own: a crash mid-batch only loses the
+        // uncommitted tail, and the next sync re-sends from the un-advanced
+        // cursor — re-applying is idempotent LWW, so no row is ever lost or
+        // duplicated. The clock absorbs the batch's timestamps in every
+        // chunk (absorb only moves forward), so the skew protection holds
+        // even if the process dies mid-batch.
+        val characterChunks = changes.characters.chunked(APPLY_TX_CHUNK_ROWS)
+        val personaChunks = changes.personas.chunked(APPLY_TX_CHUNK_ROWS)
+        val sessionChunks = changes.sessions.chunked(APPLY_TX_CHUNK_ROWS)
+        val messageChunks = preparedMessages.chunked(APPLY_TX_CHUNK_ROWS)
+        val apiChunks = changes.apiConnections.chunked(APPLY_TX_CHUNK_ROWS)
+        val promptChunks = changes.promptBlocks.chunked(APPLY_TX_CHUNK_ROWS)
+        val rounds = maxOf(
+            characterChunks.size, personaChunks.size, sessionChunks.size,
+            messageChunks.size, apiChunks.size, promptChunks.size
+        )
+        repeat(rounds) { index ->
+            database.transaction {
+                characterChunks.getOrNull(index)?.forEach { row -> apply(row, peerDeviceId, resolvedAvatars, matchingBytesByRowId[row.id]) }
+                personaChunks.getOrNull(index)?.forEach { row -> apply(row, peerDeviceId, resolvedAvatars, matchingBytesByRowId[row.id]) }
+                sessionChunks.getOrNull(index)?.forEach { row -> apply(row, peerDeviceId) }
+                messageChunks.getOrNull(index)?.forEach { apply(it.row, peerDeviceId, it.refsJson) }
+                apiChunks.getOrNull(index)?.forEach { row -> apply(row, peerDeviceId) }
+                promptChunks.getOrNull(index)?.forEach { row -> apply(row, peerDeviceId) }
+                clock.absorb(changes.maxUpdatedAt)
+            }
         }
     }
 

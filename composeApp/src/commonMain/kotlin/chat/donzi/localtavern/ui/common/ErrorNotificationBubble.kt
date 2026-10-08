@@ -103,7 +103,7 @@ fun ErrorNotificationBubble(
             ) {
                 Icon(
                     imageVector = Icons.Default.Warning,
-                    contentDescription = null,
+                    contentDescription = if (isWarning) "Warning" else "Error",
                     tint = baseContentColor,
                     modifier = Modifier.size(24.dp)
                 )

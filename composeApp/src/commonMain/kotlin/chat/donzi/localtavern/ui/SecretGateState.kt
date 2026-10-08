@@ -85,6 +85,10 @@ class SecretGateState(
     // satisfy the full strength policy (see PassphrasePolicy) before the
     // backend is touched.
     suspend fun submitSetup(passphrase: String, confirmation: String) {
+        // The buttons gate on !busy, but a fast double Enter/click can still
+        // launch two coroutines: the second must no-op instead of running
+        // protect() twice.
+        if (busy) return
         error = null
         when {
             passphrase != confirmation ->
@@ -113,7 +117,13 @@ class SecretGateState(
     // attempt costs a full PBKDF2 stretch; after MAX_ATTEMPTS the gate locks
     // for the rest of the process.
     suspend fun submitUnlock(passphrase: String) {
-        if (mode != SecretGateMode.Unlock) return
+        if (mode != SecretGateMode.Unlock || busy) return
+        // Empty submits bypass nothing: they would burn one of the five
+        // session attempts on a keystroke, so refuse them outright.
+        if (passphrase.isEmpty()) {
+            error = "Enter your passphrase."
+            return
+        }
         error = null
         busy = true
         try {
@@ -140,7 +150,7 @@ class SecretGateState(
     //   null  -> the device no longer has any unlock method (or the prompt
     //            cannot be shown): open directly rather than blocking.
     suspend fun submitPlatformUnlock() {
-        if (mode != SecretGateMode.Unlock || isPassphraseBackend) return
+        if (mode != SecretGateMode.Unlock || isPassphraseBackend || busy) return
         error = null
         busy = true
         try {

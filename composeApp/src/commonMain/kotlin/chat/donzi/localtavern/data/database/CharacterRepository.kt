@@ -33,6 +33,17 @@ class CharacterRepository(
     private val readDispatcher: CoroutineDispatcher = ioDispatcher
 ) : BaseRepository(database, clock) {
 
+    // Rows per sub-transaction in importCharacters: bounds the write buffers
+    // SQLite holds open for one commit. The cut is ALSO byte-budgeted on the
+    // buffered avatar bytes: a chunk of cards with multi-MB avatars would
+    // otherwise pin hundreds of MB in the write buffers on a mobile device
+    // (OOM crash on a heavy library import). A single card larger than the
+    // byte budget still commits alone (progress is guaranteed).
+    private companion object {
+        const val IMPORT_TRANSACTION_ROWS = 64
+        const val IMPORT_TRANSACTION_BYTES = 16L * 1024 * 1024
+    }
+
     fun observeCharacters(): Flow<List<Character>> =
         queries.selectAllCharacters().asFlow().mapToList(readDispatcher).map { list -> list.map { it.toDomain() } }
 
@@ -118,38 +129,58 @@ class CharacterRepository(
     // inserted inside one transaction so a large batch commits atomically
     // and sync sees a single change batch. Duplicate display names are kept
     // (each row gets its own UUID, matching single-character imports).
+    //
+    // The batch is committed in bounded sub-transactions: a single
+    // transaction holding tens of thousands of rows (with per-row HLC and
+    // sync-sequence statements) would pin the whole batch in SQLite's write
+    // buffers on a mobile device. Sub-commits keep memory flat; a crash
+    // mid-import only loses the tail of the batch, and re-importing is
+    // idempotent (fresh UUIDs).
     suspend fun importCharacters(characters: List<ImportedCharacter>): Int = withContext(ioDispatcher) {
         if (characters.isEmpty()) return@withContext 0
         var count = 0
-        database.transaction {
-            characters.forEach { imported ->
-                val card = imported.card
-                val seq = nextSyncSeq()
-                queries.insertCharacter(
-                    id = generateUuid(),
-                    name = card.name,
-                    description = card.description,
-                    personality = card.personality,
-                    scenario = card.scenario,
-                    firstMes = card.first_mes,
-                    mesExample = card.mes_example,
-                    creatorNotes = card.creator_notes,
-                    altGreetings = card.alternate_greetings.joinToString("|||").ifBlank { null },
-                    avatarData = imported.avatarData,
-                    isAssistant = 0L,
-                    updatedAt = nextTimestamp(),
-                    isDeleted = 0L,
-                    systemPrompt = card.system_prompt,
-                    postHistoryInstructions = card.post_history_instructions,
-                    creator = card.creator,
-                    characterVersion = card.character_version,
-                    tags = encodeTags(card.tags),
-                    extensions = encodeJsonObject(card.extensions),
-                    characterBook = encodeJsonObject(card.character_book),
-                    syncSeq = seq
-                )
-                count++
+        var index = 0
+        while (index < characters.size) {
+            var bytes = 0L
+            var end = index
+            while (end < characters.size && end - index < IMPORT_TRANSACTION_ROWS) {
+                val avatarSize = characters[end].avatarData?.size?.toLong() ?: 0L
+                if (end > index && bytes + avatarSize > IMPORT_TRANSACTION_BYTES) break
+                bytes += avatarSize
+                end++
             }
+            val chunk = characters.subList(index, end)
+            database.transaction {
+                chunk.forEach { imported ->
+                    val card = imported.card
+                    val seq = nextSyncSeq()
+                    queries.insertCharacter(
+                        id = generateUuid(),
+                        name = card.name,
+                        description = card.description,
+                        personality = card.personality,
+                        scenario = card.scenario,
+                        firstMes = card.first_mes,
+                        mesExample = card.mes_example,
+                        creatorNotes = card.creator_notes,
+                        altGreetings = card.alternate_greetings.joinToString("|||").ifBlank { null },
+                        avatarData = imported.avatarData,
+                        isAssistant = 0L,
+                        updatedAt = nextTimestamp(),
+                        isDeleted = 0L,
+                        systemPrompt = card.system_prompt,
+                        postHistoryInstructions = card.post_history_instructions,
+                        creator = card.creator,
+                        characterVersion = card.character_version,
+                        tags = encodeTags(card.tags),
+                        extensions = encodeJsonObject(card.extensions),
+                        characterBook = encodeJsonObject(card.character_book),
+                        syncSeq = seq
+                    )
+                    count++
+                }
+            }
+            index = end
         }
         count
     }

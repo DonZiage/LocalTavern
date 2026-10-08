@@ -32,6 +32,7 @@ import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Persona
 import chat.donzi.localtavern.isDesktop
 import chat.donzi.localtavern.utils.BatchImportResult
+import chat.donzi.localtavern.utils.PickedFile
 
 // Layout pieces of MainScreen, extracted so the orchestrator only wires
 // state and data. The desktop panels keep their own collapse/expansion
@@ -103,7 +104,7 @@ internal fun DesktopCharactersPanel(
     onPersonaUpdate: (String, String, String?, ByteArray?) -> Unit,
     onPersonaDelete: (String) -> Unit,
     onCharactersDelete: (Set<String>) -> Unit,
-    onImportCharacters: (BatchImportResult) -> Unit,
+    onImportCharacters: suspend (List<PickedFile>) -> BatchImportResult,
     onExportSelected: (Set<String>) -> Unit,
     onCharacterCreate: (String) -> Unit,
     exportCharacterFromList: (Character) -> Unit,
@@ -254,7 +255,7 @@ internal fun MobilePanels(
     onPersonaUpdate: (String, String, String?, ByteArray?) -> Unit,
     onPersonaDelete: (String) -> Unit,
     onCharactersDelete: (Set<String>) -> Unit,
-    onImportCharacters: (BatchImportResult) -> Unit,
+    onImportCharacters: suspend (List<PickedFile>) -> BatchImportResult,
     onExportSelected: (Set<String>) -> Unit,
     onCharacterCreate: (String) -> Unit,
     exportCharacterFromList: (Character) -> Unit

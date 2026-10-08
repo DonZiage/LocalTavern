@@ -1,6 +1,8 @@
 package chat.donzi.localtavern.ui.chat
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -9,6 +11,7 @@ import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
@@ -37,7 +40,8 @@ internal fun MessageBubbleContent(
     messageImages: List<ByteArray>,
     pendingImageCount: Int = 0,
     reasoningText: String?,
-    costText: String?
+    costText: String?,
+    timestampText: String? = null
 ) {
     Column {
         if (!isUser && isGenerating && content == "...") {
@@ -96,12 +100,36 @@ internal fun MessageBubbleContent(
             )
         }
 
-        // Estimated cost of this message (heuristic, tokenizer-based).
-        if (!isUser && costText != null) {
+        // Message footnote: timestamp and estimated cost (heuristic,
+        // tokenizer-based). Either, both or neither may be present.
+        if (!isUser && (timestampText != null || costText != null)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (timestampText != null) {
+                    Text(
+                        text = timestampText,
+                        fontSize = 11.sp,
+                        color = textColor.copy(alpha = 0.55f)
+                    )
+                } else {
+                    Spacer(Modifier)
+                }
+                if (costText != null) {
+                    Text(
+                        text = "~$costText",
+                        fontSize = 11.sp,
+                        color = textColor.copy(alpha = 0.55f)
+                    )
+                }
+            }
+        } else if (isUser && timestampText != null) {
             Text(
-                text = "~$costText",
+                text = timestampText,
                 fontSize = 11.sp,
-                color = textColor.copy(alpha = 0.55f),
+                color = textColor.copy(alpha = 0.7f),
                 modifier = Modifier.padding(top = 6.dp)
             )
         }

@@ -33,7 +33,28 @@ import kotlinx.coroutines.delay
 
 @Composable
 fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
-    val container = remember { AppContainer(driverFactory) }
+    val systemDarkEarly = isSystemInDarkTheme()
+    // Container construction opens the database: any failure here must
+    // surface as a retryable screen, never as a crash during composition —
+    // otherwise one bad launch becomes every launch.
+    var containerAttempt by remember { mutableStateOf(0) }
+    val containerResult = remember(containerAttempt) { runCatching { AppContainer(driverFactory) } }
+    val container = containerResult.getOrNull()
+    if (container == null) {
+        LocalTavernTheme(darkTheme = systemDarkEarly) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background
+            ) {
+                FatalInitScreen(
+                    message = containerResult.exceptionOrNull()?.message
+                        ?: "Failed to start the app.",
+                    onRetry = { containerAttempt++ }
+                )
+            }
+        }
+        return
+    }
     DisposableEffect(container) {
         onDispose {
             container.close()
@@ -233,8 +254,8 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
                 onCharactersDelete = { ids ->
                     appState.deleteCharacters(ids)
                 },
-                onCharacterImport = { result ->
-                    appState.importCharacters(result)
+                onCharacterImport = { files ->
+                    appState.importPickedFiles(files)
                 },
                 onCharacterCreate = { name ->
                     appState.createCharacter(name)
@@ -242,6 +263,31 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
             )
         }
         }
+        }
+    }
+}
+
+// Last-resort screen when the app container itself cannot be built
+// (database unusable even after recovery). Retry rebuilds the container;
+// nothing here touches the database, so this screen cannot fail the same way.
+@Composable
+private fun FatalInitScreen(message: String, onRetry: () -> Unit) {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                text = message,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 32.dp)
+            )
+            Button(onClick = onRetry) {
+                Text("Retry")
+            }
         }
     }
 }

@@ -70,3 +70,6 @@ actual fun appDatabasePath(): String {
     val userHome = System.getProperty("user.home") ?: System.getProperty("user.dir")
     return File(userHome, ".localtavern").resolve("local_tavern.db").absolutePath
 }
+
+// Desktop windows stay awake under their own power management; nothing to do.
+actual fun setKeepScreenOn(enabled: Boolean) = Unit

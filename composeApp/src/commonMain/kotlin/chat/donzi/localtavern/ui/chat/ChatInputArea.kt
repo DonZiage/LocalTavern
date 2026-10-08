@@ -23,7 +23,9 @@ import chat.donzi.localtavern.domain.Character
 // Draft input (text + attachments) and the live cost readout of the
 // in-flight generation. The draft state lives here rather than inside
 // ChatInputBar so it survives select mode, where the input bar leaves the
-// composition entirely: this composable stays composed either way.
+// composition entirely: this composable stays composed either way. Drafts are
+// keyed by session: switching chats parks the in-progress message and
+// restores it when coming back, instead of discarding it.
 @Composable
 fun ChatInputArea(
     chatState: ChatUiState,
@@ -33,10 +35,11 @@ fun ChatInputArea(
     onEnterSelectMode: () -> Unit,
     sendWithCtrlEnter: Boolean = false
 ) {
-    var draftText by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+    val sessionKey = chatState.currentSession?.id
+    var draftText by rememberSaveable(sessionKey, stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(""))
     }
-    var draftImages by remember { mutableStateOf<List<ByteArray>>(emptyList()) }
+    var draftImages by remember(sessionKey) { mutableStateOf<List<ByteArray>>(emptyList()) }
 
     if (!isSelectMode) {
         // Live cost estimate of the in-flight generation, refreshed as the
@@ -72,6 +75,8 @@ fun ChatInputArea(
             onManageChats = actions.onManageChats,
             canManageChats = activeCharacter != null,
             onGoToParent = actions.onGoToParentChat,
+            onExportChat = actions.onExportChat,
+            canExportChat = chatState.messages.isNotEmpty(),
             sendWithCtrlEnter = sendWithCtrlEnter
         )
     }

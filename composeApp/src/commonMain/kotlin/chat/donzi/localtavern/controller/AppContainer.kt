@@ -12,6 +12,7 @@ import chat.donzi.localtavern.data.database.LocalTavernDB
 import chat.donzi.localtavern.data.database.LogicalClock
 import chat.donzi.localtavern.data.database.MessageRepository
 import chat.donzi.localtavern.data.database.SessionRepository
+import chat.donzi.localtavern.data.database.openHealthyDriver
 import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.data.pricing.LivePricingCatalog
 import chat.donzi.localtavern.data.pricing.LivePricingFetcher
@@ -47,7 +48,12 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 
 class AppContainer(driverFactory: DriverFactory) {
-    private val driver = driverFactory.createDriver()
+    // Opened through recovery: a kill mid-sync (OOM, OS power killer, full
+    // disk) can tear the database file, and without this the first query of
+    // every launch would throw and the app would die on the loading screen
+    // forever. Corrupt files are quarantined aside and a fresh database is
+    // created instead — the app always launches.
+    private val driver = openHealthyDriver(driverFactory)
     val database: LocalTavernDB = LocalTavernDB(driver)
     // Content-addressed store for message image blobs (never in SQLite).
     val blobStore: BlobStore = createBlobStore()
@@ -187,6 +193,12 @@ class AppContainer(driverFactory: DriverFactory) {
                     identityStore = syncIdentityStore,
                     httpClient = httpClient,
                     scope = appScope,
+                    // The blob store MUST be shared with the sync stack: the
+                    // sender stages large avatars here and ships only refs,
+                    // and the receiver pulls the bytes through /blob/fetch.
+                    // A null store disables out-of-band transfers, so avatar
+                    // refs would arrive but their bytes never would.
+                    blobStore = blobStore,
                     localAddressesProvider = { localIpAddresses() },
                     // Stop LAN discovery in lockstep with the server: an idle
                     // server must not keep announcing a dead port on the LAN.

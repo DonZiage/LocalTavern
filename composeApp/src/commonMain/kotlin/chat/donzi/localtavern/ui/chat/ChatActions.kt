@@ -19,5 +19,8 @@ data class ChatActions(
     val onAddImageToMessage: (String, List<ByteArray>) -> Unit,
     val onNavigateToSettings: () -> Unit,
     val onNavigateToPersonas: () -> Unit,
-    val onNavigateToCharacters: () -> Unit
+    val onNavigateToCharacters: () -> Unit,
+    // Exports the visible timeline as a Markdown transcript (no-op when the
+    // timeline is empty; the menu disables the item in that case).
+    val onExportChat: () -> Unit = {}
 )

@@ -6,14 +6,20 @@ import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Persona
 import chat.donzi.localtavern.utils.BatchImportResult
+import chat.donzi.localtavern.utils.CharacterManager
+import chat.donzi.localtavern.utils.ImportedCharacter
+import chat.donzi.localtavern.utils.InputValidation
+import chat.donzi.localtavern.utils.PickedFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class AppState(
     private val characterRepository: CharacterRepository,
@@ -126,11 +132,17 @@ class AppState(
     }
 
     fun addPersona(name: String, description: String?, avatarData: ByteArray?) {
-        scope.launch { characterRepository.insertPersona(name, description, avatarData) }
+        // Programmatic callers bypass the dialog's isNotBlank gate; enforce
+        // the same rule here so blank personas can never reach the database.
+        if (InputValidation.validateDisplayName(name) != null) return
+        val clean = InputValidation.cleanDisplayName(name)
+        scope.launch { characterRepository.insertPersona(clean, description, avatarData) }
     }
 
     fun updatePersona(id: String, name: String, description: String?, avatarData: ByteArray?) {
-        scope.launch { characterRepository.updatePersona(id, name, description, avatarData) }
+        if (InputValidation.validateDisplayName(name) != null) return
+        val clean = InputValidation.cleanDisplayName(name)
+        scope.launch { characterRepository.updatePersona(id, clean, description, avatarData) }
     }
 
     fun deletePersona(personaId: String) {
@@ -157,12 +169,92 @@ class AppState(
         }
     }
 
-    fun importCharacters(result: BatchImportResult) {
-        scope.launch { characterRepository.importCharacters(result.imports) }
+    /**
+     * Imports picked card sources (PNG/JSON cards and ZIP archives) end to
+     * end with bounded memory: the archive is streamed entry by entry, each
+     * parsed card is handed to the repository in chunks cut by card count AND
+     * buffered avatar bytes, and the returned summary never carries card or
+     * avatar bytes — on a mobile device a heavy library (hundreds of MB) must
+     * not be held in memory while it is being written to the database.
+     *
+     * This function never throws (except on coroutine cancellation): a
+     * persistence failure falls back to per-card isolation so one bad card
+     * cannot sink its chunk, and every card that did not reach the database
+     * is reported by name in [BatchImportResult.failed] with the cause in
+     * [BatchImportResult.error] — nothing is ever silently lost, and the app
+     * cannot crash no matter how many characters are imported at once.
+     */
+    suspend fun importPickedFiles(files: List<PickedFile>): BatchImportResult = withContext(Dispatchers.Default) {
+        val chunk = ArrayList<ImportedCharacter>(IMPORT_CHUNK_SIZE)
+        var chunkBytes = 0L
+        val failed = ArrayList<String>()
+        var imported = 0
+        var error: String? = null
+
+        suspend fun flush() {
+            if (chunk.isEmpty()) return
+            val batch = ArrayList(chunk)
+            chunk.clear()
+            chunkBytes = 0L
+            try {
+                imported += characterRepository.importCharacters(batch)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The fast batch path failed (disk full, corrupt bytes):
+                // retry card by card so a single bad card cannot sink the
+                // whole chunk, and record exactly the cards that did not land.
+                batch.forEach { card ->
+                    try {
+                        imported += characterRepository.importCharacters(listOf(card))
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (cardError: Exception) {
+                        failed.add(card.card.name.ifBlank { "Unnamed character" })
+                        if (error == null) error = cardError.message ?: "Failed to save a character."
+                    }
+                }
+                if (error == null) error = e.message ?: "Failed to save characters."
+            }
+        }
+
+        try {
+            val result = CharacterManager.processImportBatch(files) { parsed ->
+                chunk.add(parsed)
+                chunkBytes += parsed.avatarData?.size?.toLong() ?: 0L
+                if (chunk.size >= IMPORT_CHUNK_SIZE || chunkBytes >= IMPORT_CHUNK_BYTES) {
+                    flush()
+                }
+            }
+            flush()
+            failed.addAll(result.failed)
+            BatchImportResult(imported = imported, failed = failed, error = error)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // The parse loop itself failed (malformed input never throws —
+            // only persistence errors propagate, and those are handled in
+            // flush): anything still buffered never reached the database, so
+            // report it by name instead of dropping it.
+            chunk.forEach { failed.add(it.card.name.ifBlank { "Unnamed character" }) }
+            if (error == null) error = e.message ?: "Import failed."
+            BatchImportResult(imported = imported, failed = failed, error = error)
+        }
+    }
+
+    private companion object {
+        // Cards buffered before one database commit, cut by count AND by
+        // buffered avatar bytes: 20 cards with multi-MB avatars must flush
+        // long before the count is reached, or a heavy import would pin
+        // hundreds of MB on a mobile heap (OOM crash).
+        const val IMPORT_CHUNK_SIZE = 20
+        const val IMPORT_CHUNK_BYTES = 8L * 1024 * 1024
     }
 
     fun createCharacter(name: String) {
-        scope.launch { characterRepository.createCharacter(name) }
+        if (InputValidation.validateDisplayName(name) != null) return
+        val clean = InputValidation.cleanDisplayName(name)
+        scope.launch { characterRepository.createCharacter(clean) }
     }
 
     fun setDarkMode(isDark: Boolean) {

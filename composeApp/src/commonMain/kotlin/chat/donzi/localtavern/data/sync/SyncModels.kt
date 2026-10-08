@@ -10,6 +10,10 @@ import chat.donzi.localtavern.data.database.PromptBlockEntity
 import chat.donzi.localtavern.data.security.ApiKeyCipher
 import chat.donzi.localtavern.utils.Hashing
 import chat.donzi.localtavern.utils.deserializeImageRefs
+import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsChannel
+import io.ktor.utils.io.cancel
+import io.ktor.utils.io.readAvailable
 import kotlinx.serialization.Serializable
 
 // ---------- Wire-size bounds ----------
@@ -520,3 +524,35 @@ internal fun PromptBlockEntity.toSync() = SyncPromptBlock(
     isCustom = isCustom, displayOrder = displayOrder, updatedAt = updatedAt,
     isDeleted = isDeleted, syncSeq = syncSeq
 )
+
+// ---------- Capped response reads ----------
+
+// Reads an HTTP response body with a hard byte cap, for responses whose
+// length is NOT declared up front (chunked transfer encoding): buffering such
+// a body blindly lets a legacy or hostile peer stream an unbounded payload
+// whose decode (JSON -> base64 -> decrypt -> rows, ~4-5x transient) exhausts
+// a mobile heap and kills the app mid-sync. Excess throws (callers turn it
+// into a clean sync error, never a crash); cancellation propagates.
+internal suspend fun HttpResponse.readCappedBytes(capBytes: Long): ByteArray {
+    val channel = bodyAsChannel()
+    val parts = ArrayList<ByteArray>()
+    var total = 0L
+    val buf = ByteArray(64 * 1024)
+    while (!channel.isClosedForRead) {
+        val n = channel.readAvailable(buf)
+        if (n < 0) break
+        total += n
+        if (total > capBytes) {
+            channel.cancel()
+            error("Sync response is too large (${total / 1024 / 1024} MB). Update the other device to sync large libraries.")
+        }
+        if (n > 0) parts.add(buf.copyOf(n))
+    }
+    val out = ByteArray(total.toInt())
+    var offset = 0
+    parts.forEach { part ->
+        part.copyInto(out, offset)
+        offset += part.size
+    }
+    return out
+}

@@ -20,6 +20,7 @@ import chat.donzi.localtavern.data.database.SyncPeer
 import chat.donzi.localtavern.data.sync.SyncDiscovery
 import chat.donzi.localtavern.data.sync.SyncRepository
 import chat.donzi.localtavern.data.sync.SyncService
+import chat.donzi.localtavern.utils.KeepScreenOn
 import kotlinx.coroutines.launch
 import kotlin.time.Clock
 
@@ -39,6 +40,10 @@ fun SyncSettingsSection(
 
     var showSyncDialog by remember { mutableStateOf(false) }
     var showRotateDialog by remember { mutableStateOf(false) }
+
+    // A big sync runs for minutes: keep the screen on so the OS power
+    // optimizations cannot sleep or freeze the app mid-transfer.
+    KeepScreenOn(syncState.isSyncing)
 
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         Spacer(modifier = Modifier.height(8.dp))

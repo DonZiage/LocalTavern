@@ -56,6 +56,8 @@ fun ChatInputBar(
     onManageChats: () -> Unit,
     canManageChats: Boolean,
     onGoToParent: (() -> Unit)? = null,
+    onExportChat: (() -> Unit)? = null,
+    canExportChat: Boolean = false,
     sendWithCtrlEnter: Boolean = false
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -141,7 +143,9 @@ fun ChatInputBar(
                     onManageChats = onManageChats,
                     canManageChats = canManageChats,
                     onGoToParent = onGoToParent,
-                    onAttachImage = { imagePickerLauncher() }
+                    onAttachImage = { imagePickerLauncher() },
+                    onExportChat = onExportChat,
+                    canExportChat = canExportChat
                 )
             }
 

@@ -97,3 +97,9 @@ actual fun appDatabasePath(): String {
     val documentsDir = fileManager.URLsForDirectory(NSDocumentDirectory, NSUserDomainMask).first() as? NSURL
     return documentsDir?.URLByAppendingPathComponent("localtavern.db")?.path ?: ""
 }
+
+actual fun setKeepScreenOn(enabled: Boolean) {
+    // Must run on the main thread; callers hold this from Compose effects,
+    // which are always main-threaded.
+    UIApplication.sharedApplication.idleTimerDisabled = enabled
+}

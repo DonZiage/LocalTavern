@@ -26,6 +26,7 @@ import chat.donzi.localtavern.data.sync.SyncDiscovery
 import chat.donzi.localtavern.data.sync.SyncService
 import chat.donzi.localtavern.data.sync.launchQrScanner
 import chat.donzi.localtavern.data.sync.supportsQrScanning
+import chat.donzi.localtavern.utils.KeepScreenOn
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -256,6 +257,10 @@ internal fun SyncFlowDialog(
 
     // Host-side toggle: reveals the manual connection info next to the QR.
     var showHostInfo by remember { mutableStateOf(false) }
+
+    // Pairing crypto and the initial bulk sync can run for minutes on a big
+    // library: keep the screen on so the OS cannot sleep the app mid-process.
+    KeepScreenOn(isConnecting || postPair == PostPairState.Syncing)
 
     LaunchedEffect(step) {
         if (step == SyncRole.Host && syncState.pairingPin == null) {

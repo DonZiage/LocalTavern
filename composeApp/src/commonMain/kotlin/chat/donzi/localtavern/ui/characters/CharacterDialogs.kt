@@ -104,14 +104,23 @@ fun DeleteCharactersDialog(
 fun ImportResultDialog(
     imported: Int,
     failed: List<String>,
+    error: String? = null,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Import Complete") },
+        title = { Text(if (error != null && imported == 0) "Import Failed" else "Import Complete") },
         text = {
             Column {
                 Text("Imported $imported ${if (imported == 1) "character" else "characters"}.")
+                if (error != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
                 if (failed.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
                     Text(

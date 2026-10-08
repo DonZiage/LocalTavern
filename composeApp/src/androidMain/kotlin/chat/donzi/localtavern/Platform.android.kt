@@ -33,6 +33,10 @@ object AndroidAppContext {
 
     fun setActivity(activity: Activity) {
         currentActivityRef = WeakReference(activity)
+        // The window flag lives on the Activity's window: a recreated Activity
+        // (rotation, back navigation) loses it, so re-apply the desired state
+        // whenever the foreground Activity changes mid-operation.
+        applyKeepScreenOn()
     }
 
     fun getContext(): Context? = applicationContext
@@ -207,4 +211,25 @@ actual fun appDatabasePath(): String {
     val context = AndroidAppContext.getContext() ?: return ""
     return runCatching { context.getDatabasePath("localtavern.db").absolutePath }
         .getOrNull() ?: ""
+}
+
+// Desired screen-wake state (see setKeepScreenOn): kept so a recreated
+// Activity can re-apply the flag via AndroidAppContext.setActivity.
+private var lastKeepScreenOn = false
+
+private fun applyKeepScreenOn() {
+    val activity = AndroidAppContext.getActivity() ?: return
+    activity.runOnUiThread {
+        val window = activity.window ?: return@runOnUiThread
+        if (lastKeepScreenOn) {
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+}
+
+actual fun setKeepScreenOn(enabled: Boolean) {
+    lastKeepScreenOn = enabled
+    applyKeepScreenOn()
 }

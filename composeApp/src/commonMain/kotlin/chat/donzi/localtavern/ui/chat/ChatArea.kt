@@ -1,15 +1,21 @@
 package chat.donzi.localtavern.ui.chat
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.controller.ChatUiState
 import chat.donzi.localtavern.domain.Character
@@ -60,6 +66,31 @@ fun ChatArea(
                     .fillMaxWidth()
                     .padding(24.dp)
             )
+        } else if (activeCharacter != null && chatState.messages.isEmpty() && !chatState.isGenerating) {
+            // A selected character with an empty timeline (fresh chat or
+            // everything deleted) used to render a blank list; say so and
+            // point at the input instead.
+            Box(
+                modifier = Modifier.weight(1f).fillMaxWidth().padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "No messages yet",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Say hello to ${activeCharacter.name} below to start the conversation.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
         } else {
             ChatMessageList(
                 chatState = chatState,

@@ -54,7 +54,8 @@ fun MessageBubble(
     isGenerating: Boolean = false,
     canEdit: Boolean = true,
     reasoningText: String? = null,
-    costText: String? = null
+    costText: String? = null,
+    timestampText: String? = null
 ) {
     var isEditing by remember { mutableStateOf(false) }
     var editedTextValue by remember(content) {
@@ -238,7 +239,8 @@ fun MessageBubble(
                 messageImages = messageImages,
                 pendingImageCount = pendingImageCount,
                 reasoningText = reasoningText,
-                costText = costText
+                costText = costText,
+                timestampText = timestampText
             )
         }
 

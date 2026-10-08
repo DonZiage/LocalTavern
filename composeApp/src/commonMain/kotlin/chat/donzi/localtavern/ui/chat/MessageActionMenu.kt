@@ -24,7 +24,7 @@ fun MessageActionMenu(
                 onDismissRequest()
                 onCopy()
             },
-            leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) }
+            leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = "Copy") }
         )
         DropdownMenuItem(
             text = { Text("Add Image") },
@@ -32,7 +32,7 @@ fun MessageActionMenu(
                 onDismissRequest()
                 onAddImage()
             },
-            leadingIcon = { Icon(Icons.Default.AddPhotoAlternate, contentDescription = null) }
+            leadingIcon = { Icon(Icons.Default.AddPhotoAlternate, contentDescription = "Add Image") }
         )
         DropdownMenuItem(
             text = { Text("Branch") },
@@ -40,7 +40,7 @@ fun MessageActionMenu(
                 onDismissRequest()
                 onBranch()
             },
-            leadingIcon = { Icon(Icons.Default.AccountTree, contentDescription = null) }
+            leadingIcon = { Icon(Icons.Default.AccountTree, contentDescription = "Branch") }
         )
         HorizontalDivider()
         DropdownMenuItem(
@@ -52,7 +52,7 @@ fun MessageActionMenu(
             leadingIcon = {
                 Icon(
                     Icons.Default.Delete,
-                    contentDescription = null,
+                    contentDescription = "Delete",
                     tint = MaterialTheme.colorScheme.error
                 )
             }

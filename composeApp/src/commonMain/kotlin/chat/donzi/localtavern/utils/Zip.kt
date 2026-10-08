@@ -16,6 +16,10 @@ object Zip {
     // bigger is a corrupt archive and must not be materialized.
     const val MAX_ENTRY_SIZE = 64L * 1024 * 1024
     const val MAX_TOTAL_SIZE = 512L * 1024 * 1024
+    // Upper bound on the skipped-entry names one walk reports: a hostile
+    // archive could otherwise make the caller accumulate tens of thousands
+    // of names. Overflow is flagged via ArchiveWalk.truncated.
+    const val MAX_SKIPPED_NAMES = 100
 
     fun createArchive(entries: List<ZipEntry>): ByteArray {
         val locals = entries.map { entry ->
@@ -147,6 +151,110 @@ object Zip {
         return result
     }
 
+    /**
+     * Streams every entry of [bytes] to [onEntry], one at a time, so a large
+     * archive never materializes the whole decompressed library in memory
+     * (the batch-import path uses this; a mobile device cannot hold both the
+     * archive bytes and every entry simultaneously). The walk suspends between
+     * entries, so the consumer can persist each entry (or a bounded chunk)
+     * before the next one is extracted. The same sanity caps as [readArchive]
+     * apply per entry and in total; the walk stops at the cap. Corrupt or
+     * over-cap entries are never delivered: their names are reported in
+     * [ArchiveWalk.skipped] (bounded) so the caller can report exactly which
+     * cards did not make it instead of losing them silently, and
+     * [ArchiveWalk.truncated] tells whether the caps cut the walk short.
+     */
+    suspend fun readArchiveEntries(bytes: ByteArray, onEntry: suspend (ZipEntry) -> Unit): ArchiveWalk {
+        fun empty(): ArchiveWalk = ArchiveWalk(0, truncated = false, skipped = emptyList())
+        val eocd = findEocd(bytes) ?: return empty()
+        val entryCount = readU16(bytes, eocd + 10)
+        val centralSize = readU32(bytes, eocd + 12)
+        val centralOffset = readU32(bytes, eocd + 16)
+        if (centralOffset < 0 || centralSize < 0 ||
+            centralOffset + centralSize > bytes.size
+        ) {
+            return empty()
+        }
+
+        var delivered = 0
+        var truncated = false
+        val skipped = ArrayList<String>()
+        fun skip(name: String) {
+            // Bound the skipped-name memory against hostile archives with
+            // tens of thousands of bad entries; overflow is flagged so the
+            // caller still knows cards are missing.
+            if (skipped.size < MAX_SKIPPED_NAMES) skipped.add(name)
+            else truncated = true
+        }
+        var pos = centralOffset.toInt()
+        var remaining = centralSize.toInt()
+        var totalSize = 0L
+        repeat(entryCount) {
+            if (remaining < 46 || readU32(bytes, pos) != 0x02014b50L) {
+                return@repeat
+            }
+            val method = readU16(bytes, pos + 10)
+            val compressedSize = readU32(bytes, pos + 20)
+            val uncompressedSize = readU32(bytes, pos + 24)
+            val nameLength = readU16(bytes, pos + 28)
+            val extraLength = readU16(bytes, pos + 30)
+            val commentLength = readU16(bytes, pos + 32)
+            val localOffset = readU32(bytes, pos + 42)
+            val headerSize = 46 + nameLength + extraLength + commentLength
+            if (remaining < headerSize || pos + headerSize > bytes.size) {
+                return@repeat
+            }
+            val name = bytes.decodeToString(pos + 46, pos + 46 + nameLength)
+            pos += headerSize
+            remaining -= headerSize
+
+            // Directory entries carry no data; skip them so callers never
+            // receive zero-byte pseudo-cards.
+            if (name.endsWith("/")) {
+                return@repeat
+            }
+
+            val raw = extractEntryData(bytes, localOffset, compressedSize)
+            if (raw == null) {
+                skip(name)
+                return@repeat
+            }
+            // Reject a claimed size above the cap BEFORE inflating: the
+            // platform inflaters allocate the full expected size up front, so
+            // a hostile archive claiming a multi-GiB entry would exhaust
+            // memory before the post-inflate cap check below could run.
+            if (uncompressedSize > MAX_ENTRY_SIZE) {
+                skip(name)
+                return@repeat
+            }
+            val data = when (method) {
+                0 -> raw
+                8 -> inflateDeflate(raw, uncompressedSize.toInt())
+                else -> null
+            }
+            if (data == null) {
+                skip(name)
+                return@repeat
+            }
+
+            if (data.size > MAX_ENTRY_SIZE) {
+                skip(name)
+                return@repeat
+            }
+            if (totalSize + data.size > MAX_TOTAL_SIZE) {
+                // Nothing later can fit either (total only grows): stop the
+                // walk instead of pointlessly inflating the rest of a giant
+                // archive.
+                skip(name)
+                return ArchiveWalk(delivered, truncated = true, skipped = skipped.toList())
+            }
+            totalSize += data.size
+            onEntry(ZipEntry(name, data))
+            delivered++
+        }
+        return ArchiveWalk(delivered, truncated, skipped.toList())
+    }
+
     private fun extractEntryData(
         bytes: ByteArray,
         localOffset: Long,
@@ -206,6 +314,17 @@ object Zip {
             ((bytes[offset + 3].toLong() and 0xFF) shl 24)
     }
 }
+
+// Result of one streaming archive walk: how many entries reached the
+// consumer, whether the size caps cut the walk short, and the names of
+// entries that could not be delivered (corrupt data, over-cap entries).
+// Callers report the card-shaped skipped names as import failures so no card
+// is ever lost silently.
+data class ArchiveWalk(
+    val delivered: Int,
+    val truncated: Boolean,
+    val skipped: List<String>
+)
 
 private class LocalEntry(
     val nameBytes: ByteArray,

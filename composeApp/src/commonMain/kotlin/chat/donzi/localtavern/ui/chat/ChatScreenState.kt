@@ -15,8 +15,13 @@ import chat.donzi.localtavern.domain.Message
 import chat.donzi.localtavern.domain.Persona
 import chat.donzi.localtavern.domain.Session
 import chat.donzi.localtavern.ui.layout.ActiveDrawer
+import chat.donzi.localtavern.utils.ChatExport
+import chat.donzi.localtavern.utils.InputValidation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 // Holds every piece of the chat screen's UI state plus the logic that
 // mutates it: message selection, the send flow (with its double-tap guards
@@ -100,11 +105,17 @@ class ChatScreenState(
         activeApiConnection: ApiConfig?,
         isGenerating: Boolean
     ): Boolean {
+        val messageIssue = InputValidation.validateChatMessage(userMessage)
         if (activePersonaId == null) {
             chatController.reportError("Create a persona before sending a message.")
             return false
         } else if (activeApiConnection == null) {
             chatController.reportError("No active API connection configured. Add one in Settings before sending.")
+            return false
+        } else if (messageIssue != null) {
+            // One huge paste must not pin megabytes in the stream builder:
+            // refuse it up front and keep the draft so nothing is lost.
+            chatController.reportError(messageIssue)
             return false
         } else if (!isGenerating && !sendInFlight) {
             // Set the flag synchronously, before any suspend point: the DB
@@ -199,8 +210,46 @@ class ChatScreenState(
             },
             onNavigateToSettings = { if (!isDesktop) onActiveDrawerChange(ActiveDrawer.Settings) },
             onNavigateToPersonas = { onRequestPersonaEdit(); if (!isDesktop) onActiveDrawerChange(ActiveDrawer.Characters) },
-            onNavigateToCharacters = { onRequestCharacterMenu(); if (!isDesktop) onActiveDrawerChange(ActiveDrawer.Characters) }
+            onNavigateToCharacters = { onRequestCharacterMenu(); if (!isDesktop) onActiveDrawerChange(ActiveDrawer.Characters) },
+            onExportChat = {
+                exportCurrentTranscript(
+                    characterName = activeCharacter?.name.orEmpty(),
+                    personaName = activePersona?.name.orEmpty()
+                )
+            }
         )
+    }
+
+    // Saves the visible timeline as a Markdown transcript through the
+    // platform save-file flow. Empty timelines report instead of writing an
+    // empty file; success and failure both surface through the transient
+    // notice bubble so the outcome is never silent.
+    fun exportCurrentTranscript(characterName: String, personaName: String) {
+        val snapshot = chatController.state.value
+        val timeline = snapshot.messages
+        if (timeline.isEmpty()) {
+            chatController.reportError("Nothing to export yet — the chat is empty.")
+            return
+        }
+        val title = snapshot.currentSession?.title
+        scope.launch {
+            try {
+                val (fileName, bytes) = withContext(Dispatchers.Default) {
+                    val markdown = ChatExport.formatMarkdown(title, characterName, personaName, timeline)
+                    ChatExport.transcriptFileName(title, characterName) to markdown.encodeToByteArray()
+                }
+                val savedPath = chat.donzi.localtavern.saveFile(fileName, bytes)
+                if (savedPath != null) {
+                    chatController.reportError("Chat exported to $savedPath")
+                } else {
+                    chatController.reportError("Export cancelled.")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                chatController.reportError("Export failed: ${e.message ?: "could not save file."}")
+            }
+        }
     }
 
     // The suspend half of the send flow: assistant auto-creation, session

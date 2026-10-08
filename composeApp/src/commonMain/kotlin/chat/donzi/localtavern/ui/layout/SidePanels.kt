@@ -46,6 +46,7 @@ import chat.donzi.localtavern.data.network.ChatClient
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Persona
 import chat.donzi.localtavern.utils.BatchImportResult
+import chat.donzi.localtavern.utils.PickedFile
 import androidx.compose.ui.geometry.Offset
 
 enum class ActiveDrawer {
@@ -85,7 +86,7 @@ fun SidePanels(
     characters: List<Character>,
     onCharacterSelect: (Character) -> Unit,
     onCharactersDelete: (Set<String>) -> Unit,
-    onImportCharacters: (BatchImportResult) -> Unit,
+    onImportCharacters: suspend (List<PickedFile>) -> BatchImportResult,
     onExportSelected: (Set<String>) -> Unit,
     onCharacterExport: (Character) -> Unit,
     onCharacterCreate: (String) -> Unit,

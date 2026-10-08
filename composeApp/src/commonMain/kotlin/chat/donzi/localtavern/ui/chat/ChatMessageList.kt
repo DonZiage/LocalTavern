@@ -2,9 +2,11 @@ package chat.donzi.localtavern.ui.chat
 
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -15,9 +17,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -44,8 +48,11 @@ import chat.donzi.localtavern.controller.ChatUiState
 import chat.donzi.localtavern.data.pricing.CostEstimator
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Message
+import chat.donzi.localtavern.isDesktop
 import chat.donzi.localtavern.utils.ContextManager
+import chat.donzi.localtavern.utils.MessageTime
 import kotlinx.coroutines.launch
+import kotlin.time.Clock
 
 // The reversed message list with its scroll-follow and keyboard controls
 // (variation swipes, stop-generation on Enter). Kept separate from ChatArea
@@ -104,9 +111,20 @@ fun ChatMessageList(
         autoScroll = true
     }
 
+    // Desktop keyboard shortcuts (variation arrows, Enter to stop) only work
+    // while the list has focus; the input bar holds focus otherwise, so
+    // request it once on desktop. Mobile relies on touch gestures instead.
+    if (isDesktop) {
+        LaunchedEffect(Unit) {
+            focusRequester.requestFocus()
+        }
+    }
+
+    Box(modifier = modifier) {
     LazyColumn(
         state = listState,
-        modifier = modifier
+        modifier = Modifier
+            .fillMaxSize()
             .focusRequester(focusRequester)
             .focusable()
             .onKeyEvent { event ->
@@ -165,6 +183,24 @@ fun ChatMessageList(
                 onRequestAddImage = onRequestAddImage
             )
         }
+    }
+
+    // Jump-to-latest: autoScroll pins the list while the user is at the
+    // bottom; once they scroll up, offer a one-tap way back instead of
+    // leaving them stranded above new messages.
+    if (!autoScroll && messages.isNotEmpty()) {
+        SmallFloatingActionButton(
+            onClick = { coroutineScope.launch { listState.animateScrollToItem(0) } },
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+        ) {
+            Icon(
+                imageVector = Icons.Default.ArrowDownward,
+                contentDescription = "Scroll to latest message"
+            )
+        }
+    }
     }
 }
 
@@ -234,6 +270,12 @@ private fun ChatMessageItem(
             canEdit = !(isGenerating && isLastMessage),
             reasoningText = message.reasoningText?.takeIf { it.isNotBlank() },
             costText = message.costEstimateUsd?.let { CostEstimator.formatUsd(it) },
+            timestampText = remember(message.timestamp) {
+                // The placeholder has no real timestamp yet; stamping it
+                // "just now" would flicker, so it shows no time at all.
+                if (message.content == "...") null
+                else MessageTime.format(message.timestamp, Clock.System.now().toEpochMilliseconds())
+            },
             onSwipeRight = {
                 if (!isGenerating) {
                     if (msgCurrentIndex > 0) {

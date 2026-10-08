@@ -8,6 +8,7 @@ import io.ktor.client.call.body
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
+import io.ktor.http.contentLength
 import io.ktor.http.contentType
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -67,7 +68,21 @@ class SyncBlobTransfer(
         // missing: a hostile peer could otherwise keep growing the set
         // forever by claiming ever-new refs.
         const val MAX_KNOWN_MISSING_REFS = 4096
+        // Longest base64 chunk payload accepted BEFORE decoding: a hostile
+        // peer could otherwise send a gigabyte string whose decode alone
+        // exhausts memory (decodeBase64 materializes the whole output, and an
+        // OOM Error escapes the runCatching below).
+        const val MAX_CHUNK_B64_LENGTH = (CHUNK_BYTES * 4) / 3 + 64
     }
+
+    // One blob fetch at a time: every sync round launches a background fetch
+    // over the same missing set, and without serialization overlapping rounds
+    // pile up duplicate concurrent downloads of the same refs plus their
+    // reassembly buffers — exactly how a long sync exhausts a mobile heap
+    // mid-transfer. A queued fetch finds the store already populated and
+    // returns immediately. The mutex guards network I/O only; the only other
+    // lock taken inside (knownMissingMutex) is a leaf, so no cycle is possible.
+    private val fetchMutex = Mutex()
 
     /**
      * Pulls every [refs] blob this device does not yet have from [address]
@@ -88,10 +103,26 @@ class SyncBlobTransfer(
         val host = validatedAddress.first
         val port = validatedAddress.second
         val fetchAddress = "$host:$port"
-        val pending = refs
-            .filter { Hashing.isValidSha256Hex(it.sha256) }
-            .filter { store.read(it.sha256) == null && !isRefKnownMissing(fetchAddress, it.sha256) }
-        if (pending.isEmpty()) return
+        // Single-flight (see fetchMutex): re-check inside the lock, so a
+        // queued fetch sees what the previous one already stored.
+        fetchMutex.withLock {
+            val pending = refs
+                .filter { Hashing.isValidSha256Hex(it.sha256) }
+                .filter { store.read(it.sha256) == null && !isRefKnownMissing(fetchAddress, it.sha256) }
+            if (pending.isEmpty()) return@withLock
+            fetchPending(peerId, fetchAddress, host, port, pending, peerPublicKey, store)
+        }
+    }
+
+    private suspend fun fetchPending(
+        peerId: String,
+        fetchAddress: String,
+        host: String,
+        port: Int,
+        pending: List<SyncImageRef>,
+        peerPublicKey: ByteArray,
+        store: BlobStore
+    ) {
 
         val totalBytes = pending.sumOf { it.size }
         var doneBytes = 0L
@@ -121,7 +152,7 @@ class SyncBlobTransfer(
                     val channelKey = channelKeys.outboundChannelKey(peerPublicKey)
                     val aad = aad(from = identity.deviceId, to = peerId, exchangeId = exchangeId)
                     val payload = encodeBase64(crypto.encrypt(channelKey.key, aad, request))
-                    val response: BlobFetchResponse = httpClient.post("http://$host:$port/blob/fetch") {
+                    val httpResponse = httpClient.post("http://$host:$port/blob/fetch") {
                         contentType(ContentType.Application.Json)
                         setBody(
                             BlobFetchRequest(
@@ -131,7 +162,27 @@ class SyncBlobTransfer(
                                 ephemeralPublicKey = encodeBase64(channelKey.ephemeralPublicKey)
                             )
                         )
-                    }.body()
+                    }
+                    // Chunk responses are small by construction; a body without
+                    // a declared length (chunked) is streamed with a hard cap
+                    // instead of being buffered blindly (see readCappedBytes).
+                    val responseLength = httpResponse.contentLength()
+                    if (responseLength != null && responseLength > MAX_SYNC_BODY_BYTES) {
+                        abortAll = true
+                        break
+                    }
+                    val response: BlobFetchResponse = if (responseLength != null) {
+                        httpResponse.body()
+                    } else {
+                        try {
+                            decodeBlobFetchResponse(httpResponse.readCappedBytes(MAX_SYNC_BODY_BYTES))
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            abortAll = true
+                            break
+                        }
+                    }
                     if (!response.ok) {
                         // The peer refused the fetch; abandon the remaining refs.
                         abortAll = true
@@ -171,6 +222,14 @@ class SyncBlobTransfer(
                         continue
                     }
                     if (result.data.isNotEmpty()) {
+                        // Length-guard the base64 BEFORE decoding (see
+                        // MAX_CHUNK_B64_LENGTH): decodeBase64 materializes the
+                        // whole output, so an oversized string alone would
+                        // exhaust memory before the chunk-size check below.
+                        if (result.data.length > MAX_CHUNK_B64_LENGTH) {
+                            abortAll = true
+                            break
+                        }
                         // Chunks are addressed by fixed offsets, so a chunk
                         // larger than CHUNK_BYTES (or of unexpected size) is a
                         // protocol violation: a peer on a different chunk size
@@ -350,6 +409,9 @@ class SyncBlobTransfer(
 
     private fun decodeBlobResult(bytes: ByteArray): BlobFetchResult =
         json.decodeFromString(BlobFetchResult.serializer(), bytes.decodeToString())
+
+    private fun decodeBlobFetchResponse(bytes: ByteArray): BlobFetchResponse =
+        json.decodeFromString(BlobFetchResponse.serializer(), bytes.decodeToString())
 }
 
 // Fresh random identifier binding one request to its response: it rides

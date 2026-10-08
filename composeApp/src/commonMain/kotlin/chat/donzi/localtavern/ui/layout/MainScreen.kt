@@ -13,6 +13,7 @@ import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Persona
 import chat.donzi.localtavern.isDesktop
 import chat.donzi.localtavern.utils.BatchImportResult
+import chat.donzi.localtavern.utils.PickedFile
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.milliseconds
@@ -40,7 +41,7 @@ fun MainScreen(
     onPersonaUpdate: (String, String, String?, ByteArray?) -> Unit,
     onPersonaDelete: (String) -> Unit,
     onCharactersDelete: (Set<String>) -> Unit,
-    onCharacterImport: (BatchImportResult) -> Unit,
+    onCharacterImport: suspend (List<PickedFile>) -> BatchImportResult,
     onCharacterCreate: (String) -> Unit
 ) {
     val drawerWidth = 300.dp

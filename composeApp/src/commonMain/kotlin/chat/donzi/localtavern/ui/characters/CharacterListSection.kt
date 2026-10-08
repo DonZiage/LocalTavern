@@ -15,11 +15,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.utils.BatchImportResult
-import chat.donzi.localtavern.utils.CharacterManager
+import chat.donzi.localtavern.utils.KeepScreenOn
+import chat.donzi.localtavern.utils.PickedFile
 import chat.donzi.localtavern.utils.rememberCharacterCardPickerLauncher
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 @Composable
 fun CharacterListSection(
@@ -27,7 +27,7 @@ fun CharacterListSection(
     modifier: Modifier = Modifier,
     onSelect: (Character) -> Unit,
     onDeleteSelected: (Set<String>) -> Unit,
-    onImportCharacters: (BatchImportResult) -> Unit,
+    onImportFiles: suspend (List<PickedFile>) -> BatchImportResult,
     onExportSelected: (Set<String>) -> Unit,
     onCreateCharacter: (String) -> Unit,
     onEditCharacter: (Character) -> Unit,
@@ -45,21 +45,36 @@ fun CharacterListSection(
     var showCreateDialog by remember { mutableStateOf(false) }
     var newCharacterName by remember { mutableStateOf("") }
     var importResult by remember { mutableStateOf<BatchImportResult?>(null) }
+    var isImporting by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     var characterToDelete by remember { mutableStateOf<Character?>(null) }
     var showMultiDeleteConfirm by remember { mutableStateOf(false) }
 
     // The picker accepts multiple PNG/JSON cards and ZIP archives; the app
-    // expands and imports whatever it contains on its own.
+    // expands and imports whatever it contains on its own. Parsing and the
+    // database writes run inside onImportFiles with bounded memory (the
+    // archive is streamed and each card is persisted as it is parsed), so
+    // even a huge library never accumulates in memory on the calling side.
+    // A mass import runs for minutes: the screen stays on so the OS power
+    // optimizations cannot freeze the app mid-import, and the spinner below
+    // shows the work is live. Failures are reported in the result dialog —
+    // importing can never crash the app, no matter how many cards are picked.
+    KeepScreenOn(isImporting)
     val pickCards = rememberCharacterCardPickerLauncher { pickedFiles ->
         scope.launch {
-            val result = withContext(Dispatchers.Default) {
-                CharacterManager.processImportBatch(pickedFiles)
-            }
-            if (result.imports.isNotEmpty() || result.failed.isNotEmpty()) {
-                onImportCharacters(result)
-                importResult = result
+            isImporting = true
+            try {
+                val result = onImportFiles(pickedFiles)
+                if (result.imported > 0 || result.failed.isNotEmpty() || result.error != null) {
+                    importResult = result
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                importResult = BatchImportResult(0, emptyList(), e.message ?: "Import failed.")
+            } finally {
+                isImporting = false
             }
         }
     }
@@ -113,6 +128,23 @@ fun CharacterListSection(
             )
 
             actions()
+        }
+
+        if (isImporting) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                Text(
+                    "Importing characters… keep the app open.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         if (selectionMode) {
@@ -224,8 +256,9 @@ fun CharacterListSection(
 
     importResult?.let { result ->
         ImportResultDialog(
-            imported = result.imports.size,
+            imported = result.imported,
             failed = result.failed,
+            error = result.error,
             onDismiss = { importResult = null }
         )
     }

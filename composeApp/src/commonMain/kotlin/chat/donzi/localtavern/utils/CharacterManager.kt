@@ -45,9 +45,17 @@ data class PickedFile(
     val bytes: ByteArray
 )
 
+// Lightweight summary of a batch import: the parsed cards are handed to the
+// caller as they are parsed (see processImportBatch's onImported), so this
+// result NEVER carries card or avatar bytes — on a mobile device the full
+// payload of a large library must not be held in memory while it is being
+// written to the database. [error] carries a persistence-level failure that
+// stopped some cards from being saved (parse failures are in [failed] and
+// never stop the batch); null means every parsed card reached the caller.
 data class BatchImportResult(
-    val imports: List<ImportedCharacter>,
-    val failed: List<String>
+    val imported: Int,
+    val failed: List<String>,
+    val error: String? = null
 )
 
 object CharacterManager {
@@ -250,38 +258,71 @@ object CharacterManager {
 
     // Expands .zip sources and parses every card file inside. Non-card
     // entries inside a zip (readmes, folders) are ignored rather than
-    // reported as failures; only card-extension files that yield no card
-    // count as failed.
-    fun processImportBatch(files: List<PickedFile>): BatchImportResult {
-        val imports = mutableListOf<ImportedCharacter>()
+    // reported as failures; card-extension files that yield no card — or
+    // that the archive walk could not deliver (corrupt data, size caps) —
+    // count as failed, so no card is ever lost silently.
+    //
+    // Parsed cards are handed to [onImported] IMMEDIATELY, before the next
+    // file (or next zip entry) is touched, so a heavy library is never held
+    // in memory as a whole: zip archives are streamed entry by entry
+    // (Zip.readArchiveEntries) and the callback can persist each card (or a
+    // bounded chunk of them) as it arrives — the parse loop suspends until
+    // the callback returns. The returned result only carries counts and
+    // failure names.
+    suspend fun processImportBatch(
+        files: List<PickedFile>,
+        onImported: suspend (ImportedCharacter) -> Unit
+    ): BatchImportResult {
+        var imported = 0
         val failed = mutableListOf<String>()
 
         files.forEach { file ->
-            val cardFiles = if (file.name.endsWith(".zip", ignoreCase = true)) {
-                val entries = runCatching { Zip.readArchive(file.bytes) }.getOrDefault(emptyList())
-                entries
-                    .filter { isCardFileName(it.name) }
-                    .map { PickedFile(it.name.substringAfterLast('/'), it.data) }
+            if (file.name.endsWith(".zip", ignoreCase = true)) {
+                var cardFiles = 0
+                // readArchiveEntries never throws on malformed input (it
+                // returns an empty walk), so any exception from this walk comes
+                // from onImported (e.g. a database failure) and must propagate —
+                // a persistence error must not be reported as a failed card
+                // or silently swallowed.
+                val walk = Zip.readArchiveEntries(file.bytes) { entry ->
+                    if (isCardFileName(entry.name)) {
+                        cardFiles++
+                        val cardFile = PickedFile(entry.name.substringAfterLast('/'), entry.data)
+                        val parsed = processImport(cardFile.bytes, cardFile.name)
+                        if (parsed != null) {
+                            onImported(parsed)
+                            imported++
+                        } else {
+                            failed.add(cardFile.name)
+                        }
+                    }
+                }
+                // Corrupt or over-cap entries never reach the callback: report
+                // the card-shaped ones by name so no card is lost silently.
+                // Non-card entries (readmes, folders) stay ignored by design.
+                walk.skipped.forEach { name ->
+                    if (isCardFileName(name)) failed.add(name.substringAfterLast('/'))
+                }
+                if (walk.truncated) {
+                    failed.add("${file.name}: archive exceeds size limits — some cards were not imported")
+                }
+                if (walk.delivered == 0 && cardFiles == 0) {
+                    // Nothing usable came out of the archive: an unreadable
+                    // zip (or an archive with no cards) counts as one failure.
+                    failed.add(file.name)
+                }
             } else {
-                listOf(file)
-            }
-
-            if (cardFiles.isEmpty()) {
-                failed.add(file.name)
-                return@forEach
-            }
-
-            cardFiles.forEach { cardFile ->
-                val imported = processImport(cardFile.bytes, cardFile.name)
-                if (imported != null) {
-                    imports.add(imported)
+                val parsed = processImport(file.bytes, file.name)
+                if (parsed != null) {
+                    onImported(parsed)
+                    imported++
                 } else {
-                    failed.add(cardFile.name)
+                    failed.add(file.name)
                 }
             }
         }
 
-        return BatchImportResult(imports, failed)
+        return BatchImportResult(imported, failed)
     }
 
     private fun isCardFileName(name: String): Boolean =

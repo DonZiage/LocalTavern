@@ -23,3 +23,12 @@ expect fun appVersionName(): String
 
 /** Absolute path of the SQLite database file, for the About section. */
 expect fun appDatabasePath(): String
+
+/**
+ * Keeps the device screen on while a long operation (big sync, mass import)
+ * runs: the OS must not sleep or freeze the app mid-transfer because of its
+ * power optimizations. Best-effort and reference-counted by the caller (see
+ * KeepScreenAwake): Android sets FLAG_KEEP_SCREEN_ON, iOS disables the idle
+ * timer, desktop is a no-op.
+ */
+expect fun setKeepScreenOn(enabled: Boolean)
