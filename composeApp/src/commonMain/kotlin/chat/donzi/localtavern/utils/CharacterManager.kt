@@ -2,11 +2,16 @@ package chat.donzi.localtavern.utils
 
 import chat.donzi.localtavern.data.models.SillyTavernCardV2
 import chat.donzi.localtavern.data.models.SillyTavernWrapper
-import chat.donzi.localtavern.data.database.CharacterEntity
+import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.saveFile
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
+import kotlin.time.Clock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -33,12 +38,52 @@ data class ImportedCharacter(
     }
 }
 
+// A card source picked from the file system: a .png/.json card or a .zip
+// archive of cards.
+data class PickedFile(
+    val name: String,
+    val bytes: ByteArray
+)
+
+// Lightweight summary of a batch import: the parsed cards are handed to the
+// caller as they are parsed (see processImportBatch's onImported), so this
+// result NEVER carries card or avatar bytes — on a mobile device the full
+// payload of a large library must not be held in memory while it is being
+// written to the database. [error] carries a persistence-level failure that
+// stopped some cards from being saved (parse failures are in [failed] and
+// never stop the batch); null means every parsed card reached the caller.
+data class BatchImportResult(
+    val imported: Int,
+    val failed: List<String>,
+    val error: String? = null
+)
+
 object CharacterManager {
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
         encodeDefaults = true
     }
+
+    // Largest total card text accepted on import: a row above the sync
+    // per-row forwardability ceiling could never be forwarded again and would
+    // wedge every future sync behind it, so such cards fail here (by name,
+    // like any other unimportable card) instead of poisoning the database.
+    // Far above any legitimate card; avatars are exempt (they ride out of
+    // band as content-addressed refs).
+    const val MAX_CARD_TEXT_CHARS = 6_000_000
+
+    // Total storable text of one parsed card (every synced text field).
+    internal fun cardTextSize(card: SillyTavernCardV2): Long =
+        card.name.length.toLong() + card.description.length + card.personality.length +
+            card.scenario.length + card.first_mes.length + card.mes_example.length +
+            card.creator_notes.length + card.system_prompt.length +
+            card.post_history_instructions.length + card.creator.length +
+            card.character_version.length +
+            card.tags.sumOf { it.length.toLong() } +
+            card.alternate_greetings.sumOf { it.length.toLong() } +
+            (card.extensions?.toString()?.length?.toLong() ?: 0L) +
+            (card.character_book?.toString()?.length?.toLong() ?: 0L)
 
     private fun isPng(bytes: ByteArray): Boolean {
         if (bytes.size < 8) return false
@@ -68,6 +113,9 @@ object CharacterManager {
             if (jsonString.isNullOrBlank()) return null
 
             val card = parseCardJson(jsonString) ?: return null
+            // A card that could never ride a sync envelope must fail here
+            // (counted by name) instead of wedging every future sync.
+            if (cardTextSize(card) > MAX_CARD_TEXT_CHARS) return null
             val avatarData: ByteArray? = if (png) bytes else null
 
             ImportedCharacter(card, avatarData)
@@ -82,6 +130,12 @@ object CharacterManager {
             if (element !is JsonObject) return null
             if (element.containsKey("data")) {
                 json.decodeFromJsonElement<SillyTavernWrapper>(element).data
+            } else if (element.containsKey("char_name") && !element.containsKey("name")) {
+                // Legacy TavernAI v1 cards use a flat layout (char_name,
+                // char_persona, char_greeting, world_scenario, example_dialogue)
+                // instead of the v2 data wrapper; they are still widely
+                // circulated and must not import as blank characters.
+                parseTavernAIV1Card(element)
             } else {
                 json.decodeFromJsonElement<SillyTavernCardV2>(element)
             }
@@ -90,26 +144,76 @@ object CharacterManager {
         }
     }
 
-    private fun getCardJsonString(character: CharacterEntity): String {
+    private fun parseTavernAIV1Card(element: JsonObject): SillyTavernCardV2 {
+        fun string(key: String): String = element[key]?.jsonPrimitive?.contentOrNull ?: ""
+
+        // v1 separates entries with "|||" (and "<START>" is also accepted).
+        fun list(key: String): List<String> = element[key]?.jsonPrimitive?.contentOrNull
+            ?.split(Regex("""\s*<START>\s*|\s*\|\|\|\s*"""))
+            ?.filter { it.isNotBlank() }
+            ?: emptyList()
+
+        return SillyTavernCardV2(
+            name = string("char_name"),
+            description = string("char_persona"),
+            personality = string("char_personality"),
+            scenario = string("world_scenario"),
+            first_mes = string("char_greeting"),
+            mes_example = list("example_dialogue").joinToString("<START>"),
+            creator_notes = string("creator_notes"),
+            system_prompt = string("system_prompt"),
+            post_history_instructions = string("post_history_instructions"),
+            alternate_greetings = list("alternate_greetings"),
+            creator = string("creator"),
+            character_version = string("character_version"),
+            tags = emptyList(),
+            extensions = null,
+            character_book = null
+        )
+    }
+
+    private fun getCardJsonString(character: Character): String {
         val card = SillyTavernCardV2(
             name = character.name,
             description = character.description ?: "",
-            personality = character.personality ?: "",
-            scenario = character.scenario ?: "",
+            personality = character.personality,
+            scenario = character.scenario,
             first_mes = character.firstMes ?: "",
-            mes_example = character.mesExample ?: "",
-            system_prompt = "",
-            alternate_greetings = character.altGreetings?.split("|||") ?: emptyList()
+            // SillyTavern v2 separates example dialogue with "<START>" (the
+            // legacy TavernAI "|||" separator is accepted on import).
+            mes_example = character.mesExample.joinToString("<START>"),
+            creator_notes = character.creatorNotes ?: "",
+            system_prompt = character.systemPrompt ?: "",
+            post_history_instructions = character.postHistoryInstructions ?: "",
+            alternate_greetings = character.altGreetings,
+            creator = character.creator ?: "",
+            character_version = character.characterVersion ?: "",
+            tags = character.tags,
+            extensions = character.extensions,
+            character_book = character.characterBook
         )
-        return json.encodeToString(card)
+        return json.encodeToString(
+            SillyTavernWrapper(
+                spec = "chara_card_v2",
+                spec_version = "2.0",
+                data = card
+            )
+        )
     }
 
     @OptIn(ExperimentalEncodingApi::class)
-    fun exportToPng(originalImage: ByteArray, character: CharacterEntity): ByteArray {
+    fun exportToPng(originalImage: ByteArray, character: Character): ByteArray {
         val pngImageBytes = if (isPng(originalImage)) {
             originalImage
         } else {
-            chat.donzi.localtavern.convertToPng(originalImage)
+            val converted = chat.donzi.localtavern.convertToPng(originalImage)
+            // The platform converters return the original bytes on failure;
+            // embedding a metadata chunk into non-PNG data would produce a
+            // .png file no image viewer can open.
+            if (!isPng(converted)) {
+                throw IllegalArgumentException("Avatar could not be converted to PNG")
+            }
+            converted
         }
 
         val jsonString = getCardJsonString(character)
@@ -119,31 +223,167 @@ object CharacterManager {
         return insertMetadataChunk(pngImageBytes, chunkData)
     }
 
-    fun exportToJson(character: CharacterEntity): ByteArray {
+    fun exportToJson(character: Character): ByteArray {
         return getCardJsonString(character).encodeToByteArray()
     }
 
-    fun getFileName(character: CharacterEntity): String {
+    fun getFileName(character: Character): String {
+        val safeName = sanitizeFileName(character.name)
         val hasAvatar = character.avatarData != null && character.avatarData.isNotEmpty()
-        return if (hasAvatar) "${character.name}.png" else "${character.name}.json"
+        return if (hasAvatar) "$safeName.png" else "$safeName.json"
     }
 
+    private fun sanitizeFileName(name: String): String {
+        val sanitized = name
+            .replace(Regex("""[\\/:*?"<>|]"""), "_")
+            .trim()
+            .ifBlank { "character" }
+        return sanitized.take(80)
+    }
+
+    // A content:// URI (Android MediaStore export) has no real parent
+    // directory: returning a truncated URI would break openDirectory() and
+    // show a garbage location, so the full URI is returned unchanged (the
+    // platform handler then opens the exported file itself).
     fun extractParentDir(savedPath: String): String {
-        return if (savedPath.contains('/')) savedPath.substringBeforeLast('/') else savedPath.substringBeforeLast('\\')
+        if (savedPath.startsWith("content://")) return savedPath
+        val separatorIndex = maxOf(savedPath.lastIndexOf('/'), savedPath.lastIndexOf('\\'))
+        return if (separatorIndex > 0) savedPath.substring(0, separatorIndex) else savedPath
     }
 
-    fun performExport(character: CharacterEntity): String? {
+    fun prepareExportBytes(character: Character): Pair<String, ByteArray> {
         val fileName = getFileName(character)
         val avatar = character.avatarData
 
         val exportedBytes = if (avatar != null && avatar.isNotEmpty()) {
-            exportToPng(avatar, character)
+            try {
+                exportToPng(avatar, character)
+            } catch (e: IllegalArgumentException) {
+                // Fall back to a JSON card instead of writing a corrupt .png.
+                return "${sanitizeFileName(character.name)}.json" to exportToJson(character)
+            }
         } else {
             exportToJson(character)
         }
 
-        val savedPath = saveFile(fileName, exportedBytes)
+        return fileName to exportedBytes
+    }
+
+    fun saveExportedFile(fileName: String, bytes: ByteArray): String? {
+        val savedPath = saveFile(fileName, bytes)
         return savedPath?.let { extractParentDir(it) }
+    }
+
+    fun performExport(character: Character): String? {
+        val (fileName, exportedBytes) = prepareExportBytes(character)
+        return saveExportedFile(fileName, exportedBytes)
+    }
+
+    // Expands .zip sources and parses every card file inside. Non-card
+    // entries inside a zip (readmes, folders) are ignored rather than
+    // reported as failures; card-extension files that yield no card — or
+    // that the archive walk could not deliver (corrupt data, size caps) —
+    // count as failed, so no card is ever lost silently.
+    //
+    // Parsed cards are handed to [onImported] IMMEDIATELY, before the next
+    // file (or next zip entry) is touched, so a heavy library is never held
+    // in memory as a whole: zip archives are streamed entry by entry
+    // (Zip.readArchiveEntries) and the callback can persist each card (or a
+    // bounded chunk of them) as it arrives — the parse loop suspends until
+    // the callback returns. The returned result only carries counts and
+    // failure names.
+    suspend fun processImportBatch(
+        files: List<PickedFile>,
+        onImported: suspend (ImportedCharacter) -> Unit
+    ): BatchImportResult {
+        var imported = 0
+        val failed = mutableListOf<String>()
+
+        files.forEach { file ->
+            if (file.name.endsWith(".zip", ignoreCase = true)) {
+                var cardFiles = 0
+                // readArchiveEntries never throws on malformed input (it
+                // returns an empty walk), so any exception from this walk comes
+                // from onImported (e.g. a database failure) and must propagate —
+                // a persistence error must not be reported as a failed card
+                // or silently swallowed.
+                val walk = Zip.readArchiveEntries(file.bytes) { entry ->
+                    if (isCardFileName(entry.name)) {
+                        cardFiles++
+                        val cardFile = PickedFile(entry.name.substringAfterLast('/'), entry.data)
+                        val parsed = processImport(cardFile.bytes, cardFile.name)
+                        if (parsed != null) {
+                            onImported(parsed)
+                            imported++
+                        } else {
+                            failed.add(cardFile.name)
+                        }
+                    }
+                }
+                // Corrupt or over-cap entries never reach the callback: report
+                // the card-shaped ones by name so no card is lost silently.
+                // Non-card entries (readmes, folders) stay ignored by design.
+                walk.skipped.forEach { name ->
+                    if (isCardFileName(name)) failed.add(name.substringAfterLast('/'))
+                }
+                if (walk.truncated) {
+                    failed.add("${file.name}: archive exceeds size limits — some cards were not imported")
+                }
+                if (walk.delivered == 0 && cardFiles == 0) {
+                    // Nothing usable came out of the archive: an unreadable
+                    // zip (or an archive with no cards) counts as one failure.
+                    failed.add(file.name)
+                }
+            } else {
+                val parsed = processImport(file.bytes, file.name)
+                if (parsed != null) {
+                    onImported(parsed)
+                    imported++
+                } else {
+                    failed.add(file.name)
+                }
+            }
+        }
+
+        return BatchImportResult(imported, failed)
+    }
+
+    private fun isCardFileName(name: String): Boolean =
+        name.endsWith(".png", ignoreCase = true) ||
+            name.endsWith(".json", ignoreCase = true)
+
+    // One ZIP archive per export; each character becomes its PNG card (or
+    // JSON when it has no convertible avatar). Names that collide inside the
+    // archive get a " (2)", " (3)"… suffix so no card overwrites another —
+    // the displayed character name is never changed.
+    fun prepareBatchExportBytes(characters: List<Character>): ByteArray {
+        val usedNames = mutableSetOf<String>()
+        val entries = characters.mapNotNull { character ->
+            val (fileName, bytes) = prepareExportBytes(character)
+            val uniqueName = uniqueFileName(fileName, usedNames)
+            usedNames.add(uniqueName)
+            ZipEntry(uniqueName, bytes)
+        }
+        return Zip.createArchive(entries)
+    }
+
+    private fun uniqueFileName(fileName: String, used: MutableSet<String>): String {
+        if (fileName !in used) return fileName
+        val dot = fileName.lastIndexOf('.')
+        val base = if (dot > 0) fileName.substring(0, dot) else fileName
+        val extension = if (dot > 0) fileName.substring(dot) else ""
+        var counter = 2
+        var candidate = "$base ($counter)$extension"
+        while (candidate in used) {
+            counter++
+            candidate = "$base ($counter)$extension"
+        }
+        return candidate
+    }
+
+    fun batchExportFileName(): String {
+        val today = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
+        return "LocalTavern characters $today.zip"
     }
 
     private fun insertMetadataChunk(pngBytes: ByteArray, data: ByteArray): ByteArray {
@@ -153,7 +393,11 @@ object CharacterManager {
                 ((pngBytes[9].toInt() and 0xFF) shl 16) or
                 ((pngBytes[10].toInt() and 0xFF) shl 8) or
                 (pngBytes[11].toInt() and 0xFF)
+        // A real IHDR data block is exactly 13 bytes; a bogus length (from a
+        // truncated or corrupt PNG) must not splice outside the buffer.
+        if (ihdrDataLength < 13) return pngBytes
         val endOfIhdrOffset = 8 + 12 + ihdrDataLength
+        if (endOfIhdrOffset > pngBytes.size) return pngBytes
 
         val type = "tEXt".encodeToByteArray()
         val chunkTotalSize = 4 + 4 + data.size + 4
@@ -190,7 +434,7 @@ object CharacterManager {
     }
 }
 
-private class CommonCRC32 {
+internal class CommonCRC32 {
     private var crc = -1
     fun update(bytes: ByteArray) {
         for (b in bytes) {

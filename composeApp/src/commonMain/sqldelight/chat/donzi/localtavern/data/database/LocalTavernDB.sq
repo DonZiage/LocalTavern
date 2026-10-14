@@ -9,21 +9,42 @@ CREATE TABLE CharacterEntity (
     creatorNotes TEXT,
     altGreetings TEXT,
     avatarData BLOB,
+    -- Out-of-band avatar ref (imageRefs-style JSON of one SyncImageRef) when
+    -- the row's avatar bytes are NOT available locally: the ref travels with
+    -- the row so a later fetch can restore the bytes (see
+    -- SyncRepository.getMissingAvatarRefs). Mutually exclusive with
+    -- avatarData: bytes present -> ref NULL, and vice versa.
+    avatarRef TEXT,
     isAssistant INTEGER NOT NULL DEFAULT 0,
     updatedAt INTEGER NOT NULL DEFAULT 0,
-    isDeleted INTEGER NOT NULL DEFAULT 0
+    isDeleted INTEGER NOT NULL DEFAULT 0,
+    systemPrompt TEXT,
+    postHistoryInstructions TEXT,
+    creator TEXT,
+    characterVersion TEXT,
+    tags TEXT,
+    extensions TEXT,
+    characterBook TEXT,
+    syncSeq INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_character_assistant ON CharacterEntity(isAssistant);
+CREATE INDEX IF NOT EXISTS idx_character_syncseq ON CharacterEntity(syncSeq);
 
 CREATE TABLE PersonaEntity (
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,
     description TEXT,
     avatarData BLOB,
+    -- Out-of-band avatar ref (imageRefs-style JSON of one SyncImageRef) when
+    -- the avatar bytes are not available locally; see CharacterEntity.
+    avatarRef TEXT,
     updatedAt INTEGER NOT NULL DEFAULT 0,
-    isDeleted INTEGER NOT NULL DEFAULT 0
+    isDeleted INTEGER NOT NULL DEFAULT 0,
+    syncSeq INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS idx_persona_syncseq ON PersonaEntity(syncSeq);
 
 CREATE TABLE ChatSession (
     id TEXT PRIMARY KEY NOT NULL,
@@ -34,10 +55,12 @@ CREATE TABLE ChatSession (
     currentMessageId TEXT,
     parentSessionId TEXT,
     updatedAt INTEGER NOT NULL DEFAULT 0,
-    isDeleted INTEGER NOT NULL DEFAULT 0
+    isDeleted INTEGER NOT NULL DEFAULT 0,
+    syncSeq INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_character_time ON ChatSession(characterId, lastTimestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_session_syncseq ON ChatSession(syncSeq);
 
 CREATE TABLE MessageEntity (
     id TEXT PRIMARY KEY NOT NULL,
@@ -49,11 +72,16 @@ CREATE TABLE MessageEntity (
     isActivePath INTEGER NOT NULL DEFAULT 1,
     updatedAt INTEGER NOT NULL DEFAULT 0,
     isDeleted INTEGER NOT NULL DEFAULT 0,
-    imageData BLOB
+    imageData BLOB,
+    imageRefs TEXT,
+    reasoningText TEXT,
+    costEstimate REAL,
+    syncSeq INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_message_active_timeline ON MessageEntity(sessionId, isActivePath, timestamp ASC);
 CREATE INDEX IF NOT EXISTS idx_message_siblings ON MessageEntity(sessionId, parentId, timestamp ASC);
+CREATE INDEX IF NOT EXISTS idx_message_syncseq ON MessageEntity(syncSeq);
 
 CREATE TABLE ApiConnection (
     id TEXT PRIMARY KEY NOT NULL,
@@ -62,6 +90,12 @@ CREATE TABLE ApiConnection (
     baseUrl TEXT,
     apiKey TEXT,
     model TEXT,
+    -- OpenRouter-style routing: which upstream provider should serve the
+    -- model. Null means the endpoint's default provider is used.
+    inferenceProvider TEXT,
+    -- OpenRouter quantization preference (int4, int8, fp8, fp16, bf16).
+    -- Null means the endpoint's default quantization.
+    quantization TEXT,
     isActive INTEGER NOT NULL DEFAULT 0,
     isChatCompletion INTEGER NOT NULL DEFAULT 1,
     lastUsed INTEGER DEFAULT 0,
@@ -74,6 +108,41 @@ CREATE TABLE ApiConnection (
     responseLimit INTEGER NOT NULL DEFAULT 0,
     displayOrder INTEGER NOT NULL DEFAULT 0,
     timeoutLimit INTEGER NOT NULL DEFAULT 60,
+    reasoningOverride INTEGER NOT NULL DEFAULT 0,
+    -- 0 = auto-detect chat vs legacy completions endpoint from the model,
+    -- 1 = force chat completions, 2 = force legacy completions.
+    chatCompletionMode INTEGER NOT NULL DEFAULT 0,
+    updatedAt INTEGER NOT NULL DEFAULT 0,
+    isDeleted INTEGER NOT NULL DEFAULT 0,
+    syncSeq INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_apiconnection_syncseq ON ApiConnection(syncSeq);
+
+-- Legacy table (pre-v13): per-model pricing overrides. Cost estimates are now
+-- derived automatically from the bundled catalog; kept so existing databases
+-- migrate without schema churn.
+CREATE TABLE ModelPricing (
+    provider TEXT NOT NULL,
+    modelPattern TEXT NOT NULL,
+    inputPerMillion REAL NOT NULL,
+    outputPerMillion REAL NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'USD',
+    PRIMARY KEY (provider, modelPattern)
+);
+
+-- Trusted sync peers (device-to-device pairing). Keys and identity are
+-- managed by the sync layer; the table is the durable trust store. The
+-- X25519 public key is the pairing identity and the sync authentication
+-- factor (per-exchange ephemeral keys provide the secrecy).
+CREATE TABLE SyncPeer (
+    deviceId TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    publicKey BLOB,
+    lastKnownAddress TEXT,
+    receivedCursor INTEGER NOT NULL DEFAULT 0,
+    peerReceivedCursor INTEGER NOT NULL DEFAULT 0,
+    lastSyncAt INTEGER NOT NULL DEFAULT 0,
     updatedAt INTEGER NOT NULL DEFAULT 0,
     isDeleted INTEGER NOT NULL DEFAULT 0
 );
@@ -81,7 +150,35 @@ CREATE TABLE ApiConnection (
 CREATE TABLE AppSettings (
     id INTEGER PRIMARY KEY CHECK (id = 1) DEFAULT 1,
     isDarkMode INTEGER NOT NULL DEFAULT 1,
-    activePersonaId TEXT
+    activePersonaId TEXT,
+    -- High-water mark of the hybrid logical clock (HLC) that stamps
+    -- updatedAt on every synced row: max(wallClock, lastHlc + 1), advanced
+    -- by every local write and by every timestamp received from a peer.
+    -- Persisting it makes clock-skew-resilient LWW survive app restarts.
+    lastHlc INTEGER NOT NULL DEFAULT 0,
+    -- Per-device preferences (never synced). sendWithCtrlEnter: Enter inserts
+    -- a newline and Ctrl+Enter sends; when off (default) Enter sends.
+    sendWithCtrlEnter INTEGER NOT NULL DEFAULT 0,
+    -- Auto-sync with paired devices when the app starts.
+    autoSyncOnLaunch INTEGER NOT NULL DEFAULT 0,
+    -- Ask for confirmation before deleting characters/personas.
+    confirmBeforeDelete INTEGER NOT NULL DEFAULT 1,
+    -- High-water mark of the per-row sync sequence counter (the syncSeq
+    -- column on every synced table). Unlike the HLC timestamp, syncSeq is a
+    -- strictly monotone DEVICE-LOCAL counter: every local write and every
+    -- incoming row that is applied is stamped with a fresh value, so a row
+    -- can never carry a sequence below a cursor that was already advanced
+    -- past it (a row "arriving late" from a lagging peer always gets a
+    -- sequence newer than every previously delivered row). Cursors are exact
+    -- with no boundary/equality cases.
+    lastSyncSeq INTEGER NOT NULL DEFAULT 0,
+    -- Desktop only: minutes of inactivity before the passphrase-derived key
+    -- is forgotten (unlock gate re-shown). 0 = never auto-lock. Per-device
+    -- preference, never synced.
+    autoLockIdleMinutes INTEGER NOT NULL DEFAULT 10,
+    -- Mobile only: whether the first-launch "set a device screen lock"
+    -- recommendation has been dismissed. Per-device, never synced.
+    lockRecommendationShown INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE PromptBlockEntity (
@@ -92,8 +189,45 @@ CREATE TABLE PromptBlockEntity (
     isCustom INTEGER NOT NULL DEFAULT 0,
     displayOrder INTEGER NOT NULL DEFAULT 0,
     updatedAt INTEGER NOT NULL DEFAULT 0,
-    isDeleted INTEGER NOT NULL DEFAULT 0
+    isDeleted INTEGER NOT NULL DEFAULT 0,
+    syncSeq INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS idx_promptblock_syncseq ON PromptBlockEntity(syncSeq);
+
+-- Per-peer ledger of the last version of each row that this device received
+-- from that peer (the incoming row's updatedAt stamp). Conflict detection
+-- compares a row's LOCAL updatedAt against this ledger: a local version newer
+-- than what the peer last announced means this device edited after the peer's
+-- knowledge, so a later winning incoming row discards a local edit the peer
+-- never saw. Not synced; purely observational, per-device.
+CREATE TABLE AppliedRow (
+    rowId TEXT NOT NULL,
+    peerDeviceId TEXT NOT NULL,
+    appliedUpdatedAt INTEGER NOT NULL,
+    PRIMARY KEY (rowId, peerDeviceId)
+);
+
+-- Conflict events: rows where this device's post-peer edit was overwritten by
+-- a newer version from a paired device (last-write-wins). Inserted only when
+-- the incoming version strictly out-stamps the local one AND the local
+-- version was never announced by that peer -- i.e. a genuine concurrent edit,
+-- not plain convergence or an echo of this device's own row. Recorded
+-- per-device, never synced. UNIQUE + INSERT OR IGNORE makes re-applying the
+-- same envelope idempotent.
+CREATE TABLE ConflictEvent (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rowId TEXT NOT NULL,
+    tableName TEXT NOT NULL,
+    peerDeviceId TEXT NOT NULL,
+    localUpdatedAt INTEGER NOT NULL,
+    incomingUpdatedAt INTEGER NOT NULL,
+    createdAt INTEGER NOT NULL,
+    seen INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (rowId, incomingUpdatedAt, peerDeviceId)
+);
+
+CREATE INDEX IF NOT EXISTS idx_conflictevent_unseen ON ConflictEvent(seen, createdAt DESC);
 
 -- ==========================================
 -- Standard Queries (Filtered for Non-Deleted)
@@ -102,35 +236,88 @@ CREATE TABLE PromptBlockEntity (
 selectAllCharacters:
 SELECT * FROM CharacterEntity WHERE isDeleted = 0 ORDER BY isAssistant DESC, name ASC;
 
+-- List-screen headers: every display column WITHOUT the avatar bytes (or
+-- their out-of-band ref). Startup observes the whole library, and one full
+-- SELECT would pin every avatar on the heap before the first frame. Visible
+-- rows load their bytes on demand (see selectCharacterAvatarData).
+selectAllCharacterHeaders:
+SELECT id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, isAssistant, updatedAt, isDeleted, systemPrompt, postHistoryInstructions, creator, characterVersion, tags, extensions, characterBook, syncSeq FROM CharacterEntity WHERE isDeleted = 0 ORDER BY isAssistant DESC, name ASC;
+
+-- One row's avatar bytes for a visible list row, editor or chat header.
+selectCharacterAvatarData:
+SELECT avatarData FROM CharacterEntity WHERE id = ? LIMIT 1;
+
+-- CursorWindow-safe avatar reads: Android's CursorWindow holds ~2 MB per
+-- row, so a single multi-MB avatar PNG crashes ANY cursor that materializes
+-- it whole ("Row too big to fit into CursorWindow"). Large avatars are
+-- reassembled in small substr() chunks, each far below the window, instead
+-- of one oversized row (see CharacterRepository.getCharacterAvatarData).
+selectCharacterAvatarLength:
+SELECT LENGTH(avatarData) FROM CharacterEntity WHERE id = ?;
+
+selectCharacterAvatarChunk:
+SELECT CAST(substr(avatarData, CAST(? AS INTEGER), CAST(? AS INTEGER)) AS BLOB) FROM CharacterEntity WHERE id = ?;
+
 selectAssistant:
 SELECT * FROM CharacterEntity WHERE isAssistant = 1 AND isDeleted = 0 LIMIT 1;
 
 selectAllPersonas:
 SELECT * FROM PersonaEntity WHERE isDeleted = 0 ORDER BY name ASC;
 
+-- Persona list headers: same avatar-free rule as the character list (see
+-- selectAllCharacterHeaders).
+selectAllPersonaHeaders:
+SELECT id, name, description, updatedAt, isDeleted, syncSeq FROM PersonaEntity WHERE isDeleted = 0 ORDER BY name ASC;
+
+-- One persona's avatar bytes for a visible card or the chat header.
+selectPersonaAvatarData:
+SELECT avatarData FROM PersonaEntity WHERE id = ? LIMIT 1;
+
+-- CursorWindow-safe persona avatar reads (see the character chunk note).
+selectPersonaAvatarLength:
+SELECT LENGTH(avatarData) FROM PersonaEntity WHERE id = ?;
+
+selectPersonaAvatarChunk:
+SELECT CAST(substr(avatarData, CAST(? AS INTEGER), CAST(? AS INTEGER)) AS BLOB) FROM PersonaEntity WHERE id = ?;
+
 selectSessionById:
 SELECT * FROM ChatSession WHERE id = ? AND isDeleted = 0;
 
-selectLastSessionForCharacter:
-SELECT * FROM ChatSession WHERE characterId = ? AND isDeleted = 0 ORDER BY lastTimestamp DESC LIMIT 1;
+selectLastSessionForCharacterAndPersona:
+SELECT * FROM ChatSession WHERE characterId = ? AND personaId = ? AND isDeleted = 0 ORDER BY lastTimestamp DESC LIMIT 1;
 
 selectSessionsForCharacter:
 SELECT * FROM ChatSession WHERE characterId = ? AND isDeleted = 0 ORDER BY lastTimestamp DESC;
 
+selectSessionsForPersona:
+SELECT * FROM ChatSession WHERE personaId = ? AND isDeleted = 0 ORDER BY lastTimestamp DESC;
+
 selectActiveTimeline:
-SELECT * FROM MessageEntity WHERE isDeleted = 0 AND sessionId = ? AND isActivePath = 1 ORDER BY timestamp ASC;
+SELECT * FROM MessageEntity WHERE isDeleted = 0 AND sessionId = ? AND isActivePath = 1 ORDER BY timestamp ASC, rowid ASC;
 
 selectSiblings:
-SELECT * FROM MessageEntity WHERE isDeleted = 0 AND sessionId = ? AND parentId IS ? ORDER BY timestamp ASC;
+SELECT * FROM MessageEntity WHERE isDeleted = 0 AND sessionId = ? AND parentId IS ? AND isActivePath = 1 ORDER BY timestamp ASC, rowid ASC;
 
 selectAllApiConnections:
 SELECT * FROM ApiConnection WHERE isDeleted = 0 ORDER BY displayOrder ASC;
 
 selectActiveApiConnection:
-SELECT * FROM ApiConnection WHERE isActive = 1 AND isDeleted = 0 LIMIT 1;
+-- displayOrder makes the pick deterministic if the "exactly one active row"
+-- invariant is ever violated (e.g. by an older sync merge).
+SELECT * FROM ApiConnection WHERE isActive = 1 AND isDeleted = 0 ORDER BY displayOrder ASC LIMIT 1;
 
-selectLastUsedApiConnection:
-SELECT * FROM ApiConnection WHERE isDeleted = 0 ORDER BY lastUsed DESC LIMIT 1;
+selectActiveApiConnectionOrFallback:
+-- The app must never be left without a selected profile while any connection
+-- exists: an explicitly active connection wins, otherwise the most recently
+-- used one ("the last"), otherwise the first by display order. displayOrder
+-- makes the pick deterministic when lastUsed ties at 0 (never used).
+SELECT * FROM ApiConnection
+WHERE isDeleted = 0
+ORDER BY isActive DESC, lastUsed DESC, displayOrder ASC
+LIMIT 1;
+
+selectApiConnectionById:
+SELECT * FROM ApiConnection WHERE id = ? AND isDeleted = 0 LIMIT 1;
 
 getAppSettings:
 SELECT * FROM AppSettings WHERE id = 1;
@@ -139,8 +326,8 @@ selectAllPromptBlocks:
 SELECT * FROM PromptBlockEntity WHERE isDeleted = 0 ORDER BY displayOrder ASC;
 
 insertCharacter:
-INSERT INTO CharacterEntity(id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant, updatedAt, isDeleted)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO CharacterEntity(id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant, updatedAt, isDeleted, systemPrompt, postHistoryInstructions, creator, characterVersion, tags, extensions, characterBook, syncSeq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 updateCharacter:
 UPDATE CharacterEntity
@@ -152,65 +339,92 @@ SET name = ?,
     mesExample = ?,
     altGreetings = ?,
     avatarData = ?,
-    updatedAt = ?
+    systemPrompt = ?,
+    postHistoryInstructions = ?,
+    creator = ?,
+    characterVersion = ?,
+    tags = ?,
+    extensions = ?,
+    characterBook = ?,
+    updatedAt = ?,
+    syncSeq = ?
 WHERE id = ?;
 
 deleteCharactersByIds:
-UPDATE CharacterEntity SET isDeleted = 1, updatedAt = ? WHERE id IN ?;
+UPDATE CharacterEntity SET isDeleted = 1, updatedAt = ?, syncSeq = ? WHERE id IN ?;
 
 insertPersona:
-INSERT INTO PersonaEntity(id, name, description, avatarData, updatedAt, isDeleted) VALUES (?, ?, ?, ?, ?, ?);
+INSERT INTO PersonaEntity(id, name, description, avatarData, updatedAt, isDeleted, syncSeq) VALUES (?, ?, ?, ?, ?, ?, ?);
 
 updatePersona:
 UPDATE PersonaEntity
 SET name = ?,
     description = ?,
     avatarData = ?,
-    updatedAt = ?
+    updatedAt = ?,
+    syncSeq = ?
 WHERE id = ?;
 
 deletePersona:
-UPDATE PersonaEntity SET isDeleted = 1, updatedAt = ? WHERE id = ?;
+UPDATE PersonaEntity SET isDeleted = 1, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 insertChatSession:
-INSERT INTO ChatSession(id, characterId, personaId, title, lastTimestamp, currentMessageId, parentSessionId, updatedAt, isDeleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO ChatSession(id, characterId, personaId, title, lastTimestamp, currentMessageId, parentSessionId, updatedAt, isDeleted, syncSeq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 updateSessionCurrentMessage:
-UPDATE ChatSession SET currentMessageId = ?, lastTimestamp = ?, updatedAt = ? WHERE id = ?;
+UPDATE ChatSession SET currentMessageId = ?, lastTimestamp = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 updateSessionTitle:
-UPDATE ChatSession SET title = ?, updatedAt = ? WHERE id = ?;
+UPDATE ChatSession SET title = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 deleteSession:
-UPDATE ChatSession SET isDeleted = 1, updatedAt = ? WHERE id = ?;
+UPDATE ChatSession SET isDeleted = 1, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 insertMessageWithParent:
-INSERT INTO MessageEntity(id, sessionId, role, content, timestamp, parentId, isActivePath, updatedAt, isDeleted, imageData) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO MessageEntity(id, sessionId, role, content, timestamp, parentId, isActivePath, updatedAt, isDeleted, imageRefs, reasoningText, costEstimate, syncSeq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 deactivateSiblings:
-UPDATE MessageEntity SET isActivePath = 0, updatedAt = ? WHERE sessionId = ? AND parentId IS ? AND id != ?;
+UPDATE MessageEntity SET isActivePath = 0, updatedAt = ?, syncSeq = ? WHERE sessionId = ? AND parentId IS ? AND id != ?;
+
+deactivateMessage:
+UPDATE MessageEntity SET isActivePath = 0, updatedAt = ?, syncSeq = ? WHERE sessionId = ? AND id = ?;
 
 activateMessage:
-UPDATE MessageEntity SET isActivePath = 1, updatedAt = ? WHERE id = ?;
+UPDATE MessageEntity SET isActivePath = 1, updatedAt = ?, syncSeq = ? WHERE id = ?;
+
+selectAllMessagesForSession:
+SELECT * FROM MessageEntity WHERE sessionId = ? AND isDeleted = 0;
+
+selectAnyMessageForSession:
+SELECT COUNT(*) FROM MessageEntity WHERE sessionId = ?;
 
 updateMessageContent:
-UPDATE MessageEntity SET content = ?, updatedAt = ? WHERE id = ?;
+UPDATE MessageEntity SET content = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
-updateMessageImage:
-UPDATE MessageEntity SET imageData = ?, updatedAt = ? WHERE id = ?;
+updateMessageReasoning:
+UPDATE MessageEntity SET reasoningText = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
+
+updateMessageCostEstimate:
+UPDATE MessageEntity SET costEstimate = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
+
+updateMessageContentAndReasoning:
+UPDATE MessageEntity SET content = ?, reasoningText = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
+
+updateMessageImageRefs:
+UPDATE MessageEntity SET imageRefs = ?, imageData = NULL, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 deleteMessage:
-UPDATE MessageEntity SET isDeleted = 1, updatedAt = ? WHERE id = ?;
+UPDATE MessageEntity SET isDeleted = 1, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 deleteMessagesForSession:
-UPDATE MessageEntity SET isDeleted = 1, updatedAt = ? WHERE sessionId = ?;
+UPDATE MessageEntity SET isDeleted = 1, updatedAt = ?, syncSeq = ? WHERE sessionId = ?;
 
 insertApiConnection:
 INSERT INTO ApiConnection(
-    id, provider, name, baseUrl, apiKey, model, isActive, isChatCompletion, lastUsed,
-    temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit, displayOrder, timeoutLimit, updatedAt, isDeleted
+    id, provider, name, baseUrl, apiKey, model, inferenceProvider, quantization, isActive, isChatCompletion, lastUsed,
+    temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit, displayOrder, timeoutLimit, reasoningOverride, chatCompletionMode, updatedAt, isDeleted, syncSeq
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 updateApiConnection:
 UPDATE ApiConnection
@@ -219,9 +433,10 @@ SET provider = ?,
     baseUrl = ?,
     apiKey = ?,
     model = ?,
+    inferenceProvider = ?,
+    quantization = ?,
     isActive = ?,
     isChatCompletion = ?,
-    lastUsed = ?,
     temperature = ?,
     topP = ?,
     topK = ?,
@@ -231,20 +446,29 @@ SET provider = ?,
     responseLimit = ?,
     displayOrder = ?,
     timeoutLimit = ?,
-    updatedAt = ?
+    reasoningOverride = ?,
+    chatCompletionMode = ?,
+    updatedAt = ?,
+    syncSeq = ?
 WHERE id = ?;
 
+updateApiConnectionLastUsed:
+UPDATE ApiConnection SET lastUsed = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
+
+updateApiConnectionApiKey:
+UPDATE ApiConnection SET apiKey = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
+
 deleteApiConnection:
-UPDATE ApiConnection SET isDeleted = 1, updatedAt = ? WHERE id = ?;
+UPDATE ApiConnection SET isDeleted = 1, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 setActiveApiConnection:
-UPDATE ApiConnection SET isActive = 0, updatedAt = ? WHERE isActive = 1;
+UPDATE ApiConnection SET isActive = 0, updatedAt = ?, syncSeq = ? WHERE isActive = 1;
 
 updateActiveApiConnection:
-UPDATE ApiConnection SET isActive = 1, lastUsed = ?, updatedAt = ? WHERE id = ?;
+UPDATE ApiConnection SET isActive = 1, lastUsed = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 updateApiConnectionDisplayOrder:
-UPDATE ApiConnection SET displayOrder = ?, updatedAt = ? WHERE id = ?;
+UPDATE ApiConnection SET displayOrder = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
 updateDarkMode:
 UPDATE AppSettings SET isDarkMode = ? WHERE id = 1;
@@ -252,98 +476,471 @@ UPDATE AppSettings SET isDarkMode = ? WHERE id = 1;
 updateActivePersonaId:
 UPDATE AppSettings SET activePersonaId = ? WHERE id = 1;
 
+updateSendWithCtrlEnter:
+UPDATE AppSettings SET sendWithCtrlEnter = ? WHERE id = 1;
+
+updateAutoSyncOnLaunch:
+UPDATE AppSettings SET autoSyncOnLaunch = ? WHERE id = 1;
+
+updateConfirmBeforeDelete:
+UPDATE AppSettings SET confirmBeforeDelete = ? WHERE id = 1;
+
+updateAutoLockIdleMinutes:
+UPDATE AppSettings SET autoLockIdleMinutes = ? WHERE id = 1;
+
+updateLockRecommendationShown:
+UPDATE AppSettings SET lockRecommendationShown = ? WHERE id = 1;
+
 insertDefaultSettings:
 INSERT OR IGNORE INTO AppSettings(id, isDarkMode, activePersonaId) VALUES (1, 1, NULL);
 
+-- ==========================================
+-- Hybrid Logical Clock (updatedAt stamps)
+-- ==========================================
+
+selectLastHlc:
+SELECT lastHlc FROM AppSettings WHERE id = 1;
+
+updateLastHlc:
+UPDATE AppSettings SET lastHlc = ? WHERE id = 1;
+
+-- ==========================================
+-- Sync sequence counter (syncSeq stamps)
+-- ==========================================
+
+selectLastSyncSeq:
+SELECT lastSyncSeq FROM AppSettings WHERE id = 1;
+
+updateLastSyncSeq:
+UPDATE AppSettings SET lastSyncSeq = ? WHERE id = 1;
+
 insertPromptBlock:
-INSERT INTO PromptBlockEntity(id, name, template, isEnabled, isCustom, displayOrder, updatedAt, isDeleted)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO PromptBlockEntity(id, name, template, isEnabled, isCustom, displayOrder, updatedAt, isDeleted, syncSeq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 updatePromptBlock:
 UPDATE PromptBlockEntity
 SET name = ?,
     template = ?,
     isEnabled = ?,
-    updatedAt = ?
+    updatedAt = ?,
+    syncSeq = ?
 WHERE id = ?;
 
 deletePromptBlock:
-UPDATE PromptBlockEntity SET isDeleted = 1, updatedAt = ? WHERE id = ? AND isCustom = 1;
+UPDATE PromptBlockEntity SET isDeleted = 1, updatedAt = ?, syncSeq = ? WHERE id = ? AND isCustom = 1;
 
 updatePromptBlockDisplayOrder:
-UPDATE PromptBlockEntity SET displayOrder = ?, updatedAt = ? WHERE id = ?;
+UPDATE PromptBlockEntity SET displayOrder = ?, updatedAt = ?, syncSeq = ? WHERE id = ?;
 
-selectCharactersModifiedAfter:
-SELECT * FROM CharacterEntity WHERE updatedAt > ?;
+selectCharacterById:
+SELECT * FROM CharacterEntity WHERE id = ? AND isDeleted = 0 LIMIT 1;
 
-selectPersonasModifiedAfter:
-SELECT * FROM PersonaEntity WHERE updatedAt > ?;
+selectMessageById:
+SELECT * FROM MessageEntity WHERE id = ? AND isDeleted = 0;
 
-selectSessionsModifiedAfter:
-SELECT * FROM ChatSession WHERE updatedAt > ?;
+-- Blob-store migration: rows still carrying legacy inline images. The
+-- extraction pass reads these, writes the blobs content-addressed and
+-- replaces imageData with imageRefs; the query is naturally idempotent.
+selectMessagesWithImages:
+SELECT * FROM MessageEntity WHERE imageData IS NOT NULL;
 
-selectMessagesModifiedAfter:
-SELECT * FROM MessageEntity WHERE updatedAt > ?;
+-- CursorWindow-safe migration scan: the ID column alone can never overflow
+-- the ~2 MB CursorWindow, no matter how large the legacy imageData blobs
+-- are. The migration pages these IDs and fetches each blob by ID one row at
+-- a time (see migrateMessageImagesToBlobStore): the legacy unbounded
+-- SELECT * materialized every inline image at once and crashed startup with
+-- "Row too big to fit into CursorWindow" before the unlock gate could open.
+selectMessageIdsWithImagesPaged:
+SELECT id FROM MessageEntity WHERE imageData IS NOT NULL LIMIT ? OFFSET ?;
 
-selectPromptBlocksModifiedAfter:
-SELECT * FROM PromptBlockEntity WHERE updatedAt > ?;
+selectMessageImageDataById:
+SELECT imageData FROM MessageEntity WHERE id = ?;
 
-selectCharacterForSync:
-SELECT * FROM CharacterEntity WHERE id = ? LIMIT 1;
+-- CursorWindow-safe legacy blob fetch (see the avatar chunk note): a single
+-- legacy imageData blob can itself exceed the window.
+selectMessageImageDataLength:
+SELECT LENGTH(imageData) FROM MessageEntity WHERE id = ?;
 
-selectPersonaForSync:
-SELECT * FROM PersonaEntity WHERE id = ? LIMIT 1;
+selectMessageImageDataChunk:
+SELECT CAST(substr(imageData, CAST(? AS INTEGER), CAST(? AS INTEGER)) AS BLOB) FROM MessageEntity WHERE id = ?;
 
-selectSessionForSync:
-SELECT * FROM ChatSession WHERE id = ? LIMIT 1;
+-- GC key collection: every blob key referenced by a LIVE (non-tombstoned)
+-- message. Files whose key is absent here are unreferenced and deletable.
+selectAllLiveImageRefs:
+SELECT imageRefs FROM MessageEntity WHERE imageRefs IS NOT NULL AND isDeleted = 0;
 
-selectMessageForSync:
-SELECT * FROM MessageEntity WHERE id = ? LIMIT 1;
+-- Paged variants of the live-key scans for the startup GC pass (see
+-- runBlobGc): each page is hashed and released before the next is read, so
+-- the collection never holds more than one page of blobs or ref JSON.
+selectLiveImageRefsPaged:
+SELECT imageRefs FROM MessageEntity WHERE imageRefs IS NOT NULL AND isDeleted = 0 LIMIT ? OFFSET ?;
 
-selectPromptBlockForSync:
-SELECT * FROM PromptBlockEntity WHERE id = ? LIMIT 1;
+selectLiveCharacterAvatarRefsPaged:
+SELECT avatarRef FROM CharacterEntity WHERE isDeleted = 0 AND avatarRef IS NOT NULL LIMIT ? OFFSET ?;
 
-crdtInsertCharacter:
-INSERT INTO CharacterEntity(id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, isAssistant, updatedAt, isDeleted)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+selectLivePersonaAvatarRefsPaged:
+SELECT avatarRef FROM PersonaEntity WHERE isDeleted = 0 AND avatarRef IS NOT NULL LIMIT ? OFFSET ?;
 
-crdtUpdateCharacter:
-UPDATE CharacterEntity
-SET name = ?, description = ?, personality = ?, scenario = ?, firstMes = ?, mesExample = ?, creatorNotes = ?, altGreetings = ?, avatarData = ?, isAssistant = ?, updatedAt = ?, isDeleted = ?
-WHERE id = ?;
+-- Bounded retry sample for the per-round missing-blob retry (see
+-- SyncExchange.retryMissingBlobs): one round re-attempts a tractable prefix,
+-- and unservable refs are remembered per address, so the remainder heals on
+-- later rounds instead of stalling one round for hours.
+selectLiveImageRefsCapped:
+SELECT imageRefs FROM MessageEntity WHERE imageRefs IS NOT NULL AND isDeleted = 0 LIMIT ?;
 
-crdtInsertPersona:
-INSERT INTO PersonaEntity(id, name, description, avatarData, updatedAt, isDeleted)
-VALUES (?, ?, ?, ?, ?, ?);
+-- GC key collection for avatar blobs: sync stages avatars above the inline
+-- threshold (see SyncModels.AVATAR_REF_THRESHOLD_BYTES) in the blob store, so
+-- those keys are live while the owning row is. LENGTH() keeps the scan from
+-- loading small (inline) avatars into memory.
+selectAllLiveCharacterAvatars:
+SELECT avatarData FROM CharacterEntity WHERE isDeleted = 0 AND avatarData IS NOT NULL AND LENGTH(avatarData) > ?;
 
-crdtUpdatePersona:
-UPDATE PersonaEntity
-SET name = ?, description = ?, avatarData = ?, updatedAt = ?, isDeleted = ?
-WHERE id = ?;
+selectAllLivePersonaAvatars:
+SELECT avatarData FROM PersonaEntity WHERE isDeleted = 0 AND avatarData IS NOT NULL AND LENGTH(avatarData) > ?;
 
-crdtInsertChatSession:
-INSERT INTO ChatSession(id, characterId, personaId, title, lastTimestamp, currentMessageId, parentSessionId, updatedAt, isDeleted)
+-- Paged variants (see the live-key paging note above).
+selectAllLiveCharacterAvatarsPaged:
+SELECT avatarData FROM CharacterEntity WHERE isDeleted = 0 AND avatarData IS NOT NULL AND LENGTH(avatarData) > ? LIMIT ? OFFSET ?;
+
+selectAllLivePersonaAvatarsPaged:
+SELECT avatarData FROM PersonaEntity WHERE isDeleted = 0 AND avatarData IS NOT NULL AND LENGTH(avatarData) > ? LIMIT ? OFFSET ?;
+
+-- CursorWindow-safe GC scans: the avatarData blobs above can each exceed the
+-- ~2 MB CursorWindow on their own, so even one page of them crashes startup
+-- GC with "Row too big to fit into CursorWindow". These ID scans stay small;
+-- each avatar is then hashed via the chunked reads above one row at a time
+-- (see runBlobGc), so GC never holds more than one avatar in memory.
+selectLiveCharacterAvatarIdsPaged:
+SELECT id FROM CharacterEntity WHERE isDeleted = 0 AND avatarData IS NOT NULL AND LENGTH(avatarData) > ? LIMIT ? OFFSET ?;
+
+selectLivePersonaAvatarIdsPaged:
+SELECT id FROM PersonaEntity WHERE isDeleted = 0 AND avatarData IS NOT NULL AND LENGTH(avatarData) > ? LIMIT ? OFFSET ?;
+
+-- GC key collection for out-of-band avatar refs: a live row that still holds
+-- an unresolved ref keeps its blob (the ref column IS the key), so the bytes
+-- survive until the row resolves them or the row is deleted/edited away.
+selectAllLiveCharacterAvatarRefs:
+SELECT avatarRef FROM CharacterEntity WHERE isDeleted = 0 AND avatarRef IS NOT NULL;
+
+selectAllLivePersonaAvatarRefs:
+SELECT avatarRef FROM PersonaEntity WHERE isDeleted = 0 AND avatarRef IS NOT NULL;
+
+-- ==========================================
+-- Sync Peers
+-- ==========================================
+
+selectAllSyncPeers:
+SELECT * FROM SyncPeer WHERE isDeleted = 0 ORDER BY name ASC;
+
+selectSyncPeer:
+SELECT * FROM SyncPeer WHERE deviceId = ? AND isDeleted = 0 LIMIT 1;
+
+selectSyncPeerAny:
+SELECT * FROM SyncPeer WHERE deviceId = ? LIMIT 1;
+
+insertSyncPeer:
+INSERT INTO SyncPeer(deviceId, name, publicKey, lastKnownAddress, receivedCursor, peerReceivedCursor, lastSyncAt, updatedAt, isDeleted)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
-crdtUpdateChatSession:
-UPDATE ChatSession
-SET characterId = ?, personaId = ?, title = ?, lastTimestamp = ?, currentMessageId = ?, parentSessionId = ?, isDeleted = ?, updatedAt = ?
+-- Re-pairing a peer that was previously removed must revive the trust row:
+-- isDeleted is reset so app-facing queries see it again.
+updateSyncPeer:
+UPDATE SyncPeer
+SET name = ?,
+    publicKey = ?,
+    lastKnownAddress = ?,
+    receivedCursor = ?,
+    peerReceivedCursor = ?,
+    lastSyncAt = ?,
+    updatedAt = ?,
+    isDeleted = 0
+WHERE deviceId = ?;
+
+updateSyncPeerCursors:
+UPDATE SyncPeer SET receivedCursor = ?, peerReceivedCursor = ?, lastSyncAt = ?, updatedAt = ? WHERE deviceId = ?;
+
+updateSyncPeerAddress:
+UPDATE SyncPeer SET lastKnownAddress = ?, updatedAt = ? WHERE deviceId = ?;
+
+-- Display-name updates arrive only through authenticated sync exchanges;
+-- they never affect cursors or deltas.
+updateSyncPeerName:
+UPDATE SyncPeer SET name = ?, updatedAt = ? WHERE deviceId = ?;
+
+deleteSyncPeer:
+UPDATE SyncPeer SET isDeleted = 1, updatedAt = ? WHERE deviceId = ?;
+
+-- Used when the device rotates its sync identity key: every pairing is
+-- invalidated by the new key, so the local trust store is cleared.
+deleteAllSyncPeers:
+UPDATE SyncPeer SET isDeleted = 1, updatedAt = ? WHERE isDeleted = 0;
+
+-- ==========================================
+-- Sync Deltas (include tombstones: no isDeleted filter)
+--
+-- The delta cut is on the device-local sync sequence (syncSeq >= ?), which
+-- is strictly monotone per device and re-stamped on every applied incoming
+-- row, so the INCLUSIVE cut is exact: a row can never share a sequence with
+-- the cursor and can never be stamped below a cursor that already passed it
+-- (late arrivals from lagging peers always get a fresh sequence). Cursors
+-- advance to maxSeq + 1, so nothing is ever skipped and nothing is ever
+-- re-sent.
+--
+-- Rows are ordered by syncSeq: batch collection (SyncRepository
+-- .collectDeltaBatched) cuts the union on a sequence boundary, and the
+-- per-table prefix below that boundary is exactly the slice it ships. The
+-- syncSeq index makes the scan ordered and bounded.
+--
+-- The delta cut is decided on GROUP SIZES computed here in SQL (no row
+-- materialization): each table reports one (seq, estimated wire bytes) tuple
+-- per sequence group. The estimate mirrors SyncModels' row estimates,
+-- including the avatar threshold (avatars above it ride out of band as small
+-- content-addressed refs), so the batch cut is byte-accurate BEFORE any row
+-- is fetched and the row fetch below is bounded to the rows that actually
+-- ship. Parameters: ?1 row-overhead, ?2 avatar inline threshold, ?3 avatar
+-- ref wire estimate, ?4 delta cursor.
+-- ==========================================
+
+selectCharacterDeltaGroups:
+SELECT syncSeq AS seq,
+       ?1 + LENGTH(COALESCE(name, '')) + LENGTH(COALESCE(description, '')) +
+       LENGTH(COALESCE(personality, '')) + LENGTH(COALESCE(scenario, '')) +
+       LENGTH(COALESCE(firstMes, '')) + LENGTH(COALESCE(mesExample, '')) +
+       LENGTH(COALESCE(creatorNotes, '')) + LENGTH(COALESCE(altGreetings, '')) +
+       LENGTH(COALESCE(systemPrompt, '')) + LENGTH(COALESCE(postHistoryInstructions, '')) +
+       LENGTH(COALESCE(creator, '')) + LENGTH(COALESCE(characterVersion, '')) +
+       LENGTH(COALESCE(tags, '')) + LENGTH(COALESCE(extensions, '')) +
+       LENGTH(COALESCE(characterBook, '')) +
+       COALESCE(CASE WHEN LENGTH(avatarData) > ?2 THEN ?3 ELSE (LENGTH(avatarData) * 4) / 3 END, 0) AS size
+FROM CharacterEntity WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
+
+selectPersonaDeltaGroups:
+SELECT syncSeq AS seq,
+       ?1 + LENGTH(COALESCE(name, '')) + LENGTH(COALESCE(description, '')) +
+       COALESCE(CASE WHEN LENGTH(avatarData) > ?2 THEN ?3 ELSE (LENGTH(avatarData) * 4) / 3 END, 0) AS size
+FROM PersonaEntity WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
+
+selectSessionDeltaGroups:
+SELECT syncSeq AS seq,
+       ?1 + LENGTH(characterId) + LENGTH(personaId) + LENGTH(COALESCE(title, '')) +
+       LENGTH(COALESCE(currentMessageId, '')) + LENGTH(COALESCE(parentSessionId, '')) AS size
+FROM ChatSession WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
+
+selectMessageDeltaGroups:
+SELECT syncSeq AS seq,
+       ?1 + LENGTH(sessionId) + LENGTH(role) + LENGTH(content) +
+       LENGTH(COALESCE(parentId, '')) + LENGTH(COALESCE(reasoningText, '')) +
+       LENGTH(COALESCE(imageRefs, '')) AS size
+FROM MessageEntity WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
+
+selectApiConnectionDeltaGroups:
+SELECT syncSeq AS seq,
+       ?1 + LENGTH(provider) + LENGTH(name) + LENGTH(COALESCE(baseUrl, '')) +
+       LENGTH(COALESCE(apiKey, '')) + LENGTH(COALESCE(model, '')) +
+       LENGTH(COALESCE(inferenceProvider, '')) + LENGTH(COALESCE(quantization, '')) AS size
+FROM ApiConnection WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
+
+selectPromptBlockDeltaGroups:
+SELECT syncSeq AS seq, ?1 + LENGTH(name) + LENGTH(template) AS size
+FROM PromptBlockEntity WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
+
+-- Rows of one table within a decided batch cut (a complete sequence
+-- boundary): the bounded fetch only ever materializes the rows that ship.
+selectCharacterDeltaRows:
+SELECT * FROM CharacterEntity WHERE syncSeq >= ? AND syncSeq <= ? ORDER BY syncSeq;
+
+selectPersonaDeltaRows:
+SELECT * FROM PersonaEntity WHERE syncSeq >= ? AND syncSeq <= ? ORDER BY syncSeq;
+
+selectSessionDeltaRows:
+SELECT * FROM ChatSession WHERE syncSeq >= ? AND syncSeq <= ? ORDER BY syncSeq;
+
+selectMessageDeltaRows:
+SELECT * FROM MessageEntity WHERE syncSeq >= ? AND syncSeq <= ? ORDER BY syncSeq;
+
+selectApiConnectionDeltaRows:
+SELECT * FROM ApiConnection WHERE syncSeq >= ? AND syncSeq <= ? ORDER BY syncSeq;
+
+selectPromptBlockDeltaRows:
+SELECT * FROM PromptBlockEntity WHERE syncSeq >= ? AND syncSeq <= ? ORDER BY syncSeq;
+
+-- Highest device-local sync sequence across every synced table (tombstones
+-- included: they carry sequences too). Cursors are stored as maxSeq + 1, so
+-- this is the ceiling any peer cursor may legitimately reach; a cursor above
+-- it can only mean the sequence space was rewound (database restore from an
+-- older backup), and the delta cut must then be reset (see
+-- SyncRepository.saneDeltaCutoff). COALESCE: all tables empty -> 0.
+selectMaxSyncSeq:
+SELECT COALESCE(MAX(m), 0) FROM (
+    SELECT MAX(syncSeq) AS m FROM CharacterEntity
+    UNION ALL SELECT MAX(syncSeq) FROM PersonaEntity
+    UNION ALL SELECT MAX(syncSeq) FROM ChatSession
+    UNION ALL SELECT MAX(syncSeq) FROM MessageEntity
+    UNION ALL SELECT MAX(syncSeq) FROM ApiConnection
+    UNION ALL SELECT MAX(syncSeq) FROM PromptBlockEntity
+);
+
+-- ==========================================
+-- Sync upserts (full-row writes, LWW resolved in code)
+-- ==========================================
+
+selectCharacterByIdAny:
+SELECT * FROM CharacterEntity WHERE id = ? LIMIT 1;
+
+selectPersonaByIdAny:
+SELECT * FROM PersonaEntity WHERE id = ? LIMIT 1;
+
+selectSessionByIdAny:
+SELECT * FROM ChatSession WHERE id = ? LIMIT 1;
+
+selectMessageByIdAny:
+SELECT * FROM MessageEntity WHERE id = ? LIMIT 1;
+
+selectApiConnectionByIdAny:
+SELECT * FROM ApiConnection WHERE id = ? LIMIT 1;
+
+selectPromptBlockByIdAny:
+SELECT * FROM PromptBlockEntity WHERE id = ? LIMIT 1;
+
+upsertCharacterFull:
+UPDATE CharacterEntity
+SET name = ?, description = ?, personality = ?, scenario = ?, firstMes = ?,
+    mesExample = ?, creatorNotes = ?, altGreetings = ?, avatarData = ?,
+    avatarRef = ?, isAssistant = ?, updatedAt = ?, isDeleted = ?, systemPrompt = ?,
+    postHistoryInstructions = ?, creator = ?, characterVersion = ?, tags = ?,
+    extensions = ?, characterBook = ?, syncSeq = ?
 WHERE id = ?;
 
-crdtInsertMessage:
-INSERT INTO MessageEntity(id, sessionId, role, content, timestamp, parentId, isActivePath, updatedAt, isDeleted, imageData)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+insertCharacterFull:
+INSERT INTO CharacterEntity(id, name, description, personality, scenario, firstMes, mesExample, creatorNotes, altGreetings, avatarData, avatarRef, isAssistant, updatedAt, isDeleted, systemPrompt, postHistoryInstructions, creator, characterVersion, tags, extensions, characterBook, syncSeq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
-crdtUpdateMessage:
-UPDATE MessageEntity
-SET sessionId = ?, role = ?, content = ?, timestamp = ?, parentId = ?, isActivePath = ?, isDeleted = ?, updatedAt = ?, imageData = ?
+upsertPersonaFull:
+UPDATE PersonaEntity
+SET name = ?, description = ?, avatarData = ?, avatarRef = ?, updatedAt = ?, isDeleted = ?, syncSeq = ?
 WHERE id = ?;
 
-crdtInsertPromptBlock:
-INSERT INTO PromptBlockEntity(id, name, template, isEnabled, isCustom, displayOrder, updatedAt, isDeleted)
+insertPersonaFull:
+INSERT INTO PersonaEntity(id, name, description, avatarData, avatarRef, updatedAt, isDeleted, syncSeq)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
-crdtUpdatePromptBlock:
-UPDATE PromptBlockEntity
-SET name = ?, template = ?, isEnabled = ?, isCustom = ?, displayOrder = ?, isDeleted = ?, updatedAt = ?
+-- A local avatar edit (set or removed) supersedes any unresolved out-of-band
+-- ref on the row; the ref column must not resurrect the old avatar.
+clearCharacterAvatarRef:
+UPDATE CharacterEntity SET avatarRef = NULL WHERE id = ?;
+
+clearPersonaAvatarRef:
+UPDATE PersonaEntity SET avatarRef = NULL WHERE id = ?;
+
+-- Rows still waiting for their avatar bytes: ref set, bytes absent. The
+-- exchange re-fetches these refs from a peer on every sync round (see
+-- SyncExchange.retryMissingBlobs) and fills them once the bytes land.
+selectCharactersWithMissingAvatar:
+SELECT id, avatarRef FROM CharacterEntity WHERE isDeleted = 0 AND avatarRef IS NOT NULL AND avatarData IS NULL;
+
+selectPersonasWithMissingAvatar:
+SELECT id, avatarRef FROM PersonaEntity WHERE isDeleted = 0 AND avatarRef IS NOT NULL AND avatarData IS NULL;
+
+-- Bounded retry samples (see the retry note on selectLiveImageRefsCapped).
+selectCharactersWithMissingAvatarCapped:
+SELECT id, avatarRef FROM CharacterEntity WHERE isDeleted = 0 AND avatarRef IS NOT NULL AND avatarData IS NULL LIMIT ?;
+
+selectPersonasWithMissingAvatarCapped:
+SELECT id, avatarRef FROM PersonaEntity WHERE isDeleted = 0 AND avatarRef IS NOT NULL AND avatarData IS NULL LIMIT ?;
+
+-- Fills the avatar bytes of a row that is still waiting for THIS ref and has
+-- no bytes yet (a newer local avatar or ref is never overwritten).
+updateCharacterAvatarData:
+UPDATE CharacterEntity SET avatarData = ?, avatarRef = NULL
+WHERE id = ? AND avatarRef = ? AND avatarData IS NULL AND isDeleted = 0;
+
+updatePersonaAvatarData:
+UPDATE PersonaEntity SET avatarData = ?, avatarRef = NULL
+WHERE id = ? AND avatarRef = ? AND avatarData IS NULL AND isDeleted = 0;
+
+upsertSessionFull:
+UPDATE ChatSession
+SET characterId = ?, personaId = ?, title = ?, lastTimestamp = ?,
+    currentMessageId = ?, parentSessionId = ?, updatedAt = ?, isDeleted = ?, syncSeq = ?
 WHERE id = ?;
+
+insertSessionFull:
+INSERT INTO ChatSession(id, characterId, personaId, title, lastTimestamp, currentMessageId, parentSessionId, updatedAt, isDeleted, syncSeq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+upsertMessageFull:
+UPDATE MessageEntity
+SET sessionId = ?, role = ?, content = ?, timestamp = ?, parentId = ?,
+    isActivePath = ?, updatedAt = ?, isDeleted = ?, imageRefs = ?,
+    reasoningText = ?, costEstimate = ?, syncSeq = ?
+WHERE id = ?;
+
+insertMessageFull:
+INSERT INTO MessageEntity(id, sessionId, role, content, timestamp, parentId, isActivePath, updatedAt, isDeleted, imageRefs, reasoningText, costEstimate, syncSeq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+upsertApiConnectionFull:
+UPDATE ApiConnection
+SET provider = ?, name = ?, baseUrl = ?, apiKey = ?, model = ?,
+    inferenceProvider = ?, quantization = ?,
+    isActive = ?, isChatCompletion = ?, lastUsed = ?, temperature = ?,
+    topP = ?, topK = ?, presencePenalty = ?, frequencyPenalty = ?,
+    contextLimit = ?, responseLimit = ?, displayOrder = ?, timeoutLimit = ?,
+    reasoningOverride = ?, chatCompletionMode = ?, updatedAt = ?, isDeleted = ?, syncSeq = ?
+WHERE id = ?;
+
+insertApiConnectionFull:
+INSERT INTO ApiConnection(
+    id, provider, name, baseUrl, apiKey, model, inferenceProvider, quantization, isActive, isChatCompletion, lastUsed,
+    temperature, topP, topK, presencePenalty, frequencyPenalty, contextLimit, responseLimit,
+    displayOrder, timeoutLimit, reasoningOverride, chatCompletionMode, updatedAt, isDeleted, syncSeq
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+upsertPromptBlockFull:
+UPDATE PromptBlockEntity
+SET name = ?, template = ?, isEnabled = ?, isCustom = ?, displayOrder = ?,
+    updatedAt = ?, isDeleted = ?, syncSeq = ?
+WHERE id = ?;
+
+insertPromptBlockFull:
+INSERT INTO PromptBlockEntity(id, name, template, isEnabled, isCustom, displayOrder, updatedAt, isDeleted, syncSeq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- ==========================================
+-- Conflict ledger (per-device, never synced)
+-- ==========================================
+
+-- The ledger only ever moves forward: the max() update makes a re-announced
+-- older version a no-op.
+insertAppliedRow:
+INSERT OR IGNORE INTO AppliedRow(rowId, peerDeviceId, appliedUpdatedAt) VALUES (?, ?, ?);
+
+updateAppliedRowMax:
+UPDATE AppliedRow SET appliedUpdatedAt = MAX(appliedUpdatedAt, ?) WHERE rowId = ? AND peerDeviceId = ?;
+
+selectAppliedRow:
+SELECT * FROM AppliedRow WHERE rowId = ? AND peerDeviceId = ? LIMIT 1;
+
+insertConflictEventIgnore:
+INSERT OR IGNORE INTO ConflictEvent(rowId, tableName, peerDeviceId, localUpdatedAt, incomingUpdatedAt, createdAt, seen)
+VALUES (?, ?, ?, ?, ?, ?, 0);
+
+selectUnseenConflicts:
+SELECT * FROM ConflictEvent WHERE seen = 0 ORDER BY createdAt DESC;
+
+-- All events (seen or not); used by tests to verify pruning.
+selectAllConflictEvents:
+SELECT * FROM ConflictEvent ORDER BY createdAt DESC;
+
+markConflictSeen:
+UPDATE ConflictEvent SET seen = 1 WHERE id IN ?;
+
+markAllConflictsSeen:
+UPDATE ConflictEvent SET seen = 1 WHERE seen = 0;
+
+-- Seen events older than the cutoff are pure history; dropping them keeps the
+-- table from growing forever on devices that sync a lot.
+pruneSeenConflicts:
+DELETE FROM ConflictEvent WHERE seen = 1 AND createdAt < ?;

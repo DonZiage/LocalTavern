@@ -1,7 +1,9 @@
 package chat.donzi.localtavern.utils
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
@@ -12,13 +14,17 @@ import platform.PhotosUI.PHPickerResult
 import platform.PhotosUI.PHPickerViewController
 import platform.PhotosUI.PHPickerViewControllerDelegateProtocol
 import platform.UIKit.UIApplication
+import platform.UIKit.UIWindow
 import platform.Foundation.NSData
 import platform.Foundation.getBytes
 import platform.darwin.NSObject
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_main_queue
+import platform.darwin.dispatch_get_global_queue
+import platform.darwin.DISPATCH_QUEUE_PRIORITY_DEFAULT
 import kotlinx.cinterop.BetaInteropApi
 import platform.UniformTypeIdentifiers.UTTypeImage
+import chat.donzi.localtavern.utils.ImageSanitizer
 
 @OptIn(ExperimentalForeignApi::class)
 fun NSData.toByteArray(): ByteArray {
@@ -34,7 +40,24 @@ fun NSData.toByteArray(): ByteArray {
 
 @OptIn(BetaInteropApi::class)
 @Composable
-actual fun rememberImagePickerLauncher(onImagesPicked: (List<ByteArray>) -> Unit): () -> Unit {
+actual fun rememberImagePickerLauncher(
+    onImagesPicked: (List<ByteArray>) -> Unit,
+    preserveOriginal: Boolean
+): () -> Unit {
+    // The delegate is created once but must always invoke the latest callback
+    // and settings (the callers may close over changing state).
+    val currentOnImagesPicked by rememberUpdatedState(onImagesPicked)
+    val currentPreserveOriginal by rememberUpdatedState(preserveOriginal)
+
+    fun deliverSanitized(imageList: List<ByteArray>) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT.toLong(), 0uL)) {
+            val sanitized = ImageSanitizer.sanitize(imageList, currentPreserveOriginal)
+            dispatch_async(dispatch_get_main_queue()) {
+                currentOnImagesPicked(sanitized)
+            }
+        }
+    }
+
     val delegate = remember {
         object : NSObject(), PHPickerViewControllerDelegateProtocol {
             override fun picker(picker: PHPickerViewController, didFinishPicking: List<*>) {
@@ -56,16 +79,16 @@ actual fun rememberImagePickerLauncher(onImagesPicked: (List<ByteArray>) -> Unit
                                     imageList.add(data.toByteArray())
                                 }
                                 remaining--
-                                if (remaining == 0 && imageList.isNotEmpty()) {
-                                    onImagesPicked(imageList)
+                                if (remaining == 0) {
+                                    deliverSanitized(imageList)
                                 }
                             }
                         }
                     } else {
                         dispatch_async(dispatch_get_main_queue()) {
                             remaining--
-                            if (remaining == 0 && imageList.isNotEmpty()) {
-                                onImagesPicked(imageList)
+                            if (remaining == 0) {
+                                deliverSanitized(imageList)
                             }
                         }
                     }
@@ -78,13 +101,21 @@ actual fun rememberImagePickerLauncher(onImagesPicked: (List<ByteArray>) -> Unit
         {
             val configuration = PHPickerConfiguration()
             configuration.filter = PHPickerFilter.imagesFilter
-            configuration.selectionLimit = 0
+            // Cap the selection up front so the sanitizer never receives more
+            // images than it keeps; loading every picked photo at full
+            // resolution into memory first is a waste (and an OOM risk).
+            configuration.selectionLimit = ImageSanitizer.MAX_PICKED_IMAGES.toLong()
             configuration.selection = PHPickerConfigurationSelectionOrdered
 
             val picker = PHPickerViewController(configuration)
             picker.delegate = delegate
 
-            val rootViewController = UIApplication.sharedApplication.keyWindow?.rootViewController
+            // keyWindow is deprecated (iOS 13+) and can be nil on multi-scene
+            // setups; fall back to the last window's root view controller.
+            val windows = UIApplication.sharedApplication.windows.filterIsInstance<UIWindow>()
+            val rootViewController = windows.firstOrNull { it.isKeyWindow() }
+                ?.rootViewController
+                ?: windows.lastOrNull()?.rootViewController
             rootViewController?.presentViewController(
                 picker,
                 animated = true,

@@ -2,17 +2,26 @@ package chat.donzi.localtavern
 
 import java.io.File
 import java.awt.Desktop
+import javax.swing.JFileChooser
+import javax.swing.UIManager
 import org.jetbrains.skia.Image
 import org.jetbrains.skia.EncodedImageFormat
 
 actual fun saveFile(fileName: String, bytes: ByteArray): String? {
     return try {
-        val userHome = System.getProperty("user.home")
-        val downloads = File(userHome, "Downloads")
-        val exportDir = File(downloads, "LocalTavern/ExportedCharacters")
-        if (!exportDir.exists()) exportDir.mkdirs()
+        UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName())
 
-        val file = File(exportDir, fileName)
+        val downloads = File(System.getProperty("user.home"), "Downloads")
+        val chooser = JFileChooser().apply {
+            selectedFile = File(downloads, fileName)
+            dialogTitle = "Export Character"
+        }
+
+        if (chooser.showSaveDialog(null) != JFileChooser.APPROVE_OPTION) {
+            return null
+        }
+
+        val file = chooser.selectedFile
         file.writeBytes(bytes)
         file.absolutePath
     } catch (e: Exception) {
@@ -45,3 +54,22 @@ actual fun convertToPng(bytes: ByteArray): ByteArray {
 }
 
 actual val isDesktop: Boolean = true
+
+actual val isAndroid: Boolean = false
+
+actual fun openDeviceSecuritySettings() = Unit
+
+// The packaged desktop jar carries the version in its manifest
+// (packageVersion); dev runs from the IDE have no manifest version.
+private object AppInfo
+
+actual fun appVersionName(): String =
+    AppInfo::class.java.getPackage()?.implementationVersion ?: "dev build"
+
+actual fun appDatabasePath(): String {
+    val userHome = System.getProperty("user.home") ?: System.getProperty("user.dir")
+    return File(userHome, ".localtavern").resolve("local_tavern.db").absolutePath
+}
+
+// Desktop windows stay awake under their own power management; nothing to do.
+actual fun setKeepScreenOn(enabled: Boolean) = Unit

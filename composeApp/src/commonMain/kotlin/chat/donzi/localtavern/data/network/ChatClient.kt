@@ -3,90 +3,39 @@ package chat.donzi.localtavern.data.network
 import chat.donzi.localtavern.utils.ChatMessage
 import io.ktor.client.*
 import io.ktor.client.call.*
+import io.ktor.client.plugins.HttpTimeoutConfig
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
-import io.ktor.utils.io.*
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
-
-@Serializable
-data class ModelListResponse(
-    val data: List<ModelData>
-)
-
-@Serializable
-data class ModelData(
-    val id: String,
-    @SerialName("owned_by")
-    val ownedBy: String? = null
-)
-
-data class ModelInfo(
-    val id: String,
-    val displayName: String,
-    val provider: String
-)
 
 class ChatClient(private val httpClient: HttpClient) {
 
-    private fun JsonObjectBuilder.putChatMessages(
-        isChatCompletion: Boolean,
-        messages: List<ChatMessage>,
-        ignoreImages: Boolean = false
-    ) {
-        if (isChatCompletion) {
-            put("messages", buildJsonArray {
-                messages.forEach { msg ->
-                    add(buildJsonObject {
-                        put("role", msg.role)
+    private val json = Json { ignoreUnknownKeys = true }
 
-                        if (!ignoreImages && msg.images.isNotEmpty()) {
-                            put("content", buildJsonArray {
-                                add(buildJsonObject {
-                                    put("type", "text")
-                                    put("text", msg.content)
-                                })
-                                msg.images.forEach { img ->
-                                    add(buildJsonObject {
-                                        put("type", "image_url")
-                                        put("image_url", buildJsonObject {
-                                            put("url", "data:${img.mimeType};base64,${img.base64}")
-                                        })
-                                    })
-                                }
-                            })
-                        } else {
-                            put("content", msg.content)
-                        }
-                    })
-                }
-            })
-        } else {
-            val promptBuilder = StringBuilder()
-            messages.forEach { msg ->
-                when (msg.role) {
-                    "system" -> promptBuilder.append(msg.content).append("\n\n")
-                    "user" -> promptBuilder.append("User: ").append(msg.content).append("\n")
-                    "assistant", "character" -> promptBuilder.append("Character: ").append(msg.content).append("\n")
-                    else -> promptBuilder.append(msg.content).append("\n")
-                }
+    private fun HttpRequestBuilder.applySocketTimeout(timeoutSeconds: Long) {
+        // Tie the socket idle timeout to the connection's response timeout so
+        // long silent "thinking" phases (reasoning models) are not killed by a
+        // fixed idle timeout. <= 0 means no timeout, matching the unlimited
+        // response deadline semantics in ChatController.
+        timeout {
+            socketTimeoutMillis = if (timeoutSeconds <= 0) {
+                HttpTimeoutConfig.INFINITE_TIMEOUT_MS
+            } else {
+                timeoutSeconds * 1000
             }
-            promptBuilder.append("Character:")
-            put("prompt", promptBuilder.toString())
         }
     }
 
-    suspend fun fetchModels(baseUrl: String, apiKey: String): List<ModelInfo> {
+    suspend fun fetchModels(baseUrl: String, apiKey: String, provider: String? = null): List<ModelInfo> {
+        val apiStyle = apiStyleForProvider(provider)
         return try {
-            val response = httpClient.get("$baseUrl/models") {
-                header(HttpHeaders.Authorization, "Bearer $apiKey")
+            val response = httpClient.get("${baseUrl.trimEnd('/')}/models") {
+                putAuthHeaders(apiStyle, apiKey)
             }
             if (response.status == HttpStatusCode.OK) {
                 val body: ModelListResponse = response.body()
@@ -109,19 +58,93 @@ class ChatClient(private val httpClient: HttpClient) {
             } else {
                 emptyList()
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             emptyList()
         }
     }
 
-    suspend fun checkStatus(baseUrl: String, apiKey: String): Boolean {
+    // OpenRouter exposes which cloud providers actually serve a given model
+    // only on the per-model endpoint details API (GET /models/{id}/endpoints);
+    // the catalog's id prefix is the publisher, not the serving provider.
+    suspend fun fetchModelEndpoints(baseUrl: String, apiKey: String, modelId: String, provider: String? = null): List<ModelEndpointInfo> {
+        // modelId is a catalog-controlled path segment appended after
+        // /models/: reject dot-segment traversal (plain and percent-encoded)
+        // so a hostile id cannot redirect the keyed request to another path on
+        // the provider host. Slashes are legal ("openai/gpt-4o"), only ".."
+        // segments are refused.
+        if (modelId.split('/').any { it.equals("..", ignoreCase = true) || it.contains("%2e", ignoreCase = true) }) {
+            return emptyList()
+        }
+        val apiStyle = apiStyleForProvider(provider)
         return try {
-            val response = httpClient.get("$baseUrl/models") {
-                header(HttpHeaders.Authorization, "Bearer $apiKey")
+            val response = httpClient.get("${baseUrl.trimEnd('/')}/models/${modelId.trimStart('/')}/endpoints") {
+                putAuthHeaders(apiStyle, apiKey)
             }
-            response.status == HttpStatusCode.OK
+            if (response.status == HttpStatusCode.OK) {
+                val body: ModelEndpointsResponse = response.body()
+                body.data.endpoints.mapNotNull { endpoint ->
+                    val name = endpoint.providerName?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    ModelEndpointInfo(providerName = name, modelId = endpoint.modelId)
+                }
+            } else {
+                emptyList()
+            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
-            false
+            emptyList()
+        }
+    }
+
+    // OpenRouter's Zero Data Retention registry (GET /endpoints/zdr): which
+    // (model, provider) endpoints store no prompt data at all. Returns null
+    // when the registry could not be fetched, so an offline registry is never
+    // mistaken for "no provider is ZDR".
+    suspend fun fetchZdrEndpoints(baseUrl: String, apiKey: String, provider: String? = null): List<ModelEndpointInfo>? {
+        val apiStyle = apiStyleForProvider(provider)
+        return try {
+            val response = httpClient.get("${baseUrl.trimEnd('/')}/endpoints/zdr") {
+                putAuthHeaders(apiStyle, apiKey)
+            }
+            if (response.status == HttpStatusCode.OK) {
+                val body: ZdrEndpointsResponse = response.body()
+                body.data.mapNotNull { endpoint ->
+                    val name = endpoint.providerName?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    ModelEndpointInfo(providerName = name, modelId = endpoint.modelId)
+                }
+            } else {
+                emptyList()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    suspend fun checkStatus(baseUrl: String, apiKey: String, provider: String? = null): Boolean =
+        probeConnection(baseUrl, apiKey, provider).outcome == ConnectionProbe.Ok
+
+    suspend fun probeConnection(baseUrl: String, apiKey: String, provider: String? = null): ProbeResult {
+        val apiStyle = apiStyleForProvider(provider)
+        return try {
+            val response = httpClient.get("${baseUrl.trimEnd('/')}/models") {
+                putAuthHeaders(apiStyle, apiKey)
+            }
+            when {
+                response.status.value in 200..299 -> ProbeResult(ConnectionProbe.Ok)
+                response.status.value == 401 || response.status.value == 403 ->
+                    ProbeResult(ConnectionProbe.AuthFailed, detail = "HTTP ${response.status.value} ${response.status.description}")
+                else -> ProbeResult(ConnectionProbe.Unreachable, detail = "HTTP ${response.status.value} ${response.status.description}")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Surface the transport reason (DNS failure, connection refused,
+            // timeout, ...) so a misconfigured URL is diagnosable at a glance.
+            ProbeResult(ConnectionProbe.Unreachable, detail = e.message?.take(160))
         }
     }
 
@@ -131,38 +154,89 @@ class ChatClient(private val httpClient: HttpClient) {
         model: String,
         messages: List<ChatMessage>,
         isChatCompletion: Boolean = true,
-        ignoreImages: Boolean = false
-    ): String {
-        val endpoint = if (isChatCompletion) "$baseUrl/chat/completions" else "$baseUrl/completions"
+        ignoreImages: Boolean = false,
+        params: GenerationParams = GenerationParams(),
+        provider: String? = null,
+        inferenceProvider: String? = null,
+        quantization: String? = null,
+        timeoutSeconds: Long = 0
+    ): ChatResponse {
+        val apiStyle = apiStyleForProvider(provider, baseUrl)
+        val endpoint = endpointFor(baseUrl, apiStyle, isChatCompletion)
         val hasImages = messages.any { it.images.isNotEmpty() }
+        val thinkingEnabled = params.thinkingBudgetTokens != null
 
         val response = httpClient.post(endpoint) {
-            header(HttpHeaders.Authorization, "Bearer $apiKey")
+            putAuthHeaders(apiStyle, apiKey, thinkingEnabled = thinkingEnabled, model = model)
             contentType(ContentType.Application.Json)
+            applySocketTimeout(timeoutSeconds)
             setBody(buildJsonObject {
                 put("model", model)
-                putChatMessages(isChatCompletion, messages, ignoreImages = ignoreImages)
+                if (apiStyle == ApiStyle.Anthropic) {
+                    putAnthropicMessages(messages)
+                    putAnthropicParams(params)
+                } else {
+                    putChatMessages(isChatCompletion, messages, ignoreImages = ignoreImages)
+                    putGenerationParams(params)
+                    putInferenceProvider(inferenceProvider, quantization)
+                }
             })
         }
 
         if (response.status != HttpStatusCode.OK) {
-            if (hasImages && !ignoreImages && isChatCompletion) {
-                return sendChatRequest(baseUrl, apiKey, model, messages, isChatCompletion, ignoreImages = true)
+            if (hasImages && !ignoreImages && isChatCompletion && apiStyle != ApiStyle.Anthropic) {
+                return sendChatRequest(baseUrl, apiKey, model, messages, isChatCompletion, ignoreImages = true, params = params, provider = provider, inferenceProvider = inferenceProvider, quantization = quantization, timeoutSeconds = timeoutSeconds)
             }
-            return "Error: ${response.status.description}"
+            throw ApiRequestException(extractErrorMessage(response))
         }
 
-        val json = Json { ignoreUnknownKeys = true }
         val bodyText = response.bodyAsText()
         return try {
             val element = json.parseToJsonElement(bodyText)
-            if (isChatCompletion) {
-                element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("message")?.jsonObject?.get("content")?.jsonPrimitive?.content ?: bodyText
+            if (apiStyle == ApiStyle.Anthropic) {
+                // Content blocks may interleave "thinking" and "text" blocks.
+                // Explicit JSON nulls are absent values, not the literal
+                // "null" (see stringOrNull in StreamProcessor).
+                val blocks = element.jsonObject["content"]?.jsonArray
+                val text = blocks?.mapNotNull { (it as? JsonObject)?.get("text")?.stringOrNull() }?.joinToString("")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: bodyText
+                val reasoning = blocks
+                    ?.mapNotNull { (it as? JsonObject)?.get("thinking")?.stringOrNull() }
+                    ?.joinToString("")
+                    ?.takeIf { it.isNotBlank() }
+                ChatResponse(text, reasoning)
+            } else if (isChatCompletion) {
+                val message = element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("message")?.jsonObject
+                val text = message?.get("content")?.stringOrNull()?.takeIf { it.isNotBlank() } ?: bodyText
+                // DeepSeek-R1 and OpenAI-compatible reasoning endpoints report
+                // the chain of thought in reasoning_content.
+                val reasoning = message?.get("reasoning_content")?.stringOrNull()?.takeIf { it.isNotBlank() }
+                ChatResponse(text, reasoning)
             } else {
-                element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("text")?.jsonPrimitive?.content ?: bodyText
+                ChatResponse(
+                    element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("text")?.stringOrNull() ?: bodyText
+                )
             }
         } catch (_: Exception) {
-            bodyText
+            ChatResponse(bodyText)
+        }
+    }
+
+    private suspend fun extractErrorMessage(response: HttpResponse): String {
+        return try {
+            val text = response.bodyAsText()
+            val element = json.parseToJsonElement(text)
+            val apiMessage = element.jsonObject["error"]?.jsonObject?.get("message")?.stringOrNull()
+            if (!apiMessage.isNullOrBlank()) {
+                "API error: $apiMessage"
+            } else if (text.isNotBlank()) {
+                "API error (${response.status.description}): ${text.take(200)}"
+            } else {
+                "API error: ${response.status.description}"
+            }
+        } catch (_: Exception) {
+            "API error: ${response.status.description}"
         }
     }
 
@@ -171,12 +245,19 @@ class ChatClient(private val httpClient: HttpClient) {
         apiKey: String,
         model: String,
         messages: List<ChatMessage>,
-        isChatCompletion: Boolean = true
-    ): Flow<String> = flow {
-        val endpoint = if (isChatCompletion) "$baseUrl/chat/completions" else "$baseUrl/completions"
+        isChatCompletion: Boolean = true,
+        params: GenerationParams = GenerationParams(),
+        provider: String? = null,
+        inferenceProvider: String? = null,
+        quantization: String? = null,
+        timeoutSeconds: Long = 0
+    ): Flow<StreamChunk> = flow {
+        val apiStyle = apiStyleForProvider(provider, baseUrl)
+        val endpoint = endpointFor(baseUrl, apiStyle, isChatCompletion)
         val hasImages = messages.any { it.images.isNotEmpty() }
+        val thinkingEnabled = params.thinkingBudgetTokens != null
 
-        var streamingSuccess = false
+        var streamResult = StreamResult.Empty
         var lastUsedIgnoreImages = false
         var fallbackToNonStreaming = false
 
@@ -184,17 +265,25 @@ class ChatClient(private val httpClient: HttpClient) {
             var failedWithImages = false
 
             httpClient.preparePost(endpoint) {
-                header(HttpHeaders.Authorization, "Bearer $apiKey")
+                putAuthHeaders(apiStyle, apiKey, thinkingEnabled = thinkingEnabled, model = model)
                 contentType(ContentType.Application.Json)
+                applySocketTimeout(timeoutSeconds)
                 setBody(buildJsonObject {
                     put("model", model)
                     put("stream", true)
-                    putChatMessages(isChatCompletion, messages, ignoreImages = false)
+                    if (apiStyle == ApiStyle.Anthropic) {
+                        putAnthropicMessages(messages)
+                        putAnthropicParams(params)
+                    } else {
+                        putChatMessages(isChatCompletion, messages, ignoreImages = false)
+                        putGenerationParams(params)
+                        putInferenceProvider(inferenceProvider, quantization)
+                    }
                 })
             }.execute { response ->
                 val contentType = response.contentType()
                 if (response.status != HttpStatusCode.OK) {
-                    if (hasImages && isChatCompletion) {
+                    if (hasImages && isChatCompletion && apiStyle != ApiStyle.Anthropic) {
                         failedWithImages = true
                     } else {
                         fallbackToNonStreaming = true
@@ -207,18 +296,21 @@ class ChatClient(private val httpClient: HttpClient) {
                     return@execute
                 }
 
-                streamingSuccess = processResponseStream(response, isChatCompletion)
+                streamResult = processResponseStream(response, apiStyle, isChatCompletion)
             }
 
-            if (failedWithImages && !streamingSuccess) {
+            if (failedWithImages && streamResult != StreamResult.Completed) {
                 lastUsedIgnoreImages = true
                 httpClient.preparePost(endpoint) {
-                    header(HttpHeaders.Authorization, "Bearer $apiKey")
+                    putAuthHeaders(apiStyle, apiKey, thinkingEnabled = thinkingEnabled, model = model)
                     contentType(ContentType.Application.Json)
+                    applySocketTimeout(timeoutSeconds)
                     setBody(buildJsonObject {
                         put("model", model)
                         put("stream", true)
                         putChatMessages(isChatCompletion, messages, ignoreImages = true)
+                        putGenerationParams(params)
+                        putInferenceProvider(inferenceProvider, quantization)
                     })
                 }.execute { response ->
                     val contentType = response.contentType()
@@ -227,68 +319,73 @@ class ChatClient(private val httpClient: HttpClient) {
                         return@execute
                     }
 
-                    streamingSuccess = processResponseStream(response, isChatCompletion)
+                    streamResult = processResponseStream(response, apiStyle, isChatCompletion)
                 }
             }
 
-            if (fallbackToNonStreaming && !streamingSuccess) {
+            if (fallbackToNonStreaming && streamResult != StreamResult.Completed) {
                 val nonStreamedResponse = sendChatRequest(
                     baseUrl = baseUrl, apiKey = apiKey, model = model,
                     messages = messages, isChatCompletion = isChatCompletion,
-                    ignoreImages = lastUsedIgnoreImages
+                    ignoreImages = lastUsedIgnoreImages, params = params, provider = provider,
+                    inferenceProvider = inferenceProvider, quantization = quantization, timeoutSeconds = timeoutSeconds
                 )
-                emit(nonStreamedResponse)
-                streamingSuccess = true
+                emit(StreamChunk(content = nonStreamedResponse.text))
+                if (!nonStreamedResponse.reasoningText.isNullOrBlank()) {
+                    emit(StreamChunk(reasoning = nonStreamedResponse.reasoningText))
+                }
+                streamResult = StreamResult.Completed
             }
 
+            // A 200 whose body carried no tokens and no [DONE]/message_stop
+            // (empty body, plain-text proxy response) would otherwise complete
+            // silently and the controller would delete the response
+            // placeholder with no error surfaced to the user.
+            if (streamResult == StreamResult.Empty) {
+                throw EmptyResponseException()
+            }
+            // A stream that delivered tokens but closed without a terminator
+            // (server crash, proxy FIN, load shedding) was truncated. The
+            // partial tokens were already emitted; the controller recovers the
+            // full response non-streaming and replaces the partial content.
+            if (streamResult == StreamResult.Truncated) {
+                throw StreamTruncatedException()
+            }
+
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: EmptyResponseException) {
+            // No retry: the request was answered, it just carried no content.
+            throw e
+        } catch (e: StreamTruncatedException) {
+            // No retry: a truncated stream was already recovered once; the
+            // partial response is surfaced with the truncation error.
+            throw e
+        } catch (e: ApiRequestException) {
+            // An API-level rejection (in-stream error event, non-200 from the
+            // fallback) must not be retried: the same rejection would repeat.
+            throw e
         } catch (e: Exception) {
-            if (!streamingSuccess) {
+            if (streamResult != StreamResult.Completed) {
                 try {
                     val nonStreamedResponse = sendChatRequest(
                         baseUrl = baseUrl, apiKey = apiKey, model = model,
                         messages = messages, isChatCompletion = isChatCompletion,
-                        ignoreImages = lastUsedIgnoreImages
+                        ignoreImages = lastUsedIgnoreImages, params = params, provider = provider,
+                        inferenceProvider = inferenceProvider, quantization = quantization, timeoutSeconds = timeoutSeconds
                     )
-                    emit(nonStreamedResponse)
+                    emit(StreamChunk(content = nonStreamedResponse.text))
+                    if (!nonStreamedResponse.reasoningText.isNullOrBlank()) {
+                        emit(StreamChunk(reasoning = nonStreamedResponse.reasoningText))
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
                 } catch (_: Exception) {
-                    emit("Error: ${e.message}")
+                    throw e
                 }
+            } else {
+                throw e
             }
         }
-    }
-
-    private suspend fun FlowCollector<String>.processResponseStream(
-        response: HttpResponse,
-        isChatCompletion: Boolean
-    ): Boolean {
-        var success = false
-        val channel: ByteReadChannel = response.bodyAsChannel()
-        while (!channel.isClosedForRead) {
-            currentCoroutineContext().ensureActive()
-            @Suppress("DEPRECATION")
-            val line = channel.readUTF8Line() ?: break
-            if (line.startsWith("data: ")) {
-                val data = line.substring(6)
-                if (data == "[DONE]") {
-                    success = true
-                    break
-                }
-
-                try {
-                    val json = Json { ignoreUnknownKeys = true }
-                    val element = json.parseToJsonElement(data)
-                    val content = if (isChatCompletion) {
-                        element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("delta")?.jsonObject?.get("content")?.jsonPrimitive?.content
-                    } else {
-                        element.jsonObject["choices"]?.jsonArray?.get(0)?.jsonObject?.get("text")?.jsonPrimitive?.content
-                    }
-                    if (content != null) {
-                        success = true
-                        emit(content)
-                    }
-                } catch (_: Exception) {}
-            }
-        }
-        return success
     }
 }

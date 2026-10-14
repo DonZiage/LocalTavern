@@ -1,10 +1,17 @@
 package chat.donzi.localtavern
 
+import android.Manifest
+import android.app.Activity
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Environment
+import android.provider.Settings
 import java.io.File
+import java.lang.ref.WeakReference
 import android.content.Intent
 import android.content.Context
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import android.media.MediaScannerConnection
 import androidx.core.net.toUri
@@ -14,6 +21,9 @@ import java.io.ByteArrayOutputStream
 
 object AndroidAppContext {
     private var applicationContext: Context? = null
+    // Weak so a finished Activity (rotation, back) is not retained: the
+    // reference is only used to launch permission prompts while alive.
+    private var currentActivityRef: WeakReference<Activity>? = null
 
     fun setContext(context: Context) {
         if (applicationContext == null) {
@@ -21,7 +31,16 @@ object AndroidAppContext {
         }
     }
 
+    fun setActivity(activity: Activity) {
+        currentActivityRef = WeakReference(activity)
+        // The window flag lives on the Activity's window: a recreated Activity
+        // (rotation, back navigation) loses it, so re-apply the desired state
+        // whenever the foreground Activity changes mid-operation.
+        applyKeepScreenOn()
+    }
+
     fun getContext(): Context? = applicationContext
+    fun getActivity(): Activity? = currentActivityRef?.get()
 }
 
 actual fun saveFile(fileName: String, bytes: ByteArray): String? {
@@ -31,16 +50,35 @@ actual fun saveFile(fileName: String, bytes: ByteArray): String? {
             val resolver = context.contentResolver
             val contentValues = android.content.ContentValues().apply {
                 put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                val mimeType = if (fileName.endsWith(".json", ignoreCase = true)) "application/json" else "image/png"
-                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mimeTypeFor(fileName))
                 put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/LocalTavern/ExportedCharacters")
             }
             val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues) ?: return null
-            resolver.openOutputStream(uri)?.use { outputStream ->
-                outputStream.write(bytes)
+            val outputStream = resolver.openOutputStream(uri)
+            if (outputStream == null) {
+                resolver.delete(uri, null, null)
+                return null
             }
+            outputStream.use { output -> output.write(bytes) }
             uri.toString()
         } else {
+            // Pre-Q the public Downloads directory needs the runtime permission;
+            // the manifest declaration alone is not enough. Request it here —
+            // the user retries the export once granted.
+            val permissionGranted = ContextCompat.checkSelfPermission(
+                context, Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!permissionGranted) {
+                AndroidAppContext.getActivity()?.let { activity ->
+                    ActivityCompat.requestPermissions(
+                        activity,
+                        arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                        REQUEST_CODE_WRITE_EXTERNAL_STORAGE
+                    )
+                }
+                return null
+            }
+
             val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             val exportDir = File(downloads, "LocalTavern/ExportedCharacters")
             if (!exportDir.exists()) exportDir.mkdirs()
@@ -57,11 +95,22 @@ actual fun saveFile(fileName: String, bytes: ByteArray): String? {
     }
 }
 
+private const val REQUEST_CODE_WRITE_EXTERNAL_STORAGE = 101
+
+private fun mimeTypeFor(fileName: String): String = when {
+    fileName.endsWith(".json", ignoreCase = true) -> "application/json"
+    fileName.endsWith(".zip", ignoreCase = true) -> "application/zip"
+    else -> "image/png"
+}
+
 actual fun openDirectory(path: String) {
     val context = AndroidAppContext.getContext() ?: return
 
-    val isJson = path.endsWith(".json", ignoreCase = true)
-    val mimeType = if (isJson) "application/json" else "image/png"
+    val mimeType = when {
+        path.startsWith("content://") ->
+            context.contentResolver.getType(path.toUri()) ?: mimeTypeFor(path)
+        else -> mimeTypeFor(path)
+    }
 
     if (path.startsWith("content://")) {
         try {
@@ -111,10 +160,23 @@ actual fun openDirectory(path: String) {
 
 actual fun convertToPng(bytes: ByteArray): ByteArray {
     return try {
-        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return bytes
-        val outputStream = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
-        outputStream.toByteArray()
+        // Decode bounds first and sample down so a huge photo is never
+        // materialized at full resolution just to be re-encoded as PNG.
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sampleSize = 1
+        while (bounds.outWidth / sampleSize > 2048 || bounds.outHeight / sampleSize > 2048) {
+            sampleSize *= 2
+        }
+        val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOptions) ?: return bytes
+        try {
+            val outputStream = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
+            outputStream.toByteArray()
+        } finally {
+            bitmap.recycle()
+        }
     } catch (e: Exception) {
         e.printStackTrace()
         bytes
@@ -122,3 +184,52 @@ actual fun convertToPng(bytes: ByteArray): ByteArray {
 }
 
 actual val isDesktop: Boolean = false
+
+actual val isAndroid: Boolean = true
+
+actual fun openDeviceSecuritySettings() {
+    val context = AndroidAppContext.getContext() ?: return
+    try {
+        context.startActivity(
+            Intent(Settings.ACTION_SECURITY_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        )
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+}
+
+actual fun appVersionName(): String {
+    val context = AndroidAppContext.getContext() ?: return "dev build"
+    return runCatching {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName
+    }.getOrNull() ?: "dev build"
+}
+
+actual fun appDatabasePath(): String {
+    val context = AndroidAppContext.getContext() ?: return ""
+    return runCatching { context.getDatabasePath("localtavern.db").absolutePath }
+        .getOrNull() ?: ""
+}
+
+// Desired screen-wake state (see setKeepScreenOn): kept so a recreated
+// Activity can re-apply the flag via AndroidAppContext.setActivity.
+private var lastKeepScreenOn = false
+
+private fun applyKeepScreenOn() {
+    val activity = AndroidAppContext.getActivity() ?: return
+    activity.runOnUiThread {
+        val window = activity.window ?: return@runOnUiThread
+        if (lastKeepScreenOn) {
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+}
+
+actual fun setKeepScreenOn(enabled: Boolean) {
+    lastKeepScreenOn = enabled
+    applyKeepScreenOn()
+}

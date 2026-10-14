@@ -1,0 +1,456 @@
+package chat.donzi.localtavern.data.sync
+
+import chat.donzi.localtavern.data.blob.BlobStore
+import chat.donzi.localtavern.utils.Hashing
+import dev.whyoleg.cryptography.random.CryptographyRandom
+import io.ktor.client.HttpClient
+import io.ktor.client.call.body
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.http.ContentType
+import io.ktor.http.contentLength
+import io.ktor.http.contentType
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.yield
+import kotlinx.serialization.json.Json
+
+// Out-of-band transfer of content-addressed image blobs between paired
+// devices. Rows carry only SHA-256 refs; the referenced bytes are pulled (or
+// served) over the authenticated /blob/fetch endpoint in 512 KB chunks, with
+// offset-based resume, strict reassembly-size checks and per-session
+// missing-ref memory. Progress is surfaced through SyncUiState.blobProgress.
+class SyncBlobTransfer(
+    private val crypto: SyncCrypto,
+    private val repository: SyncRepository,
+    private val state: MutableStateFlow<SyncUiState>,
+    private val identityProvider: () -> SyncIdentity,
+    private val httpClient: HttpClient,
+    private val blobStore: BlobStore?,
+    private val channelKeys: SyncChannelKeys,
+    private val noteActivity: () -> Unit
+) {
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    private val identity get() = identityProvider()
+
+    // Ref hashes that the peer at a given fetch address reported as not
+    // serving; they are not re-fetched from THAT address during this app
+    // session (they would only be re-reported missing). Keyed per address so
+    // one peer's failure can never poison fetches from another peer that
+    // holds the blob — a ref reported missing by a ref-only device (whose own
+    // fetch failed) is still fetched from a device that actually has it.
+    private val knownMissingRefs = mutableSetOf<String>()
+    private val knownMissingMutex = Mutex()
+
+    private suspend fun isRefKnownMissing(address: String, hash: String): Boolean =
+        knownMissingMutex.withLock { "$address|$hash" in knownMissingRefs }
+
+    private suspend fun rememberMissingRefs(address: String, refs: List<String>) {
+        knownMissingMutex.withLock {
+            refs.forEach { ref ->
+                if (knownMissingRefs.size >= MAX_KNOWN_MISSING_REFS) return@withLock
+                knownMissingRefs.add("$address|$ref")
+            }
+        }
+    }
+
+    // Upper bounds on a single ref fetch: a malicious peer could otherwise
+    // stream chunks forever or claim a gigantic blob. Legitimate message
+    // images are at most a few hundred KB; 128 chunks of 512 KB (64 MB) is an
+    // order of magnitude beyond any legitimately advertised ref.
+    private companion object {
+        const val MAX_CHUNKS_PER_REF = 128
+        const val MAX_FETCH_BYTES_PER_REF = 64L * 1024 * 1024
+        // Upper bound on the session memory of (address, ref) pairs reported
+        // missing: a hostile peer could otherwise keep growing the set
+        // forever by claiming ever-new refs.
+        const val MAX_KNOWN_MISSING_REFS = 4096
+        // Longest base64 chunk payload accepted BEFORE decoding: a hostile
+        // peer could otherwise send a gigabyte string whose decode alone
+        // exhausts memory (decodeBase64 materializes the whole output, and an
+        // OOM Error escapes the runCatching below).
+        const val MAX_CHUNK_B64_LENGTH = (CHUNK_BYTES * 4) / 3 + 64
+        // Refs served per fetchMissingBlobs call: one call drains a tractable
+        // prefix instead of an unbounded backlog, so a 20k-ref backlog cannot
+        // stall a sync round for hours — repeated calls (and rounds) converge
+        // on the full set while missing refs are remembered per address.
+        const val MAX_REFS_PER_CALL = 100
+    }
+
+    // One blob fetch at a time: every sync round launches a background fetch
+    // over the same missing set, and without serialization overlapping rounds
+    // pile up duplicate concurrent downloads of the same refs plus their
+    // reassembly buffers — exactly how a long sync exhausts a mobile heap
+    // mid-transfer. A queued fetch finds the store already populated and
+    // returns immediately. The mutex guards network I/O only; the only other
+    // lock taken inside (knownMissingMutex) is a leaf, so no cycle is possible.
+    private val fetchMutex = Mutex()
+
+    /**
+     * Pulls every [refs] blob this device does not yet have from [address]
+     * over the authenticated /blob/fetch endpoint, chunk by chunk, and stores
+     * the reassembled blobs in the local store. The protocol is stateless and
+     * strictly per-ref with offset addressing, so a dropped request is simply
+     * retried from the last acknowledged offset. Refs the peer cannot serve
+     * are remembered for the session and skipped in later syncs. Progress is
+     * surfaced through [SyncUiState.blobProgress].
+     */
+    suspend fun fetchMissingBlobs(peerId: String, address: String, refs: List<SyncImageRef>, peerPublicKey: ByteArray) {
+        val store = blobStore ?: return
+        // Refs arrive from the wire: only canonical SHA-256 hex keys are ever
+        // read or written, and the fetch address is format-validated so a
+        // hostile peer cannot point this device at arbitrary hosts (SSRF) or
+        // traverse the blob directory.
+        val validatedAddress = validateFetchAddress(address) ?: return
+        val host = validatedAddress.first
+        val port = validatedAddress.second
+        val fetchAddress = "$host:$port"
+        // Single-flight (see fetchMutex): re-check inside the lock, so a
+        // queued fetch sees what the previous one already stored. Each call
+        // drains a tractable prefix (see MAX_REFS_PER_CALL): an unbounded
+        // backlog converges across calls and rounds instead of stalling one
+        // call for hours.
+        fetchMutex.withLock {
+            val pending = refs
+                .filter { Hashing.isValidSha256Hex(it.sha256) }
+                .filter { store.read(it.sha256) == null && !isRefKnownMissing(fetchAddress, it.sha256) }
+                .take(MAX_REFS_PER_CALL)
+            if (pending.isEmpty()) return@withLock
+            fetchPending(peerId, fetchAddress, host, port, pending, peerPublicKey, store)
+        }
+    }
+
+    private suspend fun fetchPending(
+        peerId: String,
+        fetchAddress: String,
+        host: String,
+        port: Int,
+        pending: List<SyncImageRef>,
+        peerPublicKey: ByteArray,
+        store: BlobStore
+    ) {
+
+        val totalBytes = pending.sumOf { it.size }
+        var doneBytes = 0L
+        noteActivity()
+        state.update { it.copy(blobProgress = BlobTransferProgress(doneBytes, totalBytes)) }
+        try {
+            var refIndex = 0
+            while (refIndex < pending.size) {
+                // Cancellation checkpoint per ref: a cancelled sync must stop
+                // pulling blobs instead of draining the whole queue after the
+                // UI already reported "cancelled". Missing refs simply heal
+                // on the next sync.
+                currentCoroutineContext().ensureActive()
+                if (refIndex > 0) yield()
+                val ref = pending[refIndex]
+                // Resume-safe accumulation: chunks for the current ref are
+                // reassembled from the first byte.
+                val builder = ArrayList<ByteArray>()
+                var offset = 0
+                var finalSize = 0
+                var chunkCount = 0
+                var refComplete = false
+                var refSkipped = false
+                var abortAll = false
+                while (!refComplete && !abortAll) {
+                    // Per-chunk cancellation checkpoint (see the per-ref one
+                    // above): stop promptly instead of pulling a 64 MB ref to
+                    // completion after a cancel.
+                    currentCoroutineContext().ensureActive()
+                    noteActivity()
+                    val exchangeId = freshExchangeId()
+                    // Each request addresses exactly the ref it serves
+                    // (refIndex 0 into a one-element list): sending the whole
+                    // pending list on every chunk of every ref is O(N x
+                    // chunks) traffic that stalls sync on large backlogs and
+                    // pins the list on a mobile heap. The server is strictly
+                    // per-ref, so a one-element window is a complete request.
+                    val request = encodeBlobRequest(BlobFetchPayload(
+                        refs = listOf(ref.sha256),
+                        refIndex = 0,
+                        offset = offset
+                    ))
+                    val channelKey = channelKeys.outboundChannelKey(peerPublicKey)
+                    val aad = aad(from = identity.deviceId, to = peerId, exchangeId = exchangeId)
+                    val payload = encodeBase64(crypto.encrypt(channelKey.key, aad, request))
+                    val httpResponse = httpClient.post("http://$host:$port/blob/fetch") {
+                        contentType(ContentType.Application.Json)
+                        setBody(
+                            BlobFetchRequest(
+                                fromDeviceId = identity.deviceId,
+                                exchangeId = exchangeId,
+                                payload = payload,
+                                ephemeralPublicKey = encodeBase64(channelKey.ephemeralPublicKey)
+                            )
+                        )
+                    }
+                    // Chunk responses are small by construction; a body without
+                    // a declared length (chunked) is streamed with a hard cap
+                    // instead of being buffered blindly (see readCappedBytes).
+                    val responseLength = httpResponse.contentLength()
+                    if (responseLength != null && responseLength > MAX_SYNC_BODY_BYTES) {
+                        abortAll = true
+                        break
+                    }
+                    val response: BlobFetchResponse = if (responseLength != null) {
+                        httpResponse.body()
+                    } else {
+                        try {
+                            decodeBlobFetchResponse(httpResponse.readCappedBytes(MAX_SYNC_BODY_BYTES))
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            abortAll = true
+                            break
+                        }
+                    }
+                    if (!response.ok) {
+                        // The peer refused the fetch; abandon the remaining refs.
+                        abortAll = true
+                        break
+                    }
+                    if (response.exchangeId != exchangeId) {
+                        // A response from a different exchange context: never
+                        // trust it (protects against response swapping).
+                        abortAll = true
+                        break
+                    }
+
+                    val resultPayload = response.payload ?: run {
+                        abortAll = true
+                        break
+                    }
+                    val peerEphemeral = runCatching { decodeBase64(response.ephemeralPublicKey) }.getOrNull()
+                    if (peerEphemeral == null || peerEphemeral.size != 32) {
+                        abortAll = true
+                        break
+                    }
+                    val responseKey = channelKeys.inboundChannelKey(peerPublicKey, peerEphemeral)
+                    val result = decodeBlobResult(
+                        crypto.decrypt(responseKey, aad(from = peerId, to = identity.deviceId, exchangeId = exchangeId), decodeBase64(resultPayload))
+                    )
+                    if (result.refIndex != 0) {
+                        // Protocol drift: never loop on an unexpected index.
+                        abortAll = true
+                        break
+                    }
+                    if (result.missing.isNotEmpty()) {
+                        rememberMissingRefs(fetchAddress, result.missing)
+                        doneBytes += ref.size
+                        refIndex++
+                        refComplete = true
+                        state.update { it.copy(blobProgress = BlobTransferProgress(doneBytes, totalBytes)) }
+                        continue
+                    }
+                    if (result.data.isNotEmpty()) {
+                        // Length-guard the base64 BEFORE decoding (see
+                        // MAX_CHUNK_B64_LENGTH): decodeBase64 materializes the
+                        // whole output, so an oversized string alone would
+                        // exhaust memory before the chunk-size check below.
+                        if (result.data.length > MAX_CHUNK_B64_LENGTH) {
+                            abortAll = true
+                            break
+                        }
+                        // Chunks are addressed by fixed offsets, so a chunk
+                        // larger than CHUNK_BYTES (or of unexpected size) is a
+                        // protocol violation: a peer on a different chunk size
+                        // would silently shift every subsequent offset. Refuse
+                        // the transfer instead of reassembling garbage.
+                        val chunk = runCatching { decodeBase64(result.data) }.getOrNull()
+                        if (chunk == null || chunk.size > CHUNK_BYTES) {
+                            abortAll = true
+                            break
+                        }
+                        builder.add(chunk)
+                        finalSize = result.total
+                        chunkCount++
+                        if (finalSize.toLong() > MAX_FETCH_BYTES_PER_REF) {
+                            // The blob is larger than the protocol bound: skip
+                            // just this ref so one oversized file cannot starve
+                            // the remaining refs of the batch.
+                            refSkipped = true
+                            break
+                        }
+                    } else if (!result.hasMore) {
+                        // Empty blob or offset past the end: nothing to store.
+                        // One bad ref must not abandon the rest of the batch.
+                        refSkipped = true
+                        break
+                    } else {
+                        // Empty data claiming more chunks: a protocol violation.
+                        // A well-behaved peer either sends bytes or reports the
+                        // ref done/missing (see handleBlobFetch: offset past the
+                        // end yields data="" with hasMore=false), so an empty
+                        // chunk with hasMore=true could never terminate — it is
+                        // exactly how a buggy or hostile peer would drive this
+                        // loop forever. Skip the ref instead of looping.
+                        refSkipped = true
+                        break
+                    }
+                    offset += CHUNK_BYTES
+                    doneBytes += minOf(CHUNK_BYTES.toLong(), (finalSize - (offset - CHUNK_BYTES)).coerceAtLeast(0).toLong())
+                    state.update { it.copy(blobProgress = BlobTransferProgress(doneBytes, totalBytes)) }
+                    // Bounds against a hostile responder: the reassembly must
+                    // never exceed the advertised size (plus one chunk of
+                    // slack), the per-ref chunk count, or the absolute cap. An
+                    // over-limit ref is skipped; the rest of the batch still
+                    // transfers.
+                    val assembled = builder.sumOf { it.size }
+                    val allowedSize = maxOf(ref.size, finalSize.toLong())
+                    if (chunkCount > MAX_CHUNKS_PER_REF ||
+                        assembled > allowedSize + CHUNK_BYTES ||
+                        assembled > MAX_FETCH_BYTES_PER_REF
+                    ) {
+                        refSkipped = true
+                        break
+                    }
+                    if (!result.hasMore) {
+                        // Ref complete: store the reassembled blob — only when
+                        // the reassembly exactly matches the advertised total
+                        // AND its content hash matches the ref. Content
+                        // addressing is only trustworthy when the address is
+                        // verified: without the hash check a malicious (or
+                        // buggy) peer could poison the store, and the garbage
+                        // would then propagate to every other device that
+                        // fetches (or is served) the same ref.
+                        val combined = ByteArray(builder.sumOf { it.size })
+                        var pos = 0
+                        builder.forEach { part -> part.copyInto(combined, pos); pos += part.size }
+                        val hashMatches = Hashing.sha256Hex(combined) == ref.sha256
+                        if (hashMatches && combined.size == finalSize && store.read(ref.sha256) == null) store.write(ref.sha256, combined)
+                        refIndex++
+                        refComplete = true
+                    }
+                }
+                if (abortAll) break
+                if (refSkipped) {
+                    // The ref could not be transferred (too large, empty, or
+                    // the peer lied about it): move on to the next ref. It is
+                    // NOT remembered as missing — a later sync re-attempts it.
+                    doneBytes += ref.size
+                    refIndex++
+                    refComplete = true
+                    state.update { it.copy(blobProgress = BlobTransferProgress(doneBytes, totalBytes)) }
+                }
+            }
+        } finally {
+            state.update { it.copy(blobProgress = null) }
+        }
+    }
+
+    // Server side of /blob/fetch: serves one chunk of the addressed ref to a
+    // paired device, or reports the ref as missing. Stateless and strictly
+    // per-ref: the chunk is served at exactly (refIndex, offset); the client
+    // advances to the next ref itself.
+    suspend fun handleBlobFetch(fromDeviceId: String, encryptedPayload: String, requestEphemeralKey: String, exchangeId: String): BlobFetchResponse {
+        try {
+            if (exchangeId.isBlank()) {
+                return BlobFetchResponse(ok = false, message = "Missing exchange id.")
+            }
+            if (!isValidDeviceId(fromDeviceId)) {
+                // deviceIds are embedded (unescaped) in the AEAD associated
+                // data; reject anything outside the generated alphabet.
+                return BlobFetchResponse(ok = false, message = "Invalid device id.")
+            }
+            val peer = repository.getPeer(fromDeviceId)
+                ?: return BlobFetchResponse(ok = false, message = "Not paired.")
+            // Only validated traffic counts as activity (VULN-014): garbage
+            // from unauthenticated sources must not defeat the idle watchdog.
+            noteActivity()
+            val peerKey = peer.publicKey
+                ?: return BlobFetchResponse(ok = false, message = "Peer has no key.")
+            val peerEphemeral = runCatching { decodeBase64(requestEphemeralKey) }.getOrNull()
+            if (peerEphemeral == null || peerEphemeral.size != 32) {
+                return BlobFetchResponse(ok = false, message = "Invalid ephemeral key.")
+            }
+            val channelKey = channelKeys.inboundChannelKey(peerKey, peerEphemeral)
+            val payload = decodeBlobRequest(
+                crypto.decrypt(channelKey, aad(from = fromDeviceId, to = identity.deviceId, exchangeId = exchangeId), decodeBase64(encryptedPayload))
+            )
+
+            val store = blobStore
+            val result = if (store == null || payload.refIndex !in payload.refs.indices) {
+                BlobFetchResult(
+                    refIndex = payload.refIndex,
+                    offset = payload.offset,
+                    total = 0,
+                    data = "",
+                    hasMore = false,
+                    missing = payload.refs.getOrNull(payload.refIndex)?.let { listOf(it) } ?: emptyList()
+                )
+            } else {
+                val hash = payload.refs[payload.refIndex]
+                val bytes = if (Hashing.isValidSha256Hex(hash)) store.read(hash) else null
+                if (bytes == null) {
+                    BlobFetchResult(
+                        refIndex = payload.refIndex,
+                        offset = payload.offset,
+                        total = 0,
+                        data = "",
+                        hasMore = false,
+                        missing = listOf(hash)
+                    )
+                } else {
+                    val chunk = if (payload.offset < bytes.size) {
+                        bytes.copyOfRange(payload.offset, minOf(payload.offset + CHUNK_BYTES, bytes.size))
+                    } else {
+                        ByteArray(0)
+                    }
+                    BlobFetchResult(
+                        refIndex = payload.refIndex,
+                        offset = payload.offset,
+                        total = bytes.size,
+                        data = encodeBase64(chunk),
+                        hasMore = payload.offset + chunk.size < bytes.size
+                    )
+                }
+            }
+
+            val outbound = channelKeys.outboundChannelKey(peerKey)
+            val responsePayload = encodeBase64(
+                crypto.encrypt(outbound.key, aad(from = identity.deviceId, to = fromDeviceId, exchangeId = exchangeId), encodeBlobResult(result))
+            )
+            return BlobFetchResponse(ok = true, exchangeId = exchangeId, payload = responsePayload, ephemeralPublicKey = encodeBase64(outbound.ephemeralPublicKey))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // Same contract as the /exchange handler: the server side must
+            // never throw — every failure is a clean refusal.
+            return BlobFetchResponse(ok = false, message = e.message ?: "Blob fetch failed.")
+        }
+    }
+
+
+    private fun encodeBlobRequest(payload: BlobFetchPayload): ByteArray =
+        json.encodeToString(BlobFetchPayload.serializer(), payload).encodeToByteArray()
+
+    private fun decodeBlobRequest(bytes: ByteArray): BlobFetchPayload =
+        json.decodeFromString(BlobFetchPayload.serializer(), bytes.decodeToString())
+
+    private fun encodeBlobResult(result: BlobFetchResult): ByteArray =
+        json.encodeToString(BlobFetchResult.serializer(), result).encodeToByteArray()
+
+    private fun decodeBlobResult(bytes: ByteArray): BlobFetchResult =
+        json.decodeFromString(BlobFetchResult.serializer(), bytes.decodeToString())
+
+    private fun decodeBlobFetchResponse(bytes: ByteArray): BlobFetchResponse =
+        json.decodeFromString(BlobFetchResponse.serializer(), bytes.decodeToString())
+}
+
+// Fresh random identifier binding one request to its response: it rides
+// OUTSIDE the ciphertext (both peers need it before decrypting) and inside
+// the AEAD associated data, so a captured request cannot be replayed against
+// a different exchange context, and a response can be verified as belonging
+// to the request it answers.
+internal fun freshExchangeId(): String {
+    val bytes = ByteArray(16)
+    CryptographyRandom.Default.nextBytes(bytes)
+    return encodeBase64(bytes).replace("+", "a").replace("/", "b").replace("=", "").take(22)
+}

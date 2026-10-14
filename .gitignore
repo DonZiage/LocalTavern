@@ -9,7 +9,18 @@ build/
 */build/
 .kotlin/
 bin/
+*.jar
 !gradle-wrapper.jar
+
+# --- Local Databases (defensive; app data lives outside the repo) ---
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+localtavern.db*
+# LocalTavern app data directory (defensive; normally in $HOME)
+.localtavern/
 
 # --- Kotlin Multiplatform / Native ---
 .konan/
@@ -17,6 +28,7 @@ kotlin-native-macos*/
 kotlin-native-linux*/
 kotlin-native-windows*/
 *.klib
+*.kotlin_module
 # Linked frameworks for iOS
 *.framework/
 
@@ -48,6 +60,8 @@ proguard/
 /iosApp/Pods.txt
 /iosApp/Podfile.lock
 /iosApp/.xcresult/
+/iosApp/*.xccheckout
+.swiftpm/
 
 # --- Web Specific (Compose HTML/Wasm) ---
 node_modules/
@@ -69,6 +83,9 @@ yarn-error.log*
 out/
 .navigation/
 # !.idea/runConfigurations/
+
+# --- IDEs: JetBrains Fleet ---
+.fleet/
 
 # --- IDEs: Visual Studio Code ---
 .vscode/
@@ -101,3 +118,14 @@ desktop.ini
 *.log
 hs_err_pid*
 replay_pid*
+*.jfr
+
+# --- Editor Backups & Merge Artifacts ---
+*~
+*.swp
+*.swo
+*.orig
+*.rej
+*.bak
+AGENTS.md
+VULNERABILITIES.md

@@ -1,119 +1,227 @@
 package chat.donzi.localtavern.ui
+import chat.donzi.localtavern.ui.layout.MainScreenDependencies
+import chat.donzi.localtavern.ui.layout.MainScreen
+import chat.donzi.localtavern.ui.layout.ActiveDrawer
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import chat.donzi.localtavern.data.database.ChatRepository
-import chat.donzi.localtavern.data.database.CharacterEntity
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.dp
+import chat.donzi.localtavern.controller.AppContainer
 import chat.donzi.localtavern.data.database.DriverFactory
-import chat.donzi.localtavern.data.database.LocalTavernDB
-import chat.donzi.localtavern.data.database.PersonaEntity
-import chat.donzi.localtavern.data.network.ChatClient
-import chat.donzi.localtavern.ui.components.ActiveDrawer
+import chat.donzi.localtavern.isDesktop
 import chat.donzi.localtavern.ui.theme.LocalTavernTheme
 import chat.donzi.localtavern.ui.theme.ThemeTransition
-import io.ktor.client.*
-import io.ktor.client.plugins.contentnegotiation.*
-import io.ktor.serialization.kotlinx.json.*
-import kotlinx.coroutines.launch
-import kotlinx.serialization.json.Json
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.TimeSource
+import kotlinx.coroutines.delay
 
 @Composable
 fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
-    val database = remember { LocalTavernDB(driverFactory.createDriver()) }
-    val chatRepository = remember { ChatRepository(database) }
-    val coroutineScope = rememberCoroutineScope()
-
-    val httpClient = remember {
-        HttpClient {
-            install(ContentNegotiation) {
-                json(Json {
-                    ignoreUnknownKeys = true
-                    isLenient = true
-                })
-            }
-        }
-    }
-    val chatClient = remember { ChatClient(httpClient) }
-
-    var characters by remember { mutableStateOf(emptyList<CharacterEntity>()) }
-    var activePersonaId by remember { mutableStateOf<String?>(null) }
-    var personas by remember { mutableStateOf(emptyList<PersonaEntity>()) }
-
-    val systemDark = isSystemInDarkTheme()
-    var isDarkMode by remember { mutableStateOf(systemDark) }
-    var isInitialized by remember { mutableStateOf(false) }
-
-    var activeDrawer by remember { mutableStateOf(ActiveDrawer.None) }
-
-    fun refreshData() {
-        coroutineScope.launch {
-            var currentPersonas = chatRepository.getAllPersonas()
-            if (currentPersonas.isEmpty()) {
-                chatRepository.insertPersona("User", "", null)
-                currentPersonas = chatRepository.getAllPersonas()
-            }
-            personas = currentPersonas
-
-            val settings = chatRepository.getAppSettings()
-            var pId = settings.activePersonaId
-            if (pId == null && personas.isNotEmpty()) {
-                pId = personas.first().id
-                chatRepository.updateActivePersonaId(pId)
-            }
-            activePersonaId = pId
-
-            characters = chatRepository.getAllCharacters()
-
-            isDarkMode = settings.isDarkMode != 0L
-            isInitialized = true
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        refreshData()
-    }
-
-    if (!isInitialized) {
-        SideEffect {
-            onThemeChanged(isDarkMode)
-        }
-        LocalTavernTheme(darkTheme = isDarkMode) {
+    val systemDarkEarly = isSystemInDarkTheme()
+    // Container construction opens the database: any failure here must
+    // surface as a retryable screen, never as a crash during composition —
+    // otherwise one bad launch becomes every launch.
+    var containerAttempt by remember { mutableStateOf(0) }
+    val containerResult = remember(containerAttempt) { runCatching { AppContainer(driverFactory) } }
+    val container = containerResult.getOrNull()
+    if (container == null) {
+        LocalTavernTheme(darkTheme = systemDarkEarly) {
             Surface(
                 modifier = Modifier.fillMaxSize(),
                 color = MaterialTheme.colorScheme.background
             ) {
-                Box(
+                FatalInitScreen(
+                    message = containerResult.exceptionOrNull()?.message
+                        ?: "Failed to start the app.",
+                    onRetry = { containerAttempt++ }
+                )
+            }
+        }
+        return
+    }
+    DisposableEffect(container) {
+        onDispose {
+            container.close()
+        }
+    }
+    val appState = container.appState
+    val chatController = container.chatController
+
+    val characters by appState.characters.collectAsState()
+    val personas by appState.personas.collectAsState()
+    val activePersonaId by appState.activePersonaId.collectAsState()
+    val darkModeFromDb by appState.isDarkMode.collectAsState()
+    val sendWithCtrlEnter by appState.sendWithCtrlEnter.collectAsState()
+    val autoSyncOnLaunch by appState.autoSyncOnLaunch.collectAsState()
+    val confirmBeforeDelete by appState.confirmBeforeDelete.collectAsState()
+    val isInitialized by appState.isInitialized.collectAsState()
+    val initError by appState.initError.collectAsState()
+    // Sync bootstraps in the background (identity load/keygen); the main
+    // screen must not be shown until it is ready, since MainScreen consumes
+    // the sync components directly. The sync server and discovery do NOT
+    // start here — they only run once the user engages with sync.
+    val syncReady by container.syncReady.collectAsState()
+    val syncError by container.syncError.collectAsState()
+
+    val systemDark = isSystemInDarkTheme()
+    var activeDrawer by remember { mutableStateOf(ActiveDrawer.None) }
+
+    // Unlock gate: rendered BEFORE the loading spinner and the main screen.
+    // Desktop: API keys are plaintext until the passphrase is set, so the
+    // setup step is obligatory. Mobile: the device's own unlock method
+    // (PIN/password/fingerprint) is asked for via the OS prompt; devices
+    // without any unlock method open directly (a one-time recommendation
+    // dialog is shown over the main UI instead).
+    val secretGate = remember {
+        SecretGateState(
+            apiKeyCipher = container.apiKeyCipher,
+            userAuthenticator = container.userAuthenticator,
+            onProtected = { container.apiSettingsRepository.reencryptAllApiKeys() }
+        )
+    }
+
+    when {
+        secretGate.mode != SecretGateMode.Open -> {
+            LocalTavernTheme(darkTheme = systemDark) {
+                Surface(
                     modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
+                    color = MaterialTheme.colorScheme.background
                 ) {
-                    CircularProgressIndicator(
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    SecretGate(secretGate)
                 }
             }
         }
-    } else {
-        ThemeTransition(
-            initialThemeIsDark = isDarkMode,
-            onThemeSaved = { darkMode ->
-                coroutineScope.launch {
-                    chatRepository.updateDarkMode(darkMode)
+        !isInitialized || !syncReady -> {
+        LocalTavernTheme(darkTheme = systemDark) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background
+            ) {
+                val initError = initError ?: syncError
+                if (initError != null) {
+                    // Surface initialization failures instead of spinning
+                    // forever with no explanation.
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Text(
+                                text = initError,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(horizontal = 32.dp)
+                            )
+                            Button(onClick = {
+                                appState.retry()
+                                container.retrySyncBootstrap()
+                            }) {
+                                Text("Retry")
+                            }
+                        }
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
             }
+        }
+        } else -> {
+        // Idle auto-lock (desktop): after autoLockIdleMinutes of inactivity
+        // the derived passphrase key is forgotten and the unlock gate
+        // reappears. Activity = any pointer event or key press anywhere in
+        // the app. 0 disables auto-lock.
+        val autoLockMinutes by appState.autoLockIdleMinutes.collectAsState()
+        var lastActivity by remember {
+            mutableStateOf(TimeSource.Monotonic.markNow())
+        }
+        // Mobile first-launch screen-lock recommendation: only when the
+        // device has no unlock method and the dialog has not been dismissed
+        // yet. Checked here (after init) so the persisted flag is already
+        // loaded and returning users never see it flash.
+        val lockRecommendationShown by appState.lockRecommendationShown.collectAsState()
+        if (!isDesktop && !container.userAuthenticator.isLockConfigured && !lockRecommendationShown) {
+            DeviceLockRecommendationDialog(
+                onContinue = { appState.setLockRecommendationShown() }
+            )
+        }
+        LaunchedEffect(secretGate.mode, autoLockMinutes) {
+            if (secretGate.mode == SecretGateMode.Open && autoLockMinutes > 0) {
+                while (true) {
+                    delay(30_000)
+                    val idle = TimeSource.Monotonic.markNow() - lastActivity
+                    if (idle >= autoLockMinutes.minutes) {
+                        secretGate.lock()
+                        break
+                    }
+                }
+            }
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            awaitPointerEvent()
+                            lastActivity = TimeSource.Monotonic.markNow()
+                        }
+                    }
+                }
+                .onPreviewKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown) {
+                        lastActivity = TimeSource.Monotonic.markNow()
+                    }
+                    false
+                }
+        ) {
+        ThemeTransition(
+            initialThemeIsDark = darkModeFromDb,
+            onThemeSaved = { darkMode ->
+                appState.setDarkMode(darkMode)
+            }
         ) { syncedDarkTheme, triggerTransition ->
-            SideEffect {
+            LaunchedEffect(syncedDarkTheme) {
                 onThemeChanged(syncedDarkTheme)
             }
             MainScreen(
-                chatRepository = chatRepository,
-                chatClient = chatClient,
+                deps = MainScreenDependencies(
+                    chatController = chatController,
+                    characterRepository = container.characterRepository,
+                    sessionRepository = container.sessionRepository,
+                    messageRepository = container.messageRepository,
+                    apiSettingsRepository = container.apiSettingsRepository,
+                    apiKeyCipher = container.apiKeyCipher,
+                    syncService = container.syncService,
+                    syncRepository = container.syncRepository,
+                    syncDiscovery = container.syncDiscovery,
+                    chatClient = container.chatClient,
+                    onEnsureSyncRunning = container::ensureSyncRunning
+                ),
                 characters = characters,
                 personas = personas,
                 activePersonaId = activePersonaId,
@@ -121,52 +229,65 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
                 onToggleDarkMode = { _, centerOffset ->
                     triggerTransition(centerOffset)
                 },
+                autoSyncOnLaunch = autoSyncOnLaunch,
+                onAutoSyncOnLaunchChange = { appState.setAutoSyncOnLaunch(it) },
+                sendWithCtrlEnter = sendWithCtrlEnter,
+                onSendWithCtrlEnterChange = { appState.setSendWithCtrlEnter(it) },
+                confirmBeforeDelete = confirmBeforeDelete,
+                onConfirmBeforeDeleteChange = { appState.setConfirmBeforeDelete(it) },
+                autoLockIdleMinutes = autoLockMinutes,
+                onAutoLockIdleMinutesChange = { appState.setAutoLockIdleMinutes(it) },
                 activeDrawer = activeDrawer,
                 onActiveDrawerChange = { activeDrawer = it },
-                refreshData = ::refreshData,
                 onPersonaSelect = { personaId ->
-                    coroutineScope.launch {
-                        chatRepository.updateActivePersonaId(personaId)
-                        refreshData()
-                    }
+                    appState.setActivePersona(personaId)
                 },
                 onPersonaAdd = { name, desc, avatar ->
-                    coroutineScope.launch {
-                        chatRepository.insertPersona(name, desc, avatar)
-                        refreshData()
-                    }
+                    appState.addPersona(name, desc, avatar)
                 },
                 onPersonaUpdate = { id, name, desc, avatar ->
-                    coroutineScope.launch {
-                        chatRepository.updatePersona(id, name, desc, avatar)
-                        refreshData()
-                    }
+                    appState.updatePersona(id, name, desc, avatar)
                 },
                 onPersonaDelete = { personaId ->
-                    coroutineScope.launch {
-                        chatRepository.deletePersona(personaId)
-                        refreshData()
-                    }
+                    appState.deletePersona(personaId)
                 },
                 onCharactersDelete = { ids ->
-                    coroutineScope.launch {
-                        chatRepository.deleteCharacters(ids)
-                        refreshData()
-                    }
+                    appState.deleteCharacters(ids)
                 },
-                onCharacterImport = { card, avatar ->
-                    coroutineScope.launch {
-                        chatRepository.upsertCharacter(card, avatar)
-                        refreshData()
-                    }
+                onCharacterImport = { files ->
+                    appState.importPickedFiles(files)
                 },
                 onCharacterCreate = { name ->
-                    coroutineScope.launch {
-                        chatRepository.createCharacter(name)
-                        refreshData()
-                    }
+                    appState.createCharacter(name)
                 }
             )
+        }
+        }
+        }
+    }
+}
+
+// Last-resort screen when the app container itself cannot be built
+// (database unusable even after recovery). Retry rebuilds the container;
+// nothing here touches the database, so this screen cannot fail the same way.
+@Composable
+private fun FatalInitScreen(message: String, onRetry: () -> Unit) {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                text = message,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 32.dp)
+            )
+            Button(onClick = onRetry) {
+                Text("Retry")
+            }
         }
     }
 }

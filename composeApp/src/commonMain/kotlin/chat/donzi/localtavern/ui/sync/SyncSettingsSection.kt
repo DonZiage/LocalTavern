@@ -1,0 +1,457 @@
+package chat.donzi.localtavern.ui.sync
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import chat.donzi.localtavern.data.database.ConflictEvent
+import chat.donzi.localtavern.data.database.SyncPeer
+import chat.donzi.localtavern.data.sync.SyncDiscovery
+import chat.donzi.localtavern.data.sync.SyncProgress
+import chat.donzi.localtavern.data.sync.SyncRepository
+import chat.donzi.localtavern.data.sync.SyncService
+import chat.donzi.localtavern.utils.KeepScreenOn
+import kotlinx.coroutines.launch
+import kotlin.time.Clock
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SyncSettingsSection(
+    syncService: SyncService,
+    syncRepository: SyncRepository,
+    syncDiscovery: SyncDiscovery,
+    onEnsureSyncRunning: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val syncState by syncService.state.collectAsState()
+    val peers by syncService.observePeers().collectAsState(initial = emptyList())
+    val conflicts by syncService.observeConflicts().collectAsState(initial = emptyList())
+    val deviceName by syncService.deviceName.collectAsState()
+
+    var showSyncDialog by remember { mutableStateOf(false) }
+    var showRotateDialog by remember { mutableStateOf(false) }
+    var peerPendingRemoval by remember { mutableStateOf<SyncPeer?>(null) }
+
+    // A big sync runs for minutes: keep the screen on so the OS power
+    // optimizations cannot sleep or freeze the app mid-transfer.
+    KeepScreenOn(syncState.isSyncing || syncState.syncProgress != null)
+
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = "This device: $deviceName",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = "ID ${syncService.identity.deviceId}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Button(
+            onClick = {
+                onEnsureSyncRunning()
+                showSyncDialog = true
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(if (peers.isEmpty()) "Pair new device" else "Pair another device")
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        if (peers.isNotEmpty()) {
+            Text("Paired Devices", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(modifier = Modifier.height(6.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                peers.forEach { peer ->
+                    PeerRow(
+                        peer = peer,
+                        isSyncing = syncState.isSyncing,
+                        onSync = {
+                            onEnsureSyncRunning()
+                            syncService.syncNowAsync(peer.deviceId)
+                        },
+                        onRemove = { peerPendingRemoval = peer }
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            OutlinedButton(
+                onClick = {
+                    onEnsureSyncRunning()
+                    syncService.syncAllPeersAsync()
+                },
+                enabled = !syncState.isSyncing,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (syncState.isSyncing) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+                Text(if (syncState.isSyncing) "Syncing…" else "Sync All")
+            }
+            // Cancelling is always resume-safe (cursors advance only after a
+            // committed apply), so offer it prominently while a sync runs.
+            if (syncState.isSyncing || syncState.syncProgress != null) {
+                TextButton(
+                    onClick = { syncService.cancelSync() },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Cancel sync") }
+            }
+        }
+
+        syncState.blobProgress?.let { progress ->
+            Spacer(modifier = Modifier.height(8.dp))
+            LinearProgressIndicator(
+                progress = { if (progress.totalBytes > 0L) progress.doneBytes.toFloat() / progress.totalBytes.toFloat() else 0f },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Syncing images… ${formatBytes(progress.doneBytes)} / ${formatBytes(progress.totalBytes)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        // Live delta-sync progress: visible on every sync, determinate while
+        // a batch is being applied, with a Cancel that resumes safely.
+        syncState.syncProgress?.let { progress ->
+            Spacer(modifier = Modifier.height(8.dp))
+            SyncProgressCard(
+                progress = progress,
+                peerName = syncState.syncPeerId?.let { id -> peers.firstOrNull { it.deviceId == id }?.name },
+                onCancel = { syncService.cancelSync() }
+            )
+        }
+
+        if (conflicts.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(12.dp))
+            ConflictsResolvedCard(
+                conflicts = conflicts,
+                peerNames = peers.associate { it.deviceId to it.name },
+                onDismiss = { ids -> scope.launch { syncService.dismissConflicts(ids) } },
+                onDismissAll = { scope.launch { syncService.dismissAllConflicts() } }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+        Text("Sync Key", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            text = "Invalidates all pairings — re-pair every device afterwards.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 2.dp)
+        )
+        OutlinedButton(
+            onClick = { showRotateDialog = true },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Default.Key, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Rotate Sync Key…")
+        }
+
+        syncState.statusMessage?.let { message ->
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        syncState.syncError?.let { message ->
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+    }
+
+    if (showSyncDialog) {
+        SyncFlowDialog(
+            syncService = syncService,
+            syncDiscovery = syncDiscovery,
+            onDismiss = { showSyncDialog = false }
+        )
+    }
+
+    if (showRotateDialog) {
+        RotateKeyDialog(
+            syncService = syncService,
+            onDismiss = { showRotateDialog = false }
+        )
+    }
+
+    peerPendingRemoval?.let { peer ->
+        AlertDialog(
+            onDismissRequest = { peerPendingRemoval = null },
+            title = { Text("Remove ${peer.name}?") },
+            text = {
+                Text(
+                    "This device will no longer sync. You will need to pair again to reconnect it.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch { syncRepository.deletePeer(peer.deviceId) }
+                        peerPendingRemoval = null
+                    }
+                ) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { peerPendingRemoval = null }) { Text("Cancel") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun SyncProgressCard(
+    progress: SyncProgress,
+    peerName: String?,
+    onCancel: () -> Unit
+) {
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = buildString {
+                            append(progress.phase)
+                            if (peerName != null) {
+                                append(" · ")
+                                append(peerName)
+                            }
+                        },
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Text(
+                        text = buildString {
+                            append("Round ${progress.round}")
+                            append(" · sent ${progress.sentRows} · received ${progress.receivedRows}")
+                            if (progress.appliedTotal > 0) {
+                                append(" · applying ${progress.appliedRows}/${progress.appliedTotal}")
+                            }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                    )
+                }
+                TextButton(onClick = onCancel, modifier = Modifier.height(32.dp)) {
+                    Text("Cancel")
+                }
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            if (progress.appliedTotal > 0) {
+                LinearProgressIndicator(
+                    progress = { progress.appliedRows.toFloat() / progress.appliedTotal.toFloat() },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Safe to cancel — syncing again resumes where it stopped.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun PeerRow(
+    peer: SyncPeer,
+    isSyncing: Boolean,
+    onSync: () -> Unit,
+    onRemove: () -> Unit
+) {
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(peer.name, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                val lastSync = peer.lastSyncAt
+                Text(
+                    text = if (lastSync > 0L) {
+                        "Last synced ${relativeTime(lastSync)}"
+                    } else {
+                        peer.lastKnownAddress?.let { "Address: $it" } ?: "Not synced yet"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            IconButton(onClick = onSync, enabled = !isSyncing, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Default.Sync, contentDescription = "Sync now", modifier = Modifier.size(16.dp))
+            }
+            IconButton(onClick = onRemove, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Default.Delete,
+                    contentDescription = "Remove peer",
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.error
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConflictsResolvedCard(
+    conflicts: List<ConflictEvent>,
+    peerNames: Map<String, String>,
+    onDismiss: (List<Long>) -> Unit,
+    onDismissAll: () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.Warning,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.error
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (conflicts.size == 1) {
+                            "1 edit overwritten by a paired device"
+                        } else {
+                            "${conflicts.size} edits overwritten by paired devices"
+                        },
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Text(
+                        text = "Last-write-wins: the other device's newer version replaced a local edit it had never seen.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
+                    )
+                }
+                Icon(
+                    if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    contentDescription = if (expanded) "Collapse" else "Expand",
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
+            if (expanded) {
+                Spacer(modifier = Modifier.height(6.dp))
+                conflicts.forEach { conflict ->
+                    ConflictRow(
+                        conflict = conflict,
+                        peerName = peerNames[conflict.peerDeviceId],
+                        onDismiss = { onDismiss(listOf(conflict.id)) }
+                    )
+                }
+                TextButton(onClick = onDismissAll, modifier = Modifier.align(Alignment.End)) {
+                    Text("Dismiss all")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConflictRow(
+    conflict: ConflictEvent,
+    peerName: String?,
+    onDismiss: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "${conflict.tableName} row",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            Text(
+                text = buildString {
+                    append(peerName ?: conflict.peerDeviceId)
+                    append(" · ")
+                    append(relativeTime(conflict.createdAt))
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f)
+            )
+        }
+        TextButton(onClick = onDismiss, modifier = Modifier.height(32.dp)) {
+            Text("Dismiss", style = MaterialTheme.typography.labelMedium)
+        }
+    }
+}
+
+private fun relativeTime(timestamp: Long): String {
+    val now = Clock.System.now().toEpochMilliseconds()
+    val diffMs = (now - timestamp).coerceAtLeast(0)
+    val minutes = diffMs / 60_000
+    return when {
+        minutes < 1 -> "just now"
+        minutes < 60 -> "${minutes}m ago"
+        minutes < 1440 -> "${minutes / 60}h ago"
+        else -> "${minutes / 1440}d ago"
+    }
+}
+
+private fun formatBytes(bytes: Long): String {
+    val kb = bytes / 1024.0
+    return when {
+        kb >= 1024.0 -> "${(kb / 1024.0 * 10).toLong() / 10.0} MB"
+        bytes >= 1024 -> "${(kb * 10).toLong() / 10.0} KB"
+        else -> "$bytes B"
+    }
+}

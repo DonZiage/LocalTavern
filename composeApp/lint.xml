@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!-- QrScannerActivity passes the camera frame to ML Kit via the
+         experimental ImageProxy.getImage() API. Kotlin's @OptIn marker is not
+         honored by the UnsafeOptInUsageError lint check (known limitation), so
+         opt in project-wide for this single marker instead. -->
+    <issue id="UnsafeOptInUsageError">
+        <option name="opt-in" value="androidx.camera.core.ExperimentalGetImage" />
+    </issue>
+</lint>

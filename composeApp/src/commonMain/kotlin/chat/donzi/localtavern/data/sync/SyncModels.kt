@@ -1,0 +1,692 @@
+package chat.donzi.localtavern.data.sync
+
+import chat.donzi.localtavern.data.blob.BlobStore
+import chat.donzi.localtavern.data.database.ApiConnection
+import chat.donzi.localtavern.data.database.CharacterEntity
+import chat.donzi.localtavern.data.database.ChatSession
+import chat.donzi.localtavern.data.database.MessageEntity
+import chat.donzi.localtavern.data.database.PersonaEntity
+import chat.donzi.localtavern.data.database.PromptBlockEntity
+import chat.donzi.localtavern.data.security.ApiKeyCipher
+import chat.donzi.localtavern.utils.Hashing
+import chat.donzi.localtavern.utils.deserializeImageRefs
+import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsChannel
+import io.ktor.utils.io.cancel
+import io.ktor.utils.io.readAvailable
+import kotlinx.serialization.Serializable
+
+// ---------- Wire-size bounds ----------
+//
+// Large libraries (hundreds of characters with avatars) never ride in a
+// single envelope: the delta exchange splits them into batches of at most
+// DELTA_BUDGET_BYTES estimated plaintext bytes, and both the server's request
+// cap and the client's pre-parse response check use MAX_SYNC_BODY_BYTES. A
+// mobile device decodes an incoming envelope by holding the JSON string, the
+// base64 bytes, the decrypted bytes and the decoded row objects at once
+// (~4-5x the wire size), so these bounds are what keep a huge library from
+// exhausting the heap mid-exchange.
+
+// Upper bound on any /exchange (and /pair, /blob/fetch) request body, and on
+// what this device is willing to parse as a sync response. Modern peers never
+// exceed a fraction of this (their envelopes are budget-batched); the bound
+// exists so a legacy or hostile peer cannot stream a body whose decode would
+// exhaust the device. Excess is rejected up front (413) instead of crashing.
+internal const val MAX_SYNC_BODY_BYTES = 16L * 1024 * 1024
+
+// Estimated plaintext bytes (text + base64-expanded blobs) per delta batch.
+// The wire envelope is roughly 4/3 of this (base64 of the ciphertext), so a
+// batch lands around 4 MB — comfortably under MAX_SYNC_BODY_BYTES with room
+// for the response.
+internal const val DELTA_BUDGET_BYTES = 3L * 1024 * 1024
+
+// A row's avatar rides inline (legacy peers receive it) until this size;
+// above it the bytes travel OUT of band as a content-addressed ref, so a huge
+// avatar can never inflate an envelope past the body cap (the pre-fix crash
+// vector: a ~9 MB avatar blew 16 MB after base64+encryption).
+internal const val AVATAR_REF_THRESHOLD_BYTES = 512L * 1024
+
+// JSON wire size of one SyncImageRef ({"sha256":"<64 hex>","size":n}), used by
+// the delta group-size estimates in SQL.
+internal const val AVATAR_REF_WIRE_ESTIMATE = 150L
+
+// A single atomic sequence group may exceed the batch budget (the first group
+// always ships), but only up to this plaintext bound: an envelope is roughly
+// 4/3 × plaintext, so 8 MB keeps every envelope well under the body cap even
+// with base64/JSON overhead. A group beyond it cannot ride any envelope and
+// the exchange reports a clear error instead of being cut by a 413.
+internal const val MAX_SAFE_GROUP_PLAINTEXT_BYTES = 8L * 1024 * 1024
+
+// Hard ceiling on the base64-encoded CIPHERTEXT of one /exchange or
+// /blob/fetch payload string, checked BEFORE any base64 decode or decrypt
+// runs. A 16 MB body cap means legitimate ciphertext never approaches this;
+// anything larger is refused by length alone so a hostile or buggy peer can
+// never force this device to transiently hold tens of MB (decoded bytes +
+// decrypted bytes + parsed rows, ~4-5x) on a mobile heap.
+internal const val MAX_ENCRYPTED_PAYLOAD_B64_LENGTH = 24 * 1024 * 1024
+
+// Hard ceiling on decrypted envelope plaintext bytes, checked BEFORE JSON
+// parsing. Bounds the transient (plaintext string + decoded row objects) even
+// when the ciphertext itself fit the body cap.
+internal const val MAX_DECRYPTED_ENVELOPE_BYTES = 24 * 1024 * 1024
+
+// Hard ceiling on the number of rows in a single envelope, checked BEFORE any
+// row is touched. Modern peers batch by byte budget (a few thousand rows at
+// most); a legacy or hostile peer can pack tens of thousands of tiny rows
+// into 16 MB, which would otherwise queue hundreds of thousands of SQLite
+// statements and pin the whole batch in memory on a phone. Rejected with a
+// clear error telling the user to update the other device.
+internal const val MAX_ROWS_PER_ENVELOPE = 20_000
+
+// Fixed per-row overhead of the SQL delta-group size estimates (field names,
+// numbers, braces, escaping margin). Being slightly generous only means a
+// batch cuts a little early, which is safe.
+internal const val ROW_OVERHEAD = 200L
+
+// Row snapshots exchanged during sync. ByteArray fields are base64-encoded
+// by kotlinx.serialization automatically (avatars, message images, keys).
+
+@Serializable
+data class SyncCharacter(
+    val id: String,
+    val name: String,
+    val description: String?,
+    val personality: String,
+    val scenario: String,
+    val firstMes: String?,
+    val mesExample: String?,
+    val creatorNotes: String?,
+    val altGreetings: String?,
+    val avatarData: ByteArray?,
+    // Avatars above the inline threshold ride OUT of band as a
+    // content-addressed ref (avatarData is then null); the bytes are pulled
+    // from the sender through the /blob/fetch protocol like message images.
+    // Default keeps envelopes from older peers parseable.
+    val avatarRef: SyncImageRef? = null,
+    val isAssistant: Long,
+    val updatedAt: Long,
+    val isDeleted: Long,
+    val syncSeq: Long = 0,
+    val systemPrompt: String?,
+    val postHistoryInstructions: String?,
+    val creator: String?,
+    val characterVersion: String?,
+    val tags: String?,
+    val extensions: String?,
+    val characterBook: String?
+)
+
+@Serializable
+data class SyncPersona(
+    val id: String,
+    val name: String,
+    val description: String?,
+    val avatarData: ByteArray?,
+    // Same out-of-band avatar transport as SyncCharacter.avatarRef.
+    val avatarRef: SyncImageRef? = null,
+    val updatedAt: Long,
+    val isDeleted: Long,
+    val syncSeq: Long = 0
+)
+
+@Serializable
+data class SyncSession(
+    val id: String,
+    val characterId: String,
+    val personaId: String,
+    val title: String?,
+    val lastTimestamp: Long,
+    val currentMessageId: String?,
+    val parentSessionId: String?,
+    val updatedAt: Long,
+    val isDeleted: Long,
+    val syncSeq: Long = 0
+)
+
+// A content-addressed reference to one message-image blob on the sender.
+// The bytes travel OUT of band (the /blob/fetch protocol); the envelope only
+// carries the references, so sync exchanges stay small even with many
+// images. Older peers ship the bytes inline via SyncMessage.imageData, which
+// the receiver converts into refs + stored blobs.
+@Serializable
+data class SyncImageRef(
+    val sha256: String,
+    val size: Long
+)
+
+@Serializable
+data class SyncMessage(
+    val id: String,
+    val sessionId: String,
+    val role: String,
+    val content: String,
+    val timestamp: Long,
+    val parentId: String?,
+    val isActivePath: Long,
+    val updatedAt: Long,
+    val isDeleted: Long,
+    // Legacy inline images (pre-blob-store peers); empty on modern sends.
+    val imageData: ByteArray? = null,
+    // Content-addressed refs to the image blobs (modern sends).
+    val imageRefs: List<SyncImageRef> = emptyList(),
+    val reasoningText: String?,
+    val costEstimate: Double?,
+    val syncSeq: Long = 0
+)
+
+@Serializable
+data class SyncApiConnection(
+    val id: String,
+    val provider: String,
+    val name: String,
+    val baseUrl: String?,
+    val apiKey: String?,
+    val model: String?,
+    // OpenRouter-style upstream provider routing; null = endpoint default.
+    // Default value keeps envelopes from older peers parseable.
+    val inferenceProvider: String? = null,
+    // OpenRouter quantization preference; null = endpoint default.
+    val quantization: String? = null,
+    val isActive: Long,
+    val isChatCompletion: Long,
+    // 0 = auto-detect chat vs legacy completions endpoint, 1 = force chat
+    // completions, 2 = force legacy completions. Default keeps envelopes
+    // from older peers parseable.
+    val chatCompletionMode: Long = 0,
+    val lastUsed: Long?,
+    val temperature: Double,
+    val topP: Double,
+    val topK: Long,
+    val presencePenalty: Double,
+    val frequencyPenalty: Double,
+    val contextLimit: Long,
+    val responseLimit: Long,
+    val displayOrder: Long,
+    val timeoutLimit: Long,
+    val reasoningOverride: Long,
+    val updatedAt: Long,
+    val isDeleted: Long,
+    val syncSeq: Long = 0
+)
+
+@Serializable
+data class SyncPromptBlock(
+    val id: String,
+    val name: String,
+    val template: String,
+    val isEnabled: Long,
+    val isCustom: Long,
+    val displayOrder: Long,
+    val updatedAt: Long,
+    val isDeleted: Long,
+    val syncSeq: Long = 0
+)
+
+@Serializable
+data class SyncChanges(
+    val characters: List<SyncCharacter> = emptyList(),
+    val personas: List<SyncPersona> = emptyList(),
+    val sessions: List<SyncSession> = emptyList(),
+    val messages: List<SyncMessage> = emptyList(),
+    val apiConnections: List<SyncApiConnection> = emptyList(),
+    val promptBlocks: List<SyncPromptBlock> = emptyList()
+) {
+    val isEmpty: Boolean
+        get() = characters.isEmpty() && personas.isEmpty() && sessions.isEmpty() &&
+            messages.isEmpty() && apiConnections.isEmpty() && promptBlocks.isEmpty()
+
+    /** Highest updatedAt carried by any row in these changes. */
+    val maxUpdatedAt: Long
+        get() = (characters.maxOfOrNull { it.updatedAt } ?: 0L)
+            .coerceAtLeast(personas.maxOfOrNull { it.updatedAt } ?: 0L)
+            .coerceAtLeast(sessions.maxOfOrNull { it.updatedAt } ?: 0L)
+            .coerceAtLeast(messages.maxOfOrNull { it.updatedAt } ?: 0L)
+            .coerceAtLeast(apiConnections.maxOfOrNull { it.updatedAt } ?: 0L)
+            .coerceAtLeast(promptBlocks.maxOfOrNull { it.updatedAt } ?: 0L)
+
+    /** Highest sync sequence carried by any row in these changes. */
+    val maxSyncSeq: Long
+        get() = (characters.maxOfOrNull { it.syncSeq } ?: 0L)
+            .coerceAtLeast(personas.maxOfOrNull { it.syncSeq } ?: 0L)
+            .coerceAtLeast(sessions.maxOfOrNull { it.syncSeq } ?: 0L)
+            .coerceAtLeast(messages.maxOfOrNull { it.syncSeq } ?: 0L)
+            .coerceAtLeast(apiConnections.maxOfOrNull { it.syncSeq } ?: 0L)
+            .coerceAtLeast(promptBlocks.maxOfOrNull { it.syncSeq } ?: 0L)
+
+    /** Total number of rows carried by these changes, across all tables. */
+    val totalRowCount: Int
+        get() = characters.size + personas.size + sessions.size +
+            messages.size + apiConnections.size + promptBlocks.size
+}
+
+// Rejects an envelope's changes BEFORE any row is materialized or applied: a
+// hostile, buggy or legacy peer must never force this device to queue
+// hundreds of thousands of statements or pin an unbounded batch in memory.
+// Throws IllegalStateException with a user-actionable message; callers turn it
+// into a clean sync refusal (never a crash, never a partial apply — the check
+// runs before the first statement).
+internal fun checkEnvelopeFits(changes: SyncChanges) {
+    if (changes.totalRowCount > MAX_ROWS_PER_ENVELOPE) {
+        error(
+            "Sync data is too large (${changes.totalRowCount} rows in one exchange). " +
+                "Update the other device to sync large libraries."
+        )
+    }
+    // Per-row ceiling: no honest device ever ships a sequence group above
+    // MAX_SAFE_GROUP_PLAINTEXT_BYTES (collectDeltaBatched refuses it with
+    // hasMore and the exchange fails loudly instead), so a single row above
+    // that ceiling from a legacy or hostile peer must be refused here — before
+    // the first statement. Accepting it would poison the database: the row's
+    // decode transient (~4-5x the wire size) kills a mobile app mid-sync, the
+    // row could never be forwarded again (its group would trip the same
+    // ceiling on every future sync, wedging sync permanently), and every
+    // launch would reload it through the character/timeline flows while the
+    // file itself stays structurally valid (so the corruption-recovery path
+    // never fires) — a crash-at-launch loop only a data wipe clears.
+    changes.characters.forEach { checkRowFits(it.estimatedWireBytes()) }
+    changes.personas.forEach { checkRowFits(it.estimatedWireBytes()) }
+    changes.sessions.forEach { checkRowFits(it.estimatedWireBytes()) }
+    changes.messages.forEach { checkRowFits(it.estimatedWireBytes()) }
+    changes.apiConnections.forEach { checkRowFits(it.estimatedWireBytes()) }
+    changes.promptBlocks.forEach { checkRowFits(it.estimatedWireBytes()) }
+}
+
+private fun checkRowFits(size: Long) {
+    if (size > MAX_SAFE_GROUP_PLAINTEXT_BYTES) {
+        error(
+            "A row from the paired device is too large to sync " +
+                "(${size / 1024 / 1024} MB). Edit or remove it on that device, then sync again."
+        )
+    }
+}
+
+// Estimated wire bytes of one received row, mirroring the SQL delta-group
+// estimator (ROW_OVERHEAD + text lengths + base64-expanded inline bytes +
+// ref estimates) but measuring what THIS envelope actually carries: the SQL
+// estimator predicts what a modern send puts on the wire (avatars above the
+// inline threshold ride as refs), while a legacy or hostile envelope can carry
+// the bytes inline regardless — so actual inline bytes are always counted and
+// a present ref adds its wire estimate. Honest rows always pass: their inline
+// avatars are at or below the threshold (estimated identically to SQL) and
+// ref rows differ by one ref estimate, far below the ceiling.
+private fun textLen(value: String?): Long = (value?.length ?: 0).toLong()
+
+private fun inlineBytes(bytes: ByteArray?): Long = if (bytes == null) 0L else (bytes.size.toLong() * 4) / 3
+
+private fun SyncCharacter.estimatedWireBytes(): Long =
+    ROW_OVERHEAD + textLen(name) + textLen(description) + textLen(personality) +
+        textLen(scenario) + textLen(firstMes) + textLen(mesExample) +
+        textLen(creatorNotes) + textLen(altGreetings) + textLen(systemPrompt) +
+        textLen(postHistoryInstructions) + textLen(creator) +
+        textLen(characterVersion) + textLen(tags) + textLen(extensions) +
+        textLen(characterBook) + inlineBytes(avatarData) +
+        if (avatarRef != null) AVATAR_REF_WIRE_ESTIMATE else 0L
+
+private fun SyncPersona.estimatedWireBytes(): Long =
+    ROW_OVERHEAD + textLen(name) + textLen(description) + inlineBytes(avatarData) +
+        if (avatarRef != null) AVATAR_REF_WIRE_ESTIMATE else 0L
+
+private fun SyncSession.estimatedWireBytes(): Long =
+    ROW_OVERHEAD + textLen(characterId) + textLen(personaId) + textLen(title) +
+        textLen(currentMessageId) + textLen(parentSessionId)
+
+private fun SyncMessage.estimatedWireBytes(): Long =
+    ROW_OVERHEAD + textLen(sessionId) + textLen(role) + textLen(content) +
+        textLen(parentId) + textLen(reasoningText) + inlineBytes(imageData) +
+        imageRefs.size.toLong() * AVATAR_REF_WIRE_ESTIMATE
+
+private fun SyncApiConnection.estimatedWireBytes(): Long =
+    ROW_OVERHEAD + textLen(provider) + textLen(name) + textLen(baseUrl) +
+        textLen(apiKey) + textLen(model) + textLen(inferenceProvider) +
+        textLen(quantization)
+
+private fun SyncPromptBlock.estimatedWireBytes(): Long =
+    ROW_OVERHEAD + textLen(name) + textLen(template)
+
+// Rejects an encrypted payload string BEFORE base64 decoding or decrypting
+// it: both operations materialize their full output, so length alone must
+// gate them on a mobile heap. Throws IllegalStateException; callers turn it
+// into a clean refusal.
+internal fun checkEncryptedPayloadFits(payloadB64: String) {
+    if (payloadB64.length > MAX_ENCRYPTED_PAYLOAD_B64_LENGTH) {
+        error(
+            "Sync data is too large (${payloadB64.length / 1024 / 1024} MB). " +
+                "Update the other device to sync large libraries."
+        )
+    }
+}
+
+// Rejects decrypted envelope bytes BEFORE JSON parsing: parsing transiently
+// holds the string plus the decoded rows. Throws IllegalStateException.
+internal fun checkDecryptedEnvelopeFits(plaintext: ByteArray) {
+    if (plaintext.size > MAX_DECRYPTED_ENVELOPE_BYTES) {
+        error(
+            "Sync data is too large (${plaintext.size / 1024 / 1024} MB). " +
+                "Update the other device to sync large libraries."
+        )
+    }
+}
+
+// One side's view of one exchange round: a bounded batch of everything the
+// sender changed since the recipient's last cursor, plus the sender's own
+// cursor watermark. When the sender has more rows above the batch, hasMore is
+// set and the peer keeps exchanging until a round arrives with hasMore=false
+// (see SyncExchange.syncNow).
+@Serializable
+data class SyncEnvelope(
+    val fromDeviceId: String,
+    val cursor: Long,
+    val changes: SyncChanges,
+    // Display-only name of the sending device. It rides INSIDE the
+    // authenticated ciphertext, so only the device holding the paired
+    // private key can rename itself on a peer; recipients update their peer
+    // row but never the cursor machinery. Default keeps envelopes from
+    // older peers parseable.
+    val fromDeviceName: String? = null,
+    // Where the sender's sync server can be reached, so the RECEIVER can
+    // pull image blobs referenced by this envelope out of band. The receiver
+    // never trusts it blindly: /blob/fetch is authenticated by the same
+    // paired-key scheme as /exchange.
+    val fetchAddress: String? = null,
+    // True when the sender still has rows above this envelope's cut that did
+    // not fit into the batch; the peer then initiates another round. Default
+    // keeps envelopes from older peers parseable (they always respond with
+    // their whole delta in one shot).
+    val hasMore: Boolean = false
+)
+
+// One bounded slice of a device's pending delta: the rows that fit within
+// the exchange budget, plus whether more rows remain above the cut. The next
+// batch resumes at cursor = changes.maxSyncSeq + 1, so batches tile the
+// delta without gaps or duplicates.
+data class DeltaBatch(
+    val changes: SyncChanges,
+    val hasMore: Boolean
+)
+
+// ---------- Blob fetch protocol (message images travel out of band) ----------
+
+// Encrypted body of a /blob/fetch request: the content-addressed refs the
+// receiver is missing, and where to resume. The server is stateless: each
+// request addresses exactly one chunk via (refIndex, offset), so a dropped
+// request can be retried from the last acknowledged offset.
+@Serializable
+data class BlobFetchPayload(
+    val refs: List<String> = emptyList(),
+    val refIndex: Int = 0,
+    val offset: Int = 0
+)
+
+// Encrypted body of the /blob/fetch response: one chunk of the requested
+// ref, or a missing marker for it. The server is strictly per-ref: it serves
+// the chunk at (refIndex, offset) of the addressed ref, or reports that ref
+// as missing — it never auto-advances to another ref. The receiver
+// reassembles chunks sequentially (offset advances by CHUNK_BYTES), stores
+// the blob once a ref is complete (hasMore = false), and moves to the next
+// ref.
+@Serializable
+data class BlobFetchResult(
+    val refIndex: Int = 0,
+    val offset: Int = 0,
+    val total: Int = 0,
+    val data: String = "",
+    val hasMore: Boolean = false,
+    // Set when the addressed ref cannot be served (its blob is absent).
+    val missing: List<String> = emptyList()
+)
+
+// Wire bodies of /blob/fetch: an encrypted payload plus the sender's
+// per-request ephemeral X25519 public key, identical in shape to /exchange.
+// The exchange id binds this request to its response AND to the AEAD
+// associated data of both payloads; it rides outside the ciphertext because
+// both peers need it before they can derive the channel key.
+@Serializable
+data class BlobFetchRequest(
+    val fromDeviceId: String,
+    val exchangeId: String = "",
+    val payload: String,
+    val ephemeralPublicKey: String = ""
+)
+
+@Serializable
+data class BlobFetchResponse(
+    val ok: Boolean,
+    val message: String = "",
+    val exchangeId: String = "",
+    val payload: String? = null,
+    val ephemeralPublicKey: String = ""
+)
+
+// Pairing handshake. The PIN is never transmitted: [nonce] is a fresh
+// CSPRNG value that doubles as the KDF salt, and [pinProof] is
+// HMAC-SHA256(PBKDF2(pin, nonce), deviceId|publicKey|nonce), which the host
+// verifies against the PIN it displayed. A sniffer that relays the exchange
+// cannot swap keys without knowing the PIN, and the stretched KDF makes
+// offline PIN recovery from a captured proof prohibitively expensive.
+@Serializable
+data class PairRequest(
+    val deviceId: String,
+    val deviceName: String,
+    val publicKey: String,     // base64 X25519 public key
+    val nonce: String,         // base64 random 16 bytes (PBKDF2 salt)
+    val pinProof: String       // base64 HMAC-SHA256 over deviceId|publicKey|nonce
+)
+
+@Serializable
+data class PairResponse(
+    val ok: Boolean,
+    val message: String = "",
+    val deviceId: String = "",
+    val deviceName: String = "",
+    val publicKey: String = "" // base64 X25519 public key
+)
+
+@Serializable
+data class HelloResponse(
+    val deviceId: String,
+    val deviceName: String
+)
+
+// ---------- Wire-input validation ----------
+
+// Device ids are embedded (unescaped) into the AEAD associated data of every
+// encrypted payload, so anything outside the generated alphabet must be
+// rejected before it can be echoed back into a security context. Generated
+// ids are 24 lowercase base64url-ish chars (see SyncIdentity.randomDeviceId).
+internal fun isValidDeviceId(deviceId: String): Boolean =
+    deviceId.isNotEmpty() && deviceId.length <= 64 &&
+        deviceId.all { it.isLowerCase() || it.isDigit() || it == '_' || it == '-' }
+
+// Validates a peer-supplied fetch address before it is used to make HTTP
+// requests: an envelope's fetchAddress is attacker-controlled, so it must be
+// a bare "host:port" — no scheme, credentials, path, query or whitespace —
+// with a numeric port and an IPv4 or plain hostname host. Anything else
+// (e.g. "http://169.254.169.254/latest/meta-data") is rejected, which blocks
+// the SSRF vector of pointing this device at arbitrary internal hosts.
+// Returns (host, port) or null when the address is unusable.
+internal fun validateFetchAddress(address: String?): Pair<String, Int>? {
+    val trimmed = address?.trim() ?: return null
+    if (trimmed.isEmpty() || trimmed.length > 255) return null
+    if (trimmed.contains("://") || trimmed.contains("@") || trimmed.contains("/") ||
+        trimmed.contains("?") || trimmed.contains("#") || trimmed.any { it.isWhitespace() }
+    ) return null
+    val port = trimmed.substringAfterLast(':')
+    if (port == trimmed) return null
+    val portNumber = port.toIntOrNull() ?: return null
+    if (portNumber !in 1..65535) return null
+    val host = trimmed.substringBeforeLast(':')
+    if (host.isBlank() || host.length > 253) return null
+    // Colons in the host mean IPv6, which this protocol does not support
+    // (addresses are advertised as plain "ip:port").
+    if (':' in host) return null
+    if (!isIpv4Literal(host) && !isPlainHostname(host)) return null
+    return host to portNumber
+}
+
+private fun isIpv4Literal(host: String): Boolean {
+    val parts = host.split('.')
+    if (parts.size != 4) return false
+    return parts.all { part ->
+        val value = part.toIntOrNull() ?: return false
+        // Reject leading zeros (octal ambiguity) and out-of-range octets.
+        value in 0..255 && part == value.toString()
+    }
+}
+
+private fun isPlainHostname(host: String): Boolean {
+    if (host.isEmpty() || host.length > 253) return false
+    if (!host.first().isLetterOrDigit() || !host.last().isLetterOrDigit()) return false
+    return host.all { char ->
+        char.isLetterOrDigit() || char == '-' || char == '.'
+    }
+}
+
+// ---------- Entity -> DTO mappers ----------
+// Convert database rows (including tombstones) into the wire snapshots sent
+// inside sync envelopes. API keys travel as portable plaintext inside the
+// end-to-end-encrypted envelope (see ApiKeyCipher.toPortableForm); a key this
+// device cannot read is withheld (null) so the peer never stores an
+// undecryptable blob. Message images ride ONLY as content-addressed refs: the
+// bytes travel out of band through /blob/fetch, so envelopes stay small and
+// delta collection never loads image bytes into memory. (Legacy peers that
+// ship inline imageData are still understood on the receiving side.)
+// Avatars follow the same rule once they exceed the inline threshold: the
+// bytes are staged in the local blob store and the envelope carries a ref.
+
+internal suspend fun CharacterEntity.toSync(blobStore: BlobStore?): SyncCharacter {
+    val avatar = wireAvatar(blobStore, avatarData, avatarRef)
+    return SyncCharacter(
+        id = id, name = name, description = description, personality = personality ?: "",
+        scenario = scenario ?: "", firstMes = firstMes, mesExample = mesExample,
+        creatorNotes = creatorNotes, altGreetings = altGreetings, avatarData = avatar.first,
+        avatarRef = avatar.second,
+        isAssistant = isAssistant, updatedAt = updatedAt, isDeleted = isDeleted,
+        syncSeq = syncSeq,
+        systemPrompt = systemPrompt, postHistoryInstructions = postHistoryInstructions,
+        creator = creator, characterVersion = characterVersion, tags = tags,
+        extensions = extensions, characterBook = characterBook
+    )
+}
+
+internal suspend fun PersonaEntity.toSync(blobStore: BlobStore?): SyncPersona {
+    val avatar = wireAvatar(blobStore, avatarData, avatarRef)
+    return SyncPersona(
+        id = id, name = name, description = description, avatarData = avatar.first,
+        avatarRef = avatar.second, updatedAt = updatedAt, isDeleted = isDeleted, syncSeq = syncSeq
+    )
+}
+
+// What the wire carries for a row's avatar: the row's BYTES are authoritative
+// (staged out of band as a ref when oversized, inline otherwise); a row whose
+// bytes are missing but that still holds an unresolved ref (a fetch that
+// failed on a peer) re-ships that ref so a peer that has the blob can serve
+// it. Mutually exclusive by construction: avatarData is the same row property
+// the ref was stored against.
+private suspend fun wireAvatar(
+    blobStore: BlobStore?,
+    avatarData: ByteArray?,
+    avatarRef: String?
+): Pair<ByteArray?, SyncImageRef?> {
+    if (avatarData != null) return avatarRefForTransport(avatarData, blobStore)
+    if (avatarRef != null) {
+        // The ref column is imageRefs-style JSON of exactly one ref.
+        val stored = deserializeImageRefs(avatarRef).firstOrNull() ?: return null to null
+        return null to SyncImageRef(sha256 = stored.sha256, size = stored.size)
+    }
+    return null to null
+}
+
+// Avatars larger than the inline threshold ride out of band as
+// content-addressed refs: the bytes are staged in the local blob store (once)
+// and the peer pulls them through /blob/fetch with hash verification. Smaller
+// avatars stay inline so legacy peers keep receiving them. A null store
+// (tests) ships the bytes inline regardless of size.
+internal suspend fun avatarRefForTransport(bytes: ByteArray?, store: BlobStore?): Pair<ByteArray?, SyncImageRef?> {
+    if (bytes == null || bytes.size <= AVATAR_REF_THRESHOLD_BYTES || store == null) return bytes to null
+    val hash = Hashing.sha256Hex(bytes)
+    if (store.read(hash) == null) store.write(hash, bytes)
+    return null to SyncImageRef(sha256 = hash, size = bytes.size.toLong())
+}
+
+internal fun ChatSession.toSync() = SyncSession(
+    id = id, characterId = characterId, personaId = personaId, title = title,
+    lastTimestamp = lastTimestamp, currentMessageId = currentMessageId,
+    parentSessionId = parentSessionId, updatedAt = updatedAt, isDeleted = isDeleted,
+    syncSeq = syncSeq
+)
+
+internal suspend fun MessageEntity.toSync(): SyncMessage {
+    val refs = deserializeImageRefs(imageRefs)
+    return SyncMessage(
+        id = id, sessionId = sessionId, role = role, content = content, timestamp = timestamp,
+        parentId = parentId, isActivePath = isActivePath, updatedAt = updatedAt,
+        isDeleted = isDeleted,
+        // imageData stays null on modern sends: the refs below are enough for
+        // any peer that understands the blob protocol, and the bytes travel
+        // out of band. Keeping them inline would load every image of every
+        // synced message into memory on each delta and multiply the envelope
+        // size (the pre-blob-store crash vector).
+        imageData = null,
+        imageRefs = refs.map { SyncImageRef(sha256 = it.sha256, size = it.size) },
+        reasoningText = reasoningText,
+        costEstimate = costEstimate, syncSeq = syncSeq
+    )
+}
+
+internal fun ApiConnection.toSync(cipher: ApiKeyCipher?) = SyncApiConnection(
+    id = id, provider = provider, name = name, baseUrl = baseUrl,
+    // The key travels as portable plaintext inside the end-to-end-encrypted
+    // envelope (see ApiKeyCipher.toPortableForm); a key this device cannot
+    // read is withheld (null) so the peer never stores an undecryptable blob.
+    apiKey = if (cipher != null) cipher.toPortableForm(apiKey) else apiKey,
+    model = model, inferenceProvider = inferenceProvider, quantization = quantization,
+    isActive = 0L,
+    // Mirror the mode into the legacy column so older peers (which still read
+    // isChatCompletion directly) keep working.
+    isChatCompletion = if (chatCompletionMode == 2L) 0L else 1L,
+    chatCompletionMode = chatCompletionMode,
+    lastUsed = lastUsed, temperature = temperature, topP = topP,
+    topK = topK, presencePenalty = presencePenalty,
+    frequencyPenalty = frequencyPenalty, contextLimit = contextLimit,
+    responseLimit = responseLimit, displayOrder = displayOrder,
+    timeoutLimit = timeoutLimit, reasoningOverride = reasoningOverride,
+    updatedAt = updatedAt, isDeleted = isDeleted, syncSeq = syncSeq
+)
+
+internal fun PromptBlockEntity.toSync() = SyncPromptBlock(
+    id = id, name = name, template = template, isEnabled = isEnabled,
+    isCustom = isCustom, displayOrder = displayOrder, updatedAt = updatedAt,
+    isDeleted = isDeleted, syncSeq = syncSeq
+)
+
+// ---------- Capped response reads ----------
+
+// Reads an HTTP response body with a hard byte cap, for responses whose
+// length is NOT declared up front (chunked transfer encoding): buffering such
+// a body blindly lets a legacy or hostile peer stream an unbounded payload
+// whose decode (JSON -> base64 -> decrypt -> rows, ~4-5x transient) exhausts
+// a mobile heap and kills the app mid-sync. Excess throws (callers turn it
+// into a clean sync error, never a crash); cancellation propagates.
+internal suspend fun HttpResponse.readCappedBytes(capBytes: Long): ByteArray {
+    val channel = bodyAsChannel()
+    val parts = ArrayList<ByteArray>()
+    var total = 0L
+    val buf = ByteArray(64 * 1024)
+    while (!channel.isClosedForRead) {
+        val n = channel.readAvailable(buf)
+        if (n < 0) break
+        total += n
+        if (total > capBytes) {
+            channel.cancel()
+            error("Sync response is too large (${total / 1024 / 1024} MB). Update the other device to sync large libraries.")
+        }
+        if (n > 0) parts.add(buf.copyOf(n))
+    }
+    val out = ByteArray(total.toInt())
+    var offset = 0
+    parts.forEach { part ->
+        part.copyInto(out, offset)
+        offset += part.size
+    }
+    return out
+}
