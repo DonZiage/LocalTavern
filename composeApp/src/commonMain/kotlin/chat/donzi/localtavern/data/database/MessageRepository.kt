@@ -225,7 +225,7 @@ class MessageRepository(
         }
     }
 
-    suspend fun deleteMessage(id: String) = withContext(ioDispatcher) {
+    suspend fun deleteMessage(id: String, restoreSibling: Boolean = false) = withContext(ioDispatcher) {
         database.transaction {
             val message = queries.selectMessageById(id).executeAsOneOrNull()
             val now = currentTimeMillis()
@@ -241,7 +241,24 @@ class MessageRepository(
                 }
                 val session = queries.selectSessionById(sessionId).executeAsOneOrNull()
                 val currentId = session?.currentMessageId
-                if (currentId != null && (currentId == id || currentId in descendants)) {
+                if (currentId != null && currentId == id && restoreSibling) {
+                    // Deleting a variation must not erase the whole turn:
+                    // when the deleted node was the active one and other
+                    // siblings survive, re-activate the most recent sibling
+                    // instead of pointing the session at the parent.
+                    // (Cancelling a regenerated/variation response relies
+                    // on this: the placeholder is deleted and the previous
+                    // swipe becomes active again.)
+                    val sibling = allMessages
+                        .filter { it.parentId == message.parentId && it.id != id }
+                        .maxByOrNull { it.timestamp }
+                    if (sibling != null) {
+                        queries.activateMessage(updatedAt = ts, syncSeq = seq, id = sibling.id)
+                        sessionRepository.stampSessionCurrentMessage(sessionId, sibling.id, now, ts, seq)
+                    } else {
+                        sessionRepository.stampSessionCurrentMessage(sessionId, message.parentId, now, ts, seq)
+                    }
+                } else if (currentId != null && (currentId == id || currentId in descendants)) {
                     sessionRepository.stampSessionCurrentMessage(sessionId, message.parentId, now, ts, seq)
                 }
             }

@@ -165,8 +165,12 @@ class ChatController(
             // Read from the DB, not the possibly-stale UI snapshot: the
             // cancelled job may have just removed or updated the last message.
             val lastMsg = messageRepository.getMessagesForSession(sessionId).lastOrNull() ?: return@launch
+            // Do NOT delete the assistant message up front: inserting the
+            // new response as a sibling (same parent) deactivates the old
+            // one automatically and preserves it as a swipe. Deleting it
+            // first would make the previous variation unrecoverable when
+            // the new generation is cancelled/stopped.
             val parentId = if (lastMsg.role == "assistant") {
-                messageRepository.deleteMessage(lastMsg.id)
                 lastMsg.parentId
             } else {
                 lastMsg.id
@@ -229,14 +233,45 @@ class ChatController(
     fun deleteMessagesRaw(sessionId: String, ids: List<String>) {
         scope.launch {
             cancelGenerationIfActive()
-            ids.forEach { messageRepository.deleteMessage(it) }
+            // Expand the selection to whole turns: deleting one visible
+            // variation must also purge its inactive siblings and its
+            // descendant branch, otherwise the deleted turn survives in
+            // the tree and reappears as a swipe after the next regenerate.
+            val allMessages = messageRepository.getAllMessagesForSession(sessionId)
+            val selectedParents = allMessages.filter { it.id in ids }.map { it.parentId }.toSet()
+            val expanded = ids.toMutableSet()
+            for (msg in allMessages) {
+                if (msg.id in ids) continue
+                val parent = msg.parentId
+                if (parent != null && parent in selectedParents) {
+                    expanded.add(msg.id)
+                }
+            }
+            // Descendants (active or deactivated branches) of any selected
+            // message must go too: soft-deleting only the visible line left
+            // the rest of the subtree readable for future variations.
+            val childrenByParent = allMessages.groupBy { it.parentId }
+            val visitedDescendants = mutableSetOf<String>()
+            fun collectDescendants(parentId: String?) {
+                if (parentId == null) return
+                for (child in childrenByParent[parentId].orEmpty()) {
+                    if (visitedDescendants.add(child.id)) {
+                        expanded.add(child.id)
+                        collectDescendants(child.id)
+                    }
+                }
+            }
+            ids.forEach { collectDescendants(it) }
+            // Also collect descendants of siblings just added.
+            expanded.toList().forEach { collectDescendants(it) }
+            expanded.forEach { messageRepository.deleteMessage(it) }
             // The bulk delete has no per-message sibling/parent fix-up; repoint
             // a dangling currentMessageId at the last surviving message (or
             // clear it) so the next user message is not parented to a deleted
             // node.
             val session = sessionRepository.getSessionById(sessionId)
             val currentId = session?.currentMessageId
-            if (currentId != null && currentId in ids) {
+            if (currentId != null && currentId in expanded) {
                 val remaining = messageRepository.getMessagesForSession(sessionId)
                 sessionRepository.updateSessionCurrentMessage(sessionId, remaining.lastOrNull()?.id)
             }

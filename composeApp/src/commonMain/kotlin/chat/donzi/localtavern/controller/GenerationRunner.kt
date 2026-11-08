@@ -392,15 +392,25 @@ class GenerationRunner(
             } catch (_: CancellationException) {
                 streamJob.cancel()
                 withContext(NonCancellable) {
-                    val partialResponse = responseBuilder.toString()
-                    if (partialResponse.isBlank()) {
-                        messageRepository.deleteMessage(aiMessageId!!)
+                    // Cancelling a regenerated / new-variation response must
+                    // keep the previous swipe: discard the in-flight new
+                    // swipe (even if it already has partial text) and let
+                    // deleteMessage re-activate the previous sibling.
+                    val hasPreviousSwipe = messageRepository.getAllMessagesForSession(sessionId)
+                        .any { it.parentId == targetParentId && it.id != aiMessageId }
+                    if (hasPreviousSwipe) {
+                        messageRepository.deleteMessage(aiMessageId!!, restoreSibling = true)
                     } else {
-                        messageRepository.updateMessageContentAndReasoning(
-                            aiMessageId, partialResponse,
-                            reasoningBuilder.toString().takeIf { it.isNotBlank() }
-                        )
-                        persistCostEstimate(aiMessageId!!, pricing, inputTokens, partialResponse)
+                        val partialResponse = responseBuilder.toString()
+                        if (partialResponse.isBlank()) {
+                            messageRepository.deleteMessage(aiMessageId!!)
+                        } else {
+                            messageRepository.updateMessageContentAndReasoning(
+                                aiMessageId, partialResponse,
+                                reasoningBuilder.toString().takeIf { it.isNotBlank() }
+                            )
+                            persistCostEstimate(aiMessageId!!, pricing, inputTokens, partialResponse)
+                        }
                     }
                 }
                 onRefresh(sessionId)
@@ -421,9 +431,10 @@ class GenerationRunner(
             }
         } catch (e: CancellationException) {
             // Generation was stopped before any token was handled; drop the
-            // placeholder (if it was inserted) so it cannot linger.
+            // placeholder (if it was inserted) so it cannot linger, and
+            // re-activate the previous swipe when cancelling a variation.
             withContext(NonCancellable) {
-                aiMessageId?.let { messageRepository.deleteMessage(it) }
+                aiMessageId?.let { messageRepository.deleteMessage(it, restoreSibling = true) }
             }
             onRefresh(sessionId)
             throw e

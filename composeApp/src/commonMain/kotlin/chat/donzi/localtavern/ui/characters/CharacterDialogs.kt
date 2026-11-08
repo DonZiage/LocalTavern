@@ -10,10 +10,17 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import chat.donzi.localtavern.ui.common.nextSuppressAutoCap
 
 // Dialogs owned by the character list: create (name input), the single /
 // multi delete confirmations and the mass-import summary. The callers keep
@@ -26,16 +33,23 @@ fun CreateCharacterDialog(
     onCreate: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
+    var suppressAutoCap by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Create New Character") },
         text = {
             OutlinedTextField(
                 value = name,
-                onValueChange = onNameChange,
+                onValueChange = { nextValue ->
+                    suppressAutoCap = nextSuppressAutoCap(name, nextValue, suppressAutoCap)
+                    onNameChange(nextValue)
+                },
                 label = { Text("Character Name") },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(
+                    capitalization = if (suppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Words
+                )
             )
         },
         confirmButton = {

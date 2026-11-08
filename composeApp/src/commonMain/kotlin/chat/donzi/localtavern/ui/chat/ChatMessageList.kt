@@ -72,7 +72,12 @@ fun ChatMessageList(
     onSelectMessageToggle: (String) -> Unit,
     onRequestDelete: (Message) -> Unit,
     onRequestAddImage: (Message) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    editingMessageId: String? = null,
+    optionsMessageId: String? = null,
+    onRequestOptions: (Message) -> Unit = {},
+    onCancelEditing: () -> Unit = {},
+    onDismissOptions: () -> Unit = {}
 ) {
     val messages = chatState.messages
     val siblingsMap = chatState.siblingsMap
@@ -170,6 +175,8 @@ fun ChatMessageList(
         reverseLayout = true
     ) {
         items(messages.reversed(), key = { it.id }) { message ->
+            val isEditingTarget = editingMessageId == message.id
+            val isDimmed = editingMessageId != null && !isEditingTarget
             ChatMessageItem(
                 message = message,
                 isLastMessage = messages.lastOrNull()?.id == message.id,
@@ -184,7 +191,17 @@ fun ChatMessageList(
                 actions = actions,
                 onSelectMessageToggle = onSelectMessageToggle,
                 onRequestDelete = onRequestDelete,
-                onRequestAddImage = onRequestAddImage
+                onRequestAddImage = onRequestAddImage,
+                isDimmed = isDimmed,
+                isEditingTarget = isEditingTarget,
+                onMessageTap = {
+                    when {
+                        editingMessageId != null && !isEditingTarget -> onCancelEditing()
+                        editingMessageId != null && isEditingTarget -> Unit
+                        optionsMessageId == message.id -> onDismissOptions()
+                        else -> onRequestOptions(message)
+                    }
+                }
             )
         }
     }
@@ -224,7 +241,10 @@ private fun ChatMessageItem(
     actions: ChatActions,
     onSelectMessageToggle: (String) -> Unit,
     onRequestDelete: (Message) -> Unit,
-    onRequestAddImage: (Message) -> Unit
+    onRequestAddImage: (Message) -> Unit,
+    isDimmed: Boolean = false,
+    isEditingTarget: Boolean = false,
+    onMessageTap: () -> Unit = {}
 ) {
     val clipboardManager = LocalClipboardManager.current
     val isUserMessage = message.role == "user"
@@ -237,7 +257,7 @@ private fun ChatMessageItem(
         }
     }
 
-    val isSwipeable = !isUserMessage && isLastMessage && !isGenerating
+    val isSwipeable = !isUserMessage && isLastMessage && !isGenerating && !isDimmed && !isEditingTarget
 
     val msgSiblings = siblingsMap[message.id] ?: listOf(message)
     val msgCurrentIndex = msgSiblings.indexOfFirst { it.id == message.id }.coerceAtLeast(0)
@@ -275,6 +295,8 @@ private fun ChatMessageItem(
             // stream; gate only the streaming message.
             canEdit = !(isGenerating && isLastMessage),
             reasoningText = message.reasoningText?.takeIf { it.isNotBlank() },
+            dimmed = isDimmed,
+            onMessageTap = onMessageTap,
             costText = message.costEstimateUsd?.let { CostEstimator.formatUsd(it) },
             timestampText = remember(message.timestamp) {
                 // The placeholder has no real timestamp yet; stamping it
@@ -302,7 +324,7 @@ private fun ChatMessageItem(
             }
         )
 
-        if (!isUserMessage && isLastMessage && !isSelectMode) {
+        if (!isUserMessage && isLastMessage && !isSelectMode && !isDimmed && !isEditingTarget) {
             Row(
                 modifier = Modifier
                     .padding(start = 54.dp, top = 2.dp, bottom = 6.dp)

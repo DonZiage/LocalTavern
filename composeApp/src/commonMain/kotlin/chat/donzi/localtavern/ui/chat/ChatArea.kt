@@ -13,8 +13,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.controller.ChatUiState
@@ -43,6 +47,19 @@ fun ChatArea(
 ) {
     var messageToDelete by remember { mutableStateOf<Message?>(null) }
     var imageTargetMessageId by remember { mutableStateOf<String?>(null) }
+    // Message options (over the input field) and editing (in the input
+    // field) are mutually exclusive temporary states.
+    var optionsMessage by remember { mutableStateOf<Message?>(null) }
+    var editingMessage by remember { mutableStateOf<Message?>(null) }
+    val clipboardManager = LocalClipboardManager.current
+
+    // Entering select mode must not strand an options/editing state.
+    LaunchedEffect(isSelectMode) {
+        if (isSelectMode) {
+            optionsMessage = null
+            editingMessage = null
+        }
+    }
 
     val bubbleImagePicker = rememberImagePickerLauncher(
         onImagesPicked = { imagesList ->
@@ -110,6 +127,11 @@ fun ChatArea(
                     imageTargetMessageId = message.id
                     bubbleImagePicker()
                 },
+                editingMessageId = editingMessage?.id,
+                optionsMessageId = optionsMessage?.id,
+                onRequestOptions = { message -> optionsMessage = message },
+                onCancelEditing = { editingMessage = null },
+                onDismissOptions = { optionsMessage = null },
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
@@ -122,7 +144,19 @@ fun ChatArea(
             isSelectMode = isSelectMode,
             actions = actions,
             onEnterSelectMode = onEnterSelectMode,
-            sendWithCtrlEnter = sendWithCtrlEnter
+            sendWithCtrlEnter = sendWithCtrlEnter,
+            optionsMessage = optionsMessage,
+            onOptionsClose = { optionsMessage = null },
+            onOptionsEdit = { message -> optionsMessage = null; editingMessage = message },
+            onOptionsCopy = { message -> clipboardManager.setText(AnnotatedString(message.content)) },
+            onOptionsBranch = { message -> actions.onBranchMessage(message) },
+            onOptionsAddImage = { message ->
+                imageTargetMessageId = message.id
+                bubbleImagePicker()
+            },
+            onOptionsDelete = { message -> messageToDelete = message },
+            editingMessage = editingMessage,
+            onEditingCancel = { editingMessage = null }
         )
     }
 

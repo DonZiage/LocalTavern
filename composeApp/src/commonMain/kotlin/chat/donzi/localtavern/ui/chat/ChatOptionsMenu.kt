@@ -6,7 +6,6 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 
@@ -22,6 +21,8 @@ fun ChatOptionsMenu(
     canManageChats: Boolean,
     onGoToParent: (() -> Unit)? = null,
     onAttachImage: (() -> Unit)? = null,
+    // Export Chat lives in the session options (Saved Chats) now; these
+    // parameters are kept so existing callers keep compiling.
     onExportChat: (() -> Unit)? = null,
     canExportChat: Boolean = false
 ) {
@@ -41,6 +42,16 @@ fun ChatOptionsMenu(
             HorizontalDivider()
         }
 
+        DropdownMenuItem(
+            text = { Text("Chats") },
+            onClick = {
+                onDismissRequest()
+                onManageChats()
+            },
+            enabled = canManageChats,
+            leadingIcon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Chats") }
+        )
+
         if (onAttachImage != null) {
             DropdownMenuItem(
                 text = { Text("Attach Image") },
@@ -53,14 +64,15 @@ fun ChatOptionsMenu(
         }
 
         DropdownMenuItem(
-            text = { Text("Chats") },
+            text = { Text("Delete Messages") },
             onClick = {
                 onDismissRequest()
-                onManageChats()
+                onEnterSelectMode()
             },
-            enabled = canManageChats,
-            leadingIcon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Chats") }
+            enabled = canDelete,
+            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = "Delete Messages") }
         )
+
         DropdownMenuItem(
             text = { Text("Regenerate") },
             onClick = {
@@ -69,26 +81,6 @@ fun ChatOptionsMenu(
             },
             enabled = canRegenerate,
             leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = "Regenerate") }
-        )
-        if (onExportChat != null) {
-            DropdownMenuItem(
-                text = { Text("Export Chat") },
-                onClick = {
-                    onDismissRequest()
-                    onExportChat()
-                },
-                enabled = canExportChat,
-                leadingIcon = { Icon(Icons.Default.Share, contentDescription = "Export Chat") }
-            )
-        }
-        DropdownMenuItem(
-            text = { Text("Delete Messages") },
-            onClick = {
-                onDismissRequest()
-                onEnterSelectMode()
-            },
-            enabled = canDelete,
-            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = "Delete Messages") }
         )
     }
 }

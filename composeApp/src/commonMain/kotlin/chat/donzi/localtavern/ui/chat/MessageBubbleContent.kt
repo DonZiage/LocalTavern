@@ -44,7 +44,7 @@ internal fun MessageBubbleContent(
     timestampText: String? = null
 ) {
     Column {
-        if (!isUser && isGenerating && content == "...") {
+        if (shouldShowEllipsis(isUser, isGenerating, content)) {
             AnimatedEllipsis(color = textColor)
         } else if (isEditing) {
             MessageEditTextField(

@@ -1,5 +1,6 @@
 package chat.donzi.localtavern.ui.chat
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
@@ -8,7 +9,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Button
@@ -39,9 +39,16 @@ fun ChatTopBar(
     TopAppBar(
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(activeCharacter?.name ?: "LocalTavern")
+                val name = activeCharacter?.name ?: "LocalTavern"
                 if (activeCharacter != null) {
-                    IconButton(onClick = onEditCharacter) { Icon(Icons.Default.Edit, contentDescription = "Edit") }
+                    // No pencil icon: tapping the character name itself
+                    // opens the character editor.
+                    Text(
+                        text = name,
+                        modifier = Modifier.clickable(onClick = onEditCharacter)
+                    )
+                } else {
+                    Text(name)
                 }
             }
         },

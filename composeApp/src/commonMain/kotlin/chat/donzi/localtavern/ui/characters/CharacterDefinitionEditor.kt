@@ -23,9 +23,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.text.KeyboardOptions
 import chat.donzi.localtavern.domain.Character
+import chat.donzi.localtavern.ui.common.nextSuppressAutoCap
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
@@ -68,6 +71,9 @@ fun CharacterDefinitionEditor(
     }
     var avatarData by remember(character.id) { mutableStateOf(character.avatarData) }
     var remoteLoaded by remember(character.id) { mutableStateOf(character.avatarData != null || avatarLoader == null) }
+    // Caps the first letter of an empty name; after the user deletes the
+    // leading character, respect the keyboard instead of re-forcing caps.
+    var nameSuppressAutoCap by remember(character.id) { mutableStateOf(false) }
 
     var confirmDelete by remember { mutableStateOf(false) }
 
@@ -256,7 +262,18 @@ fun CharacterDefinitionEditor(
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Text("${DefaultTokenizer.countTokens(name)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                value = name,
+                onValueChange = { nextValue ->
+                    nameSuppressAutoCap = nextSuppressAutoCap(name, nextValue, nameSuppressAutoCap)
+                    name = nextValue
+                },
+                label = { Text("Name") },
+                modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(
+                    capitalization = if (nameSuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Words
+                )
+            )
             Spacer(Modifier.height(12.dp))
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {

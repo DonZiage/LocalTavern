@@ -9,6 +9,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -16,8 +17,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.domain.Session
+import chat.donzi.localtavern.ui.common.nextSuppressAutoCap
 import kotlinx.coroutines.launch
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
@@ -52,13 +56,15 @@ fun ChatManagerDialog(
     activeSessionId: String?,
     sessionRepository: SessionRepository,
     onDismissRequest: () -> Unit,
-    onSessionSelected: (String) -> Unit
+    onSessionSelected: (String) -> Unit,
+    onExportSession: ((Session) -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
     var sessions by remember { mutableStateOf(emptyList<Session>()) }
     var expandedMenuSessionId by remember { mutableStateOf<String?>(null) }
     var sessionToRename by remember { mutableStateOf<Session?>(null) }
     var editTitleText by remember { mutableStateOf("") }
+    var renameSuppressAutoCap by remember(sessionToRename?.id) { mutableStateOf(false) }
     var sessionToDelete by remember { mutableStateOf<Session?>(null) }
 
     fun loadSessions() { coroutineScope.launch { sessions = sessionRepository.getSessionsForCharacter(characterId) } }
@@ -95,6 +101,9 @@ fun ChatManagerDialog(
                                         IconButton(onClick = { expandedMenuSessionId = session.id }) { Icon(Icons.Default.MoreVert, contentDescription = "Chat Options", modifier = Modifier.size(20.dp)) }
                                         DropdownMenu(expanded = expandedMenuSessionId == session.id, onDismissRequest = { expandedMenuSessionId = null }) {
                                             DropdownMenuItem(text = { Text("Rename") }, leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp)) }, onClick = { expandedMenuSessionId = null; sessionToRename = session; editTitleText = session.title ?: "" })
+                                            if (onExportSession != null) {
+                                                DropdownMenuItem(text = { Text("Export Chat") }, leadingIcon = { Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp)) }, onClick = { expandedMenuSessionId = null; onExportSession(session) })
+                                            }
                                             DropdownMenuItem(text = { Text("Delete", color = MaterialTheme.colorScheme.error) }, leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error) }, onClick = { expandedMenuSessionId = null; sessionToDelete = session })
                                         }
                                     }
@@ -113,7 +122,7 @@ fun ChatManagerDialog(
         AlertDialog(
             onDismissRequest = { sessionToRename = null },
             title = { Text("Rename Chat") },
-            text = { Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { OutlinedTextField(value = editTitleText, onValueChange = { editTitleText = it }, label = { Text("Chat Title") }, placeholder = { Text("#${targetSession.id.take(6)}") }, singleLine = true, modifier = Modifier.fillMaxWidth()) } },
+            text = { Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { OutlinedTextField(value = editTitleText, onValueChange = { nextValue -> renameSuppressAutoCap = nextSuppressAutoCap(editTitleText, nextValue, renameSuppressAutoCap); editTitleText = nextValue }, label = { Text("Chat Title") }, placeholder = { Text("#${targetSession.id.take(6)}") }, singleLine = true, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(capitalization = if (renameSuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Words)) } },
             confirmButton = { TextButton(onClick = { coroutineScope.launch { sessionRepository.updateSessionTitle(targetSession.id, editTitleText.ifBlank { null }); sessionToRename = null; loadSessions() } }) { Text("Save") } },
             dismissButton = { TextButton(onClick = { sessionToRename = null }) { Text("Cancel") } }
         )

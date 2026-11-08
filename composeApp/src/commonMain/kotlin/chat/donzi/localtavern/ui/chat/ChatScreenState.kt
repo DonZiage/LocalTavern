@@ -220,6 +220,36 @@ class ChatScreenState(
         )
     }
 
+    // Exports a specific session (from the Saved Chats list) without
+    // switching the active chat.
+    fun exportSessionTranscript(sessionId: String, characterName: String, personaName: String) {
+        scope.launch {
+            try {
+                val session = sessionRepository.getSessionById(sessionId)
+                val timeline = messageRepository.getMessagesForSession(sessionId)
+                if (timeline.isEmpty()) {
+                    chatController.reportError("Nothing to export yet — the chat is empty.")
+                    return@launch
+                }
+                val title = session?.title
+                val (fileName, bytes) = withContext(Dispatchers.Default) {
+                    val markdown = ChatExport.formatMarkdown(title, characterName, personaName, timeline)
+                    ChatExport.transcriptFileName(title, characterName) to markdown.encodeToByteArray()
+                }
+                val savedPath = chat.donzi.localtavern.saveFile(fileName, bytes)
+                if (savedPath != null) {
+                    chatController.reportError("Chat exported to $savedPath")
+                } else {
+                    chatController.reportError("Export cancelled.")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                chatController.reportError("Export failed: ${e.message ?: "could not save file."}")
+            }
+        }
+    }
+
     // Saves the visible timeline as a Markdown transcript through the
     // platform save-file flow. Empty timelines report instead of writing an
     // empty file; success and failure both surface through the transient

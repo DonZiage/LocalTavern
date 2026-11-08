@@ -361,7 +361,14 @@ internal fun MainScreenOverlays(
                 activeSessionId = state.activeSessionId,
                 sessionRepository = deps.sessionRepository,
                 onDismissRequest = { state.showChatManagerDialog = false },
-                onSessionSelected = { id -> state.activeSessionId = id.ifBlank { null }; state.showChatManagerDialog = false }
+                onSessionSelected = { id -> state.activeSessionId = id.ifBlank { null }; state.showChatManagerDialog = false },
+                onExportSession = { session ->
+                    state.chatState.exportSessionTranscript(
+                        sessionId = session.id,
+                        characterName = state.activeCharacter?.name.orEmpty(),
+                        personaName = ""
+                    )
+                }
             )
         }
 

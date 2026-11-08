@@ -18,12 +18,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import chat.donzi.localtavern.domain.Persona
+import chat.donzi.localtavern.ui.common.nextSuppressAutoCap
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import chat.donzi.localtavern.utils.DefaultTokenizer
 import coil3.compose.AsyncImage
@@ -145,6 +148,7 @@ private fun PersonaEditDialog(
     // the target persona changes (auto-edit firing mid-edit), the fields
     // self-correct instead of showing persona A's fields for persona B.
     var name by remember(initialName) { mutableStateOf(initialName) }
+    var nameSuppressAutoCap by remember(initialName) { mutableStateOf(false) }
     var description by remember(initialDescription) { mutableStateOf(initialDescription) }
     var avatarData by remember(initialAvatar) { mutableStateOf(initialAvatar) }
     var remoteLoaded by remember(initialAvatar) { mutableStateOf(initialAvatar != null) }
@@ -236,10 +240,16 @@ private fun PersonaEditDialog(
                     Spacer(Modifier.height(4.dp))
                     OutlinedTextField(
                         value = name,
-                        onValueChange = { name = it },
+                        onValueChange = { nextValue ->
+                            nameSuppressAutoCap = nextSuppressAutoCap(name, nextValue, nameSuppressAutoCap)
+                            name = nextValue
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
-                        shape = RoundedCornerShape(10.dp)
+                        shape = RoundedCornerShape(10.dp),
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = if (nameSuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Words
+                        )
                     )
                 }
 

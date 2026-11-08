@@ -19,6 +19,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
@@ -54,7 +55,13 @@ fun MessageBubble(
     canEdit: Boolean = true,
     reasoningText: String? = null,
     costText: String? = null,
-    timestampText: String? = null
+    timestampText: String? = null,
+    // While another message is being edited in the input field, every
+    // other bubble is dimmed so the edited one reads as highlighted.
+    dimmed: Boolean = false,
+    // Tap opens the message options bar over the input field (or, while
+    // editing, cancels the edit when tapping outside the edited message).
+    onMessageTap: () -> Unit = {}
 ) {
     var isEditing by remember { mutableStateOf(false) }
     var editedTextValue by remember(content) {
@@ -120,8 +127,10 @@ fun MessageBubble(
                 }
             )
         } else {
+            // Inline actions are superseded by the options bar over the
+            // input field; keep the composable for compat but hidden.
             MessageActions(
-                visible = actionsVisible,
+                visible = false,
                 showMenu = showMenu,
                 onShowMenuChange = { showMenu = it },
                 canEdit = canEdit,
@@ -144,6 +153,31 @@ fun MessageBubble(
             .background(rowBgColor)
             .padding(horizontal = 8.dp, vertical = 4.dp)
             .hoverable(interactionSource)
+            .pointerInput(isSwipeable) {
+                if (isSwipeable) {
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            if (dragOffset > swipeThresholdPx) {
+                                onSwipeRight()
+                            } else if (dragOffset < -swipeThresholdPx) {
+                                onSwipeLeft()
+                            }
+                            dragOffset = 0f
+                        },
+                        onDragCancel = { dragOffset = 0f },
+                        onHorizontalDrag = { change, dragAmount ->
+                            // Whole-line hitbox: drags starting anywhere on
+                            // the line (avatar, empty space or bubble) shift
+                            // the bubble; consuming stops the list's
+                            // vertical scrolling from hijacking the swipe.
+                            change.consume()
+                            dragOffset = (dragOffset + dragAmount)
+                                .coerceIn(-swipeThresholdPx * 1.5f, swipeThresholdPx * 1.5f)
+                        }
+                    )
+                }
+            }
+            .alpha(if (dimmed) 0.55f else 1f)
             .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -151,12 +185,12 @@ fun MessageBubble(
                     if (isSelectMode) {
                         onSelectToggle()
                     } else {
-                        showActionsOnMobile = !showActionsOnMobile
+                        onMessageTap()
                     }
                 },
                 onLongClick = {
                     if (!isSelectMode) {
-                        showActionsOnMobile = !showActionsOnMobile
+                        onMessageTap()
                     }
                 }
             ),
@@ -192,29 +226,6 @@ fun MessageBubble(
                 )
                 .let { modifier -> if (!isUser) modifier.animateContentSize() else modifier }
                 .graphicsLayer { translationX = dragOffset }
-                .pointerInput(isSwipeable) {
-                    if (isSwipeable) {
-                        detectHorizontalDragGestures(
-                            onDragEnd = {
-                                if (dragOffset > swipeThresholdPx) {
-                                    onSwipeRight()
-                                } else if (dragOffset < -swipeThresholdPx) {
-                                    onSwipeLeft()
-                                }
-                                dragOffset = 0f
-                            },
-                            onDragCancel = { dragOffset = 0f },
-                            onHorizontalDrag = { change, dragAmount ->
-                                // Follow the finger and stop hijacking the
-                                // list's vertical scrolling by consuming the
-                                // change once a horizontal drag is detected.
-                                change.consume()
-                                dragOffset = (dragOffset + dragAmount)
-                                    .coerceIn(-swipeThresholdPx * 1.5f, swipeThresholdPx * 1.5f)
-                            }
-                        )
-                    }
-                }
                 .weight(1f, fill = false)
                 .widthIn(max = 460.dp)
                 .padding(12.dp)

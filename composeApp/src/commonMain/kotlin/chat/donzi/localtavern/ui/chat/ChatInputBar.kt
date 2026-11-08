@@ -12,6 +12,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
@@ -24,8 +25,10 @@ import androidx.compose.ui.input.key.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import chat.donzi.localtavern.ui.common.nextSuppressAutoCap
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import coil3.compose.AsyncImage
 
@@ -58,9 +61,16 @@ fun ChatInputBar(
     onGoToParent: (() -> Unit)? = null,
     onExportChat: (() -> Unit)? = null,
     canExportChat: Boolean = false,
-    sendWithCtrlEnter: Boolean = false
+    sendWithCtrlEnter: Boolean = false,
+    sessionKey: String? = null,
+    isEditingMode: Boolean = false,
+    onEditingSave: ((String, List<ByteArray>) -> Unit)? = null
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    // Auto-caps the first letter of a fresh/empty field; once the user
+    // deletes the leading character back to empty, stop forcing caps and
+    // respect the keyboard's current shift state until the next send.
+    var suppressAutoCap by remember(sessionKey) { mutableStateOf(false) }
 
     val imagePickerLauncher = rememberImagePickerLauncher(
         onImagesPicked = { imagesList ->
@@ -69,14 +79,31 @@ fun ChatInputBar(
     )
 
     fun handleSend() {
+        if (isEditingMode) {
+            // Save the edit in place; ChatInputArea restores the parked
+            // draft (see its stash) and clears the editing state.
+            onEditingSave?.invoke(textValue.text, attachedImages)
+            suppressAutoCap = false
+            return
+        }
         if ((textValue.text.isNotBlank() || attachedImages.isNotEmpty()) && !isGenerating) {
             // Clear the draft only when the send was actually accepted; a
             // refused send (e.g. no API connection) must keep the typed text.
             if (onSendMessage(textValue.text, attachedImages)) {
                 onTextValueChange(TextFieldValue(""))
                 onAttachedImagesChange(emptyList())
+                // Fresh field for the next message: capitalise its first
+                // letter again.
+                suppressAutoCap = false
             }
         }
+    }
+
+    // Mobile soft-keyboard Enter inserts a newline; only the UI Send
+    // button sends. Desktop hardware Enter keeps the existing behaviour
+    // (send, or Ctrl+Enter when that setting is enabled).
+    fun handleImeAction() {
+        onTextValueChange(textValue.localTavernInsertNewline())
     }
 
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -151,13 +178,23 @@ fun ChatInputBar(
 
             TextField(
                 value = textValue,
-                onValueChange = { onTextValueChange(it) },
+                onValueChange = {
+                    suppressAutoCap = nextSuppressAutoCap(textValue.text, it.text, suppressAutoCap)
+                    onTextValueChange(it)
+                },
                 placeholder = { Text("Message...") },
                 // Keep the field editable during generation so users can draft
                 // the next message (and so mobile keyboards/focus are not
                 // dropped mid-conversation); handleSend still guards sending.
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { handleSend() }),
+                // Mobile Enter (Default IME action) inserts a newline; the
+                // soft-keyboard Send action is mapped to a newline too, so
+                // only the UI button sends on mobile. Desktop hardware
+                // Enter is handled by onPreviewKeyEvent below.
+                keyboardOptions = KeyboardOptions(
+                    capitalization = if (suppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Sentences,
+                    imeAction = ImeAction.Default
+                ),
+                keyboardActions = KeyboardActions(onSend = { handleImeAction() }),
                 modifier = Modifier
                     .weight(1f)
                     .onPreviewKeyEvent { event ->
@@ -189,6 +226,16 @@ fun ChatInputBar(
                         imageVector = Icons.Default.Stop,
                         contentDescription = "Stop Response Generation",
                         tint = MaterialTheme.colorScheme.error
+                    )
+                }
+            } else if (isEditingMode) {
+                IconButton(
+                    onClick = { handleSend() }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = "Save edit",
+                        tint = MaterialTheme.colorScheme.primary
                     )
                 }
             } else {
