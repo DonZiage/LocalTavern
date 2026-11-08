@@ -35,16 +35,51 @@ private const val PIN_LENGTH = 6
 
 // The two roles a device can take during pairing. The host advertises and
 // shows the QR/PIN; the receiver scans or picks it and types the PIN.
-private enum class SyncRole { Host, Receiver }
+internal enum class SyncRole { Host, Receiver }
 
 // Receiver-side sub-steps: find a host (scan QR / pick from the list), enter
 // its info manually, then enter the PIN shown on the host's screen.
-private enum class ReceiverStep { Find, Manual, Pin }
+internal enum class ReceiverStep { Find, Manual, Pin }
 
 // Receiver-side state after the fingerprint was confirmed: the initial sync
 // runs inside the dialog (with a spinner) instead of the dialog silently
 // closing and the sync failing in the background.
-private enum class PostPairState { Syncing, Success, Failed }
+internal enum class PostPairState { Syncing, Success, Failed }
+
+// Title for the current sync-dialog screen. The first sync after pairing is
+// a screen of its own (with its own progress card), so it must never be
+// titled as the "enter PIN" step it follows.
+internal fun syncDialogTitle(
+    step: SyncRole?,
+    receiverStep: ReceiverStep,
+    postPair: PostPairState?,
+    pairingStage: PairingStage,
+    pendingFingerprint: String?,
+    isConnecting: Boolean,
+    isSyncing: Boolean
+): String = when (postPair) {
+    PostPairState.Syncing -> "Syncing your devices"
+    PostPairState.Success -> "Sync complete"
+    PostPairState.Failed -> "Sync failed"
+    null -> when (step) {
+        null -> "Pair devices"
+        SyncRole.Host -> when {
+            pendingFingerprint != null -> "Verify fingerprint"
+            pairingStage == PairingStage.Paired && isSyncing -> "Syncing your devices"
+            pairingStage == PairingStage.Paired -> "Pairing complete"
+            else -> "Show pairing code"
+        }
+        SyncRole.Receiver -> when {
+            isConnecting -> "Connecting…"
+            pendingFingerprint != null -> "Verify fingerprint"
+            else -> when (receiverStep) {
+                ReceiverStep.Find -> "Enter pairing code"
+                ReceiverStep.Manual -> "Enter address manually"
+                ReceiverStep.Pin -> "Enter the pairing PIN"
+            }
+        }
+    }
+}
 
 // An animated "waiting" line: the app never sits silently while something is
 // in flight — every wait shows a spinner so the user knows the screen is
@@ -313,7 +348,9 @@ internal fun SyncFlowDialog(
 
     // Steps back one level depending on where we are: Host/Find -> role
     // choice, Manual -> Find, Pin -> wherever the Pin step came from.
+    // Once the initial sync has started there is nowhere back to go.
     fun goBack() {
+        if (postPair != null) return
         when (step) {
             SyncRole.Host, null -> backToRoleChoice()
             SyncRole.Receiver -> when (receiverStep) {
@@ -430,15 +467,15 @@ internal fun SyncFlowDialog(
         onDismissRequest = { if (!isConnecting && postPair != PostPairState.Syncing) close() },
         title = {
             Text(
-                when (step) {
-                    null -> "Pair devices"
-                    SyncRole.Host -> "Show pairing code"
-                    SyncRole.Receiver -> when (receiverStep) {
-                        ReceiverStep.Find -> "Enter pairing code"
-                        ReceiverStep.Manual -> "Enter address manually"
-                        ReceiverStep.Pin -> "Enter the pairing PIN"
-                    }
-                }
+                syncDialogTitle(
+                    step = step,
+                    receiverStep = receiverStep,
+                    postPair = postPair,
+                    pairingStage = syncState.pairingStage,
+                    pendingFingerprint = pendingFingerprint,
+                    isConnecting = isConnecting,
+                    isSyncing = syncState.isSyncing
+                )
             )
         },
         text = {
@@ -486,27 +523,36 @@ internal fun SyncFlowDialog(
                         // Fingerprint confirmed (either side) or the receiver's
                         // first authenticated exchange arrived: pairing done.
                         syncState.pairingStage == PairingStage.Paired -> {
-                            Surface(
-                                shape = MaterialTheme.shapes.medium,
-                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Text(
-                                        text = "Paired with ${syncState.pairedPeerName ?: "the other device"}",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = "Pairing complete — syncing continues in the background.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                            // When a sync is actually running on this side, show
+                            // its live progress here instead of a plain "done".
+                            if (syncState.isSyncing || syncState.syncProgress != null) {
+                                WaitingCard(
+                                    title = "Syncing with ${syncState.pairedPeerName ?: "the other device"}…",
+                                    detail = "Exchanging data. Safe to wait — syncing again resumes later.",
+                                    progress = syncState.syncProgress
+                                )
+                            } else {
+                                Surface(
+                                    shape = MaterialTheme.shapes.medium,
+                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        Text(
+                                            text = "Paired with ${syncState.pairedPeerName ?: "the other device"}",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "Pairing complete.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
                                 }
                             }
-                            TextButton(onClick = { close() }) { Text("Done") }
                         }
                         // A receiver announced itself: the QR is replaced by
                         // the PIN — never both on screen at once.
@@ -784,7 +830,8 @@ internal fun SyncFlowDialog(
                                     visualTransformation = PasswordVisualTransformation(),
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                                     modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true
+                                    singleLine = true,
+                                    enabled = !isConnecting
                                 )
                             }
                         }
@@ -855,7 +902,7 @@ internal fun SyncFlowDialog(
             }
         },
         dismissButton = {
-            if (step != null && !isConnecting && postPair != PostPairState.Syncing) {
+            if (step != null && !isConnecting && postPair == null) {
                 TextButton(onClick = { goBack() }) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
