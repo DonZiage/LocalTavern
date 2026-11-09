@@ -82,7 +82,12 @@ fun ChatMessageList(
     onDismissOptions: () -> Unit = {},
     // Desktop floating-menu request (right-click / bottom three-dot).
     // When null, the desktop menu is driven per-item instead.
-    onRequestDesktopMenu: ((Message) -> Unit)? = null
+    onRequestDesktopMenu: ((Message) -> Unit)? = null,
+    // In-conversation search: matched ids, the focused match, and whether
+    // any search is running (non-blank query dims non-matches).
+    searchMatchedIds: Set<String> = emptySet(),
+    searchCurrentId: String? = null,
+    isSearchActive: Boolean = false
 ) {
     val messages = chatState.messages
     val siblingsMap = chatState.siblingsMap
@@ -111,10 +116,21 @@ fun ChatMessageList(
     }
 
     // Follow new messages only while the user is at the bottom; if they
-    // scrolled up to re-read, don't yank them back down.
+    // scrolled up to re-read, don't yank them back down. Suspended while a
+    // search is focused on a match so new tokens don't steal the scroll.
     LaunchedEffect(messages.size, autoScroll) {
-        if (autoScroll && messages.isNotEmpty()) {
+        if (searchCurrentId == null && autoScroll && messages.isNotEmpty()) {
             listState.scrollToItem(0)
+        }
+    }
+
+    // Pin the list to the currently selected search match.
+    LaunchedEffect(searchCurrentId) {
+        if (searchCurrentId != null) {
+            val index = messages.reversed().indexOfFirst { it.id == searchCurrentId }
+            if (index >= 0) {
+                listState.animateScrollToItem(index)
+            }
         }
     }
 
@@ -190,7 +206,10 @@ fun ChatMessageList(
     ) {
         items(messages.reversed(), key = { it.id }) { message ->
             val isEditingTarget = editingMessageId == message.id
-            val isDimmed = editingMessageId != null && !isEditingTarget
+            val isSearchMatch = message.id in searchMatchedIds
+            val isCurrentMatch = searchCurrentId != null && message.id == searchCurrentId
+            val isDimmed = (editingMessageId != null && !isEditingTarget) ||
+                (isSearchActive && searchMatchedIds.isNotEmpty() && !isSearchMatch)
             ChatMessageItem(
                 message = message,
                 isLastMessage = messages.lastOrNull()?.id == message.id,
@@ -208,6 +227,8 @@ fun ChatMessageList(
                 onRequestAddImage = onRequestAddImage,
                 isDimmed = isDimmed,
                 isEditingTarget = isEditingTarget,
+                isSearchMatch = isSearchMatch,
+                isCurrentMatch = isCurrentMatch,
                 // Tap never opens options: it only cancels editing or
                 // dismisses an already-open bar. Holding (or right-click /
                 // the desktop three-dot) is what opens options.
@@ -272,6 +293,8 @@ private fun ChatMessageItem(
     onRequestAddImage: (Message) -> Unit,
     isDimmed: Boolean = false,
     isEditingTarget: Boolean = false,
+    isSearchMatch: Boolean = false,
+    isCurrentMatch: Boolean = false,
     onMessageTap: () -> Unit = {},
     onMessageLongPress: () -> Unit = {},
     onMessageRightClick: () -> Unit = {}
@@ -332,6 +355,8 @@ private fun ChatMessageItem(
             canEdit = !(isGenerating && isLastMessage),
             reasoningText = message.reasoningText?.takeIf { it.isNotBlank() },
             dimmed = isDimmed,
+            isSearchMatch = isSearchMatch,
+            isCurrentMatch = isCurrentMatch,
             onMessageTap = onMessageTap,
             onMessageLongPress = {
                 if (isDesktop) desktopMenuExpanded = !desktopMenuExpanded else onMessageLongPress()

@@ -27,6 +27,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.Dp
 import chat.donzi.localtavern.controller.ChatUiState
 import chat.donzi.localtavern.domain.Character
@@ -175,6 +177,8 @@ internal fun ChatScaffold(
         state.activeCharacter?.id?.takeIf { state.activeCharacter?.avatarData == null },
         { id -> characterRepository.getCharacterAvatarData(id) }
     ) ?: state.activeCharacter?.avatarData
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
 
     Scaffold(
         modifier = modifier,
@@ -195,7 +199,17 @@ internal fun ChatScaffold(
                     onEditCharacter = { state.openEditor(state.activeCharacter) },
                     onCloseChat = { state.activeCharacter = null },
                     onOpenSettings = { onActiveDrawerChange(ActiveDrawer.Settings) },
-                    onOpenCharacters = { onActiveDrawerChange(ActiveDrawer.Characters) }
+                    onOpenCharacters = { onActiveDrawerChange(ActiveDrawer.Characters) },
+                    onSearchClick = {
+                        if (state.isSearchActive) {
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                            state.closeSearch()
+                        } else {
+                            state.openSearch()
+                        }
+                    },
+                    isSearchActive = state.isSearchActive
                 )
             }
         }
@@ -229,6 +243,21 @@ internal fun ChatScaffold(
                 },
                 onEnterSelectMode = { state.enterSelectMode() },
                 sendWithCtrlEnter = sendWithCtrlEnter,
+                isSearchActive = state.isSearchActive,
+                searchQuery = state.searchQuery,
+                searchCurrentIndex = state.searchCurrentIndex,
+                onSearchQueryChange = { state.updateSearchQuery(it) },
+                onSearchClose = { state.closeSearch() },
+                onSearchNext = {
+                    if (state.isSearchActive) {
+                        state.nextSearchMatch(chat.donzi.localtavern.ui.chat.findSearchMatchIds(messages, state.searchQuery).size)
+                    }
+                },
+                onSearchPrev = {
+                    if (state.isSearchActive) {
+                        state.previousSearchMatch(chat.donzi.localtavern.ui.chat.findSearchMatchIds(messages, state.searchQuery).size)
+                    }
+                },
                 actions = state.chatState.buildChatActions(
                     activePersona = activePersona,
                     messages = messages,

@@ -25,6 +25,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,6 +34,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
@@ -128,6 +131,21 @@ fun MessageOptionsBar(
     modifier: Modifier = Modifier
 ) {
     var showMore by remember { mutableStateOf(false) }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    // Deploying this options bar replaces the (focused) input field; the
+    // soft keyboard must hide instead of staying up behind it.
+    LaunchedEffect(Unit) {
+        keyboardController?.hide()
+        focusManager.clearFocus()
+    }
+    // The More overflow menu must hide the keyboard as well.
+    LaunchedEffect(showMore) {
+        if (showMore) {
+            keyboardController?.hide()
+            focusManager.clearFocus()
+        }
+    }
     // Anchors the More menu above its button (end-aligned), so it hovers
     // over the messages instead of pushing them or widening the bar.
     val moreMenuPositionProvider = remember {
@@ -179,7 +197,13 @@ fun MessageOptionsBar(
                 OptionButton(
                     icon = Icons.Default.MoreHoriz,
                     label = "More",
-                    onClick = { showMore = !showMore },
+                    onClick = {
+                        showMore = !showMore
+                        if (showMore) {
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                        }
+                    },
                     modifier = Modifier.fillMaxWidth()
                 )
                 if (showMore) {

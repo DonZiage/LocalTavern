@@ -4,6 +4,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 
 @Composable
 fun MessageActionMenu(
@@ -14,6 +17,14 @@ fun MessageActionMenu(
     onAddImage: () -> Unit,
     onBranch: () -> Unit
 ) {
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            keyboardController?.hide()
+            focusManager.clearFocus()
+        }
+    }
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismissRequest

@@ -18,6 +18,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -43,7 +45,14 @@ fun ChatArea(
     onSelectMessageToggle: (String) -> Unit = {},
     onEnterSelectMode: () -> Unit = {},
     actions: ChatActions,
-    sendWithCtrlEnter: Boolean = false
+    sendWithCtrlEnter: Boolean = false,
+    isSearchActive: Boolean = false,
+    searchQuery: String = "",
+    searchCurrentIndex: Int = 0,
+    onSearchQueryChange: (String) -> Unit = {},
+    onSearchClose: () -> Unit = {},
+    onSearchNext: () -> Unit = {},
+    onSearchPrev: () -> Unit = {}
 ) {
     var messageToDelete by remember { mutableStateOf<Message?>(null) }
     var imageTargetMessageId by remember { mutableStateOf<String?>(null) }
@@ -52,13 +61,26 @@ fun ChatArea(
     var optionsMessage by remember { mutableStateOf<Message?>(null) }
     var editingMessage by remember { mutableStateOf<Message?>(null) }
     val clipboardManager = LocalClipboardManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
 
-    // Entering select mode must not strand an options/editing state.
+    // Entering select mode must not strand an options/editing state, and
+    // must not leave the soft keyboard up now that the input is hidden.
     LaunchedEffect(isSelectMode) {
         if (isSelectMode) {
+            keyboardController?.hide()
+            focusManager.clearFocus()
             optionsMessage = null
             editingMessage = null
         }
+    }
+
+    // Search matches for the current query (empty when not searching).
+    val searchMatches = remember(chatState.messages, searchQuery) {
+        if (isSearchActive) findSearchMatchIds(chatState.messages, searchQuery) else emptyList()
+    }
+    val searchCurrentId = remember(searchMatches, searchCurrentIndex) {
+        currentSearchMatchId(searchMatches, searchCurrentIndex)
     }
 
     val bubbleImagePicker = rememberImagePickerLauncher(
@@ -73,6 +95,17 @@ fun ChatArea(
     )
 
     Column(modifier = Modifier.fillMaxSize()) {
+        if (isSearchActive) {
+            ChatSearchBar(
+                query = searchQuery,
+                onQueryChange = onSearchQueryChange,
+                onClose = onSearchClose,
+                matchCount = searchMatches.size,
+                currentIndex = searchCurrentIndex,
+                onNext = onSearchNext,
+                onPrev = onSearchPrev
+            )
+        }
         if (activeCharacter == null && chatState.messages.isEmpty()) {
             ChatOnboarding(
                 hasApiProfile = hasApiProfile,
@@ -132,6 +165,9 @@ fun ChatArea(
                 onRequestOptions = { message -> optionsMessage = message },
                 onCancelEditing = { editingMessage = null },
                 onDismissOptions = { optionsMessage = null },
+                searchMatchedIds = searchMatches.toSet(),
+                searchCurrentId = searchCurrentId,
+                isSearchActive = isSearchActive && searchQuery.isNotBlank(),
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()

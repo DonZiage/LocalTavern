@@ -45,6 +45,13 @@ class ChatScreenState(
     var isSelectMode by mutableStateOf(false)
     var selectedMessageIds by mutableStateOf<Set<String>>(emptySet())
 
+    // In-conversation search: opened from the top-bar search button. The
+    // query and current match index live here (like select mode) so the
+    // top bar, the search bar and the message list all share one state.
+    var isSearchActive by mutableStateOf(false)
+    var searchQuery by mutableStateOf("")
+    var searchCurrentIndex by mutableStateOf(0)
+
     var sendInFlight by mutableStateOf(false)
 
     var hasApiProfile by mutableStateOf(false)
@@ -52,11 +59,35 @@ class ChatScreenState(
     fun enterSelectMode() {
         isSelectMode = true
         selectedMessageIds = emptySet()
+        closeSearch()
     }
 
     fun exitSelectMode() {
         isSelectMode = false
         selectedMessageIds = emptySet()
+    }
+
+    fun openSearch() {
+        isSearchActive = true
+    }
+
+    fun closeSearch() {
+        isSearchActive = false
+        searchQuery = ""
+        searchCurrentIndex = 0
+    }
+
+    fun updateSearchQuery(query: String) {
+        searchQuery = query
+        searchCurrentIndex = 0
+    }
+
+    fun nextSearchMatch(total: Int) {
+        searchCurrentIndex = nextSearchMatchIndex(searchCurrentIndex, total)
+    }
+
+    fun previousSearchMatch(total: Int) {
+        searchCurrentIndex = previousSearchMatchIndex(searchCurrentIndex, total)
     }
 
     fun refreshApiProfile() {
@@ -77,6 +108,7 @@ class ChatScreenState(
     suspend fun syncActiveSession(character: Character?, personaId: String?) {
         isSelectMode = false
         selectedMessageIds = emptySet()
+        closeSearch()
         hasApiProfile = apiSettingsRepository.getAllApiConnections().isNotEmpty()
         if (personaId != null && character != null) {
             var sessionId = activeSessionIdProvider()

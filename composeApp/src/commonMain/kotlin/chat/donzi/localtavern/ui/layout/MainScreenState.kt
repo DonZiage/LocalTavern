@@ -59,6 +59,18 @@ class MainScreenState(
         get() = chatState.selectedMessageIds
         set(value) { chatState.selectedMessageIds = value }
 
+    var isSearchActive: Boolean
+        get() = chatState.isSearchActive
+        set(value) { chatState.isSearchActive = value }
+
+    var searchQuery: String
+        get() = chatState.searchQuery
+        set(value) { chatState.searchQuery = value }
+
+    var searchCurrentIndex: Int
+        get() = chatState.searchCurrentIndex
+        set(value) { chatState.searchCurrentIndex = value }
+
     var sendInFlight: Boolean
         get() = chatState.sendInFlight
         set(value) { chatState.sendInFlight = value }
@@ -102,6 +114,16 @@ class MainScreenState(
     fun enterSelectMode() = chatState.enterSelectMode()
 
     fun exitSelectMode() = chatState.exitSelectMode()
+
+    fun openSearch() = chatState.openSearch()
+
+    fun closeSearch() = chatState.closeSearch()
+
+    fun updateSearchQuery(query: String) = chatState.updateSearchQuery(query)
+
+    fun nextSearchMatch(total: Int) = chatState.nextSearchMatch(total)
+
+    fun previousSearchMatch(total: Int) = chatState.previousSearchMatch(total)
 
     fun refreshApiProfile() = chatState.refreshApiProfile()
 

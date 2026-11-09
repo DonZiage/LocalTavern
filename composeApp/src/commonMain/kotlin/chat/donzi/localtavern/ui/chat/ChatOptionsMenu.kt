@@ -8,6 +8,9 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 
 @Composable
 fun ChatOptionsMenu(
@@ -26,6 +29,16 @@ fun ChatOptionsMenu(
     onExportChat: (() -> Unit)? = null,
     canExportChat: Boolean = false
 ) {
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    // Menu deployment must hide the soft keyboard (it stays up behind the
+    // menu when the message field holds focus).
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            keyboardController?.hide()
+            focusManager.clearFocus()
+        }
+    }
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismissRequest

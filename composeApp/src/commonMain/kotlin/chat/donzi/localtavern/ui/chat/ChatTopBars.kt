@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -34,7 +35,9 @@ fun ChatTopBar(
     onEditCharacter: () -> Unit,
     onCloseChat: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenCharacters: () -> Unit
+    onOpenCharacters: () -> Unit,
+    onSearchClick: () -> Unit = {},
+    isSearchActive: Boolean = false
 ) {
     TopAppBar(
         title = {
@@ -58,6 +61,17 @@ fun ChatTopBar(
             }
         },
         actions = {
+            // Search sits to the LEFT of Close Chat so users can search in
+            // the current conversation without leaving it.
+            if (activeCharacter != null) {
+                IconButton(onClick = onSearchClick) {
+                    Icon(
+                        Icons.Filled.Search,
+                        contentDescription = "Search chat",
+                        tint = if (isSearchActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
             if (activeCharacter != null) { IconButton(onClick = onCloseChat) { Icon(Icons.Filled.Close, contentDescription = "Close Chat") } }
             if (!isDesktop) {
                 IconButton(onClick = onOpenCharacters) { Icon(Icons.Filled.Person, contentDescription = "Characters") }

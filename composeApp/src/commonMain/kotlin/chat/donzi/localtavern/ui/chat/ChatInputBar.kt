@@ -23,6 +23,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -67,6 +69,24 @@ fun ChatInputBar(
     onEditingSave: ((String, List<ByteArray>) -> Unit)? = null
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+
+    // Deploying the chat menu must hide the soft keyboard (the message
+    // field keeps focus on mobile and the keyboard would otherwise stay
+    // up behind the menu).
+    fun openMenu() {
+        keyboardController?.hide()
+        focusManager.clearFocus()
+        showMenu = true
+    }
+
+    LaunchedEffect(showMenu) {
+        if (showMenu) {
+            keyboardController?.hide()
+            focusManager.clearFocus()
+        }
+    }
     // Auto-caps the first letter of a fresh/empty field; once the user
     // deletes the leading character back to empty, stop forcing caps and
     // respect the keyboard's current shift state until the next send.
@@ -157,7 +177,7 @@ fun ChatInputBar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box {
-                IconButton(onClick = { showMenu = true }) {
+                IconButton(onClick = { openMenu() }) {
                     Icon(Icons.Default.Menu, contentDescription = "Chat Options")
                 }
                 ChatOptionsMenu(

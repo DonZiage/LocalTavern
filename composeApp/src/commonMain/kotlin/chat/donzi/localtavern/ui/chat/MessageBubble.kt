@@ -5,6 +5,7 @@ import chat.donzi.localtavern.ui.common.FullscreenImageViewer
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -84,7 +85,11 @@ fun MessageBubble(
     onDesktopMenuChange: (Boolean) -> Unit = {},
     // Reports the bubble's pixel width so the caller can hug the
     // bottom three-dot to the bubble's right edge (not the screen edge).
-    onBubbleWidthChanged: (Int) -> Unit = {}
+    onBubbleWidthChanged: (Int) -> Unit = {},
+    // In-conversation search highlight: matches get a tertiary border,
+    // the current match a thicker primary border.
+    isSearchMatch: Boolean = false,
+    isCurrentMatch: Boolean = false
 ) {
     var isEditing by remember { mutableStateOf(false) }
     var editedTextValue by remember(content) {
@@ -290,6 +295,13 @@ fun MessageBubble(
                     color = bubbleColor,
                     shape = RoundedCornerShape(16.dp)
                 )
+                .let {
+                    when {
+                        isCurrentMatch -> it.border(2.5.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(16.dp))
+                        isSearchMatch -> it.border(1.5.dp, MaterialTheme.colorScheme.tertiary, RoundedCornerShape(16.dp))
+                        else -> it
+                    }
+                }
                 .let { modifier -> if (!isUser) modifier.animateContentSize() else modifier }
                 .graphicsLayer { translationX = dragOffset }
                 .weight(1f, fill = false)
