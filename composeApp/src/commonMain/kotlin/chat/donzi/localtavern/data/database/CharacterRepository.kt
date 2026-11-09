@@ -317,11 +317,19 @@ class CharacterRepository(
 
     suspend fun deleteCharacters(ids: Collection<String>) = withContext(ioDispatcher) {
         if (ids.isEmpty()) return@withContext
-        queries.deleteCharactersByIds(
-            updatedAt = nextTimestamp(),
-            syncSeq = nextSyncSeq(),
-            id = ids.toList()
-        )
+        // One logical version for the batch (shared ts) but one sync sequence
+        // per character: a sequence shared by many rows is one atomic group
+        // that can exceed any shippable envelope when the cards are large.
+        val ts = nextTimestamp()
+        database.transaction {
+            ids.forEach { id ->
+                queries.deleteCharactersByIds(
+                    updatedAt = ts,
+                    syncSeq = nextSyncSeq(),
+                    id = listOf(id)
+                )
+            }
+        }
     }
 
     suspend fun updateCharacterLorebook(id: String, characterBook: JsonObject?) = withContext(ioDispatcher) {

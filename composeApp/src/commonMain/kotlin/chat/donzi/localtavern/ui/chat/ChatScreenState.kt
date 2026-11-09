@@ -185,7 +185,10 @@ class ChatScreenState(
                     activeSessionId?.let { sessionId ->
                         val existingMsg = messages.find { it.id == lastMessageId }
                             ?: siblingsMap[lastMessageId]?.find { it.id == lastMessageId }
-                        if (existingMsg != null) {
+                        // A greeting root (parent == null) is static: a new
+                        // LLM reply would replace it as a fresh root and
+                        // orphan every greeting. The list wraps instead.
+                        if (existingMsg != null && existingMsg.parentId != null) {
                             chatController.requestAiResponse(sessionId, activeCharacter, activePersona, existingMsg.parentId)
                         }
                     }

@@ -304,7 +304,20 @@ class SyncExchange(
                 onProgress(SyncProgress(phase = "Syncing…", round = rounds, sentRows = sentRows, receivedRows = receivedRows))
                 // Drained when I have nothing left to send AND the peer has
                 // nothing left either (its envelope was a full, uncut batch).
-                if (myBatch.changes.isEmpty && !responseEnvelope.hasMore) break
+                // BUT a local write may have landed DURING this round trip
+                // (after this round's batch was collected): without a recheck
+                // it would wait for another sync even though this one reports
+                // success. The cursor just advanced, so a fresh collect from
+                // it is the exact remaining work: another round ships it.
+                if (myBatch.changes.isEmpty && !responseEnvelope.hasMore) {
+                    val freshPeer = repository.getPeer(peerId) ?: error("Peer not found.")
+                    val pending = repository.collectDeltaBatched(repository.saneDeltaCutoff(freshPeer.peerReceivedCursor), DELTA_BUDGET_BYTES)
+                    // Fully drained only when nothing remains above the
+                    // advanced cursor; otherwise the next round ships the
+                    // pending rows (and an oversized first group fails
+                    // loudly there instead of as a false success here).
+                    if (pending.changes.isEmpty && !pending.hasMore) break
+                }
             }
             Result.success("Synced with $peerName.")
         } catch (e: CancellationException) {
@@ -471,12 +484,24 @@ class SyncExchange(
             // my sequence space first (saneDeltaCutoff): if the initiator
             // restored from an older backup its cursor is stale-high and would
             // skip every row this device has written since, permanently.
-            val myBatch = repository.collectDeltaBatched(repository.saneDeltaCutoff(envelope.cursor), DELTA_BUDGET_BYTES)
+            var myBatch = repository.collectDeltaBatched(repository.saneDeltaCutoff(envelope.cursor), DELTA_BUDGET_BYTES)
             if (myBatch.changes.isEmpty && myBatch.hasMore) {
                 // My first atomic group cannot fit any envelope: an oversized
                 // response would be rejected by the initiator's pre-parse
                 // check and cut the sync. Report it clearly instead.
                 return ExchangeResponse(ok = false, message = "A row on this device is too large to sync. Edit or remove it, then sync again.")
+            }
+            if (!myBatch.hasMore) {
+                // A local write may have landed DURING this handling (after
+                // the batch was collected): claiming "nothing left" would
+                // let the initiator declare the sync drained and the write
+                // would wait for another sync. Re-check above this batch's
+                // cut and ask for one more round instead.
+                val tailCutoff = if (myBatch.changes.isEmpty) repository.saneDeltaCutoff(envelope.cursor) else myBatch.changes.maxSyncSeq + 1
+                val pending = repository.collectDeltaBatched(tailCutoff, DELTA_BUDGET_BYTES)
+                if (!pending.changes.isEmpty || pending.hasMore) {
+                    myBatch = DeltaBatch(changes = myBatch.changes, hasMore = true)
+                }
             }
             val myExchangeKey = channelKeys.outboundChannelKey(peerKey)
             val responseEnvelope = SyncEnvelope(

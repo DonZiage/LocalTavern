@@ -331,6 +331,17 @@ internal fun SyncFlowDialog(
         }
     }
 
+    // When the OTHER side confirms first and its authenticated exchange
+    // completes this pairing (see SyncPairing.markPairingComplete), the
+    // receiver's screen leaves the fingerprint card on its own: show the
+    // success screen instead of the PIN form, so both devices see the same
+    // outcome without a second tap.
+    LaunchedEffect(syncState.pairingStage) {
+        if (step == SyncRole.Receiver && syncState.pairingStage == PairingStage.Paired && postPair == null) {
+            postPair = PostPairState.Success
+        }
+    }
+
     fun close() {
         scope.launch {
             syncService.dismissPairing()
@@ -463,6 +474,18 @@ internal fun SyncFlowDialog(
         runInitialSync()
     }
 
+    // Host-side counterpart of confirmFingerprintAndSync: confirming on the
+    // host ALSO starts the initial sync (instead of only flipping local
+    // state). The exchange authenticates the host, so the receiver's
+    // pairing completes automatically on its screen — confirming on one
+    // device is enough, and both sides converge in the same session.
+    fun confirmHostAndSync() {
+        val peerId = syncState.pendingPeerDeviceId
+        syncService.confirmFingerprint()
+        postPairPeerId = peerId
+        runInitialSync()
+    }
+
     AlertDialog(
         onDismissRequest = { if (!isConnecting && postPair != PostPairState.Syncing) close() },
         title = {
@@ -504,6 +527,59 @@ internal fun SyncFlowDialog(
                     val pin = syncState.pairingPin
                     val qrPayload = remember(syncState.pairingPin) { syncService.pairingQrPayload() }
                     when {
+                        // The initial sync started by this device's own
+                        // confirmation runs here, with a spinner (mirror of
+                        // the receiver flow): it also completes the pairing
+                        // on the other device's screen.
+                        postPair == PostPairState.Syncing -> WaitingCard(
+                            title = "Syncing with ${syncState.pairedPeerName ?: "the other device"}…",
+                            detail = "Exchanging data for the first time. Safe to wait — cancelling resumes later.",
+                            progress = syncState.syncProgress
+                        )
+                        postPair == PostPairState.Success -> Surface(
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    "Paired and synced with ${syncState.pairedPeerName ?: "the other device"}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    "All devices are up to date. This screen closes automatically.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        postPair == PostPairState.Failed -> Surface(
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    "Initial sync failed",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = postPairError ?: "Unknown error.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Button(onClick = { retryInitialSync() }, modifier = Modifier.fillMaxWidth()) {
+                                    Text("Retry sync")
+                                }
+                            }
+                        }
                         // The receiver submitted the PIN: compare fingerprints.
                         // The other side may complete the pairing on its own —
                         // then this card is replaced by the success screen live.
@@ -511,11 +587,11 @@ internal fun SyncFlowDialog(
                             FingerprintConfirmation(
                                 fingerprint = pendingFingerprint,
                                 peerName = syncState.pendingPeerName ?: "the other device",
-                                onConfirm = { syncService.confirmFingerprint() },
+                                onConfirm = { confirmHostAndSync() },
                                 onReject = { scope.launch { syncService.rejectPendingPairing() } }
                             )
                             Text(
-                                text = "The other device entered the PIN. Once the fingerprints are compared, either device can complete the pairing.",
+                                text = "The other device entered the PIN. Confirming also starts the initial sync with it.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -851,7 +927,13 @@ internal fun SyncFlowDialog(
         confirmButton = {
             when (step) {
                 null -> TextButton(onClick = { close() }) { Text("Cancel") }
-                SyncRole.Host -> TextButton(onClick = { close() }) { Text("Done") }
+                SyncRole.Host -> {
+                    // While the host-started initial sync runs, the dialog is
+                    // locked (mirror of the receiver flow).
+                    if (postPair != PostPairState.Syncing) {
+                        TextButton(onClick = { close() }) { Text("Done") }
+                    }
+                }
                 SyncRole.Receiver -> {
                     when {
                         // Initial sync in flight: no confirm action, dialog is

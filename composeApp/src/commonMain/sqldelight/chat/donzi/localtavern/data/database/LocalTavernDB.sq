@@ -386,6 +386,12 @@ INSERT INTO MessageEntity(id, sessionId, role, content, timestamp, parentId, isA
 deactivateSiblings:
 UPDATE MessageEntity SET isActivePath = 0, updatedAt = ?, syncSeq = ? WHERE sessionId = ? AND parentId IS ? AND id != ?;
 
+-- Ids of every sibling row that deactivateSiblings would touch, so callers can
+-- deactivate each one with its OWN sync sequence (one shared sequence across
+-- many rows makes an unshippably large sync group when the rows are big).
+selectSiblingIdsForDeactivation:
+SELECT id FROM MessageEntity WHERE sessionId = ? AND parentId IS ? AND id != ?;
+
 deactivateMessage:
 UPDATE MessageEntity SET isActivePath = 0, updatedAt = ?, syncSeq = ? WHERE sessionId = ? AND id = ?;
 
@@ -394,6 +400,12 @@ UPDATE MessageEntity SET isActivePath = 1, updatedAt = ?, syncSeq = ? WHERE id =
 
 selectAllMessagesForSession:
 SELECT * FROM MessageEntity WHERE sessionId = ? AND isDeleted = 0;
+
+-- Every message row of a session INCLUDING tombstones: session deletion
+-- re-stamps already-deleted rows too, or a peer could resurrect them by
+-- LWW (the stale tombstone loses to a concurrent live version).
+selectAllMessagesAnyForSession:
+SELECT * FROM MessageEntity WHERE sessionId = ?;
 
 selectAnyMessageForSession:
 SELECT COUNT(*) FROM MessageEntity WHERE sessionId = ?;
@@ -704,7 +716,7 @@ UPDATE SyncPeer SET isDeleted = 1, updatedAt = ? WHERE isDeleted = 0;
 
 selectCharacterDeltaGroups:
 SELECT syncSeq AS seq,
-       ?1 + LENGTH(COALESCE(name, '')) + LENGTH(COALESCE(description, '')) +
+       COALESCE(SUM(?1 + LENGTH(COALESCE(name, '')) + LENGTH(COALESCE(description, '')) +
        LENGTH(COALESCE(personality, '')) + LENGTH(COALESCE(scenario, '')) +
        LENGTH(COALESCE(firstMes, '')) + LENGTH(COALESCE(mesExample, '')) +
        LENGTH(COALESCE(creatorNotes, '')) + LENGTH(COALESCE(altGreetings, '')) +
@@ -712,37 +724,37 @@ SELECT syncSeq AS seq,
        LENGTH(COALESCE(creator, '')) + LENGTH(COALESCE(characterVersion, '')) +
        LENGTH(COALESCE(tags, '')) + LENGTH(COALESCE(extensions, '')) +
        LENGTH(COALESCE(characterBook, '')) +
-       COALESCE(CASE WHEN LENGTH(avatarData) > ?2 THEN ?3 ELSE (LENGTH(avatarData) * 4) / 3 END, 0) AS size
+       COALESCE(CASE WHEN LENGTH(avatarData) > ?2 THEN ?3 ELSE (LENGTH(avatarData) * 4) / 3 END, 0)), 0) AS size
 FROM CharacterEntity WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
 
 selectPersonaDeltaGroups:
 SELECT syncSeq AS seq,
-       ?1 + LENGTH(COALESCE(name, '')) + LENGTH(COALESCE(description, '')) +
-       COALESCE(CASE WHEN LENGTH(avatarData) > ?2 THEN ?3 ELSE (LENGTH(avatarData) * 4) / 3 END, 0) AS size
+       COALESCE(SUM(?1 + LENGTH(COALESCE(name, '')) + LENGTH(COALESCE(description, '')) +
+       COALESCE(CASE WHEN LENGTH(avatarData) > ?2 THEN ?3 ELSE (LENGTH(avatarData) * 4) / 3 END, 0)), 0) AS size
 FROM PersonaEntity WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
 
 selectSessionDeltaGroups:
 SELECT syncSeq AS seq,
-       ?1 + LENGTH(characterId) + LENGTH(personaId) + LENGTH(COALESCE(title, '')) +
-       LENGTH(COALESCE(currentMessageId, '')) + LENGTH(COALESCE(parentSessionId, '')) AS size
+       COALESCE(SUM(?1 + LENGTH(characterId) + LENGTH(personaId) + LENGTH(COALESCE(title, '')) +
+       LENGTH(COALESCE(currentMessageId, '')) + LENGTH(COALESCE(parentSessionId, ''))), 0) AS size
 FROM ChatSession WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
 
 selectMessageDeltaGroups:
 SELECT syncSeq AS seq,
-       ?1 + LENGTH(sessionId) + LENGTH(role) + LENGTH(content) +
+       COALESCE(SUM(?1 + LENGTH(sessionId) + LENGTH(role) + LENGTH(content) +
        LENGTH(COALESCE(parentId, '')) + LENGTH(COALESCE(reasoningText, '')) +
-       LENGTH(COALESCE(imageRefs, '')) AS size
+       LENGTH(COALESCE(imageRefs, ''))), 0) AS size
 FROM MessageEntity WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
 
 selectApiConnectionDeltaGroups:
 SELECT syncSeq AS seq,
-       ?1 + LENGTH(provider) + LENGTH(name) + LENGTH(COALESCE(baseUrl, '')) +
+       COALESCE(SUM(?1 + LENGTH(provider) + LENGTH(name) + LENGTH(COALESCE(baseUrl, '')) +
        LENGTH(COALESCE(apiKey, '')) + LENGTH(COALESCE(model, '')) +
-       LENGTH(COALESCE(inferenceProvider, '')) + LENGTH(COALESCE(quantization, '')) AS size
+       LENGTH(COALESCE(inferenceProvider, '')) + LENGTH(COALESCE(quantization, ''))), 0) AS size
 FROM ApiConnection WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
 
 selectPromptBlockDeltaGroups:
-SELECT syncSeq AS seq, ?1 + LENGTH(name) + LENGTH(template) AS size
+SELECT syncSeq AS seq, COALESCE(SUM(?1 + LENGTH(name) + LENGTH(template)), 0) AS size
 FROM PromptBlockEntity WHERE syncSeq >= ?4 GROUP BY syncSeq ORDER BY syncSeq;
 
 -- Rows of one table within a decided batch cut (a complete sequence

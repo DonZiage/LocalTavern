@@ -24,12 +24,25 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.ui.input.pointer.changedToDown
+import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.util.fastAll
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.window.PopupPositionProvider
+import chat.donzi.localtavern.isDesktop
 import coil3.compose.AsyncImage
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -59,9 +72,19 @@ fun MessageBubble(
     // While another message is being edited in the input field, every
     // other bubble is dimmed so the edited one reads as highlighted.
     dimmed: Boolean = false,
-    // Tap opens the message options bar over the input field (or, while
-    // editing, cancels the edit when tapping outside the edited message).
-    onMessageTap: () -> Unit = {}
+    // Tap never opens options (on mobile it only cancels editing or
+    // dismisses an already-open bar); holding (long-press) does. On
+    // desktop a right-click opens the floating menu instead.
+    onMessageTap: () -> Unit = {},
+    onMessageLongPress: () -> Unit = {},
+    onMessageRightClick: () -> Unit = {},
+    // Desktop floating menu state, hoisted so the bottom three-dot button
+    // (in ChatMessageItem) and right-click both open the same menu.
+    desktopMenuExpanded: Boolean = false,
+    onDesktopMenuChange: (Boolean) -> Unit = {},
+    // Reports the bubble's pixel width so the caller can hug the
+    // bottom three-dot to the bubble's right edge (not the screen edge).
+    onBubbleWidthChanged: (Int) -> Unit = {}
 ) {
     var isEditing by remember { mutableStateOf(false) }
     var editedTextValue by remember(content) {
@@ -109,6 +132,45 @@ fun MessageBubble(
         MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
     } else {
         Color.Transparent
+    }
+
+    // Desktop floating menu placement: to the side of the bubble (right
+    // for assistant, left for user) when there is room, otherwise above
+    // it — always hovering over the messages without pushing them.
+    val desktopMenuPositionProvider = remember(isUser) {
+        object : PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize
+            ): IntOffset {
+                val gap = 8
+                if (!isUser) {
+                    val sideX = anchorBounds.right + gap
+                    if (sideX + popupContentSize.width <= windowSize.width) {
+                        val y = anchorBounds.top.coerceIn(
+                            0,
+                            (windowSize.height - popupContentSize.height).coerceAtLeast(0)
+                        )
+                        return IntOffset(x = sideX, y = y)
+                    }
+                } else {
+                    val sideX = anchorBounds.left - popupContentSize.width - gap
+                    if (sideX >= 0) {
+                        val y = anchorBounds.top.coerceIn(
+                            0,
+                            (windowSize.height - popupContentSize.height).coerceAtLeast(0)
+                        )
+                        return IntOffset(x = sideX, y = y)
+                    }
+                }
+                val preferredX = if (!isUser) anchorBounds.right - popupContentSize.width else anchorBounds.left
+                val x = preferredX.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
+                val y = (anchorBounds.top - popupContentSize.height - 4).coerceAtLeast(0)
+                return IntOffset(x = x, y = y)
+            }
+        }
     }
 
     // Defined once and slotted into whichever side carries the actions (left
@@ -178,6 +240,10 @@ fun MessageBubble(
                 }
             }
             .alpha(if (dimmed) 0.55f else 1f)
+            // Desktop right-click opens the floating menu.
+            .let {
+                if (isDesktop && !isSelectMode) it.onRightClick { onMessageRightClick() } else it
+            }
             .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -190,7 +256,7 @@ fun MessageBubble(
                 },
                 onLongClick = {
                     if (!isSelectMode) {
-                        onMessageTap()
+                        onMessageLongPress()
                     }
                 }
             ),
@@ -229,6 +295,7 @@ fun MessageBubble(
                 .weight(1f, fill = false)
                 .widthIn(max = 460.dp)
                 .padding(12.dp)
+                .onSizeChanged { onBubbleWidthChanged(it.width) }
         ) {
             MessageBubbleContent(
                 content = content,
@@ -252,6 +319,42 @@ fun MessageBubble(
                 costText = costText,
                 timestampText = timestampText
             )
+            if (isDesktop && desktopMenuExpanded && !isEditing) {
+                Popup(
+                    popupPositionProvider = desktopMenuPositionProvider,
+                    properties = PopupProperties(focusable = true),
+                    onDismissRequest = { onDesktopMenuChange(false) }
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 4.dp,
+                        shadowElevation = 4.dp
+                    ) {
+                        Column {
+                            MoreMenuItem(label = "Copy", enabled = true, onClick = { onDesktopMenuChange(false); onCopy() })
+                            MoreMenuItem(label = "Branch", enabled = true, onClick = { onDesktopMenuChange(false); onBranch() })
+                            MoreMenuItem(
+                                label = "Edit",
+                                enabled = canEdit,
+                                onClick = {
+                                    onDesktopMenuChange(false)
+                                    editedTextValue = TextFieldValue(content, selection = TextRange(content.length))
+                                    editedImages = messageImages
+                                    isEditing = true
+                                }
+                            )
+                            MoreMenuItem(label = "Add Image", enabled = true, onClick = { onDesktopMenuChange(false); onAddImage() })
+                            MoreMenuItem(
+                                label = "Delete",
+                                enabled = true,
+                                tint = MaterialTheme.colorScheme.error,
+                                onClick = { onDesktopMenuChange(false); onDelete() }
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         if (isUser) {
@@ -269,6 +372,20 @@ fun MessageBubble(
 
     if (showFullImage && avatarData != null) {
         FullscreenImageViewer(avatarData = avatarData, onDismiss = { showFullImage = false })
+    }
+}
+
+// Right-click (secondary button) opens the desktop floating menu.
+private fun Modifier.onRightClick(onClick: () -> Unit): Modifier = pointerInput(onClick) {
+    awaitEachGesture {
+        while (true) {
+            val event = awaitPointerEvent()
+            if (event.buttons.isSecondaryPressed && event.changes.fastAll { it.changedToDown() }) {
+                event.changes.forEach { it.consume() }
+                onClick()
+                break
+            }
+        }
     }
 }
 

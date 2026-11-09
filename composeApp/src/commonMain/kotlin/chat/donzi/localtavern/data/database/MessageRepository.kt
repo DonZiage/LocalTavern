@@ -81,7 +81,6 @@ class MessageRepository(
     suspend fun selectVariation(sessionId: String, messageId: String, parentId: String?) = withContext(ioDispatcher) {
         val now = currentTimeMillis()
         val ts = nextTimestamp()
-        val seq = nextSyncSeq()
         database.transaction {
             val allMessages = queries.selectAllMessagesForSession(sessionId).executeAsList()
             val ancestorIds = buildSet {
@@ -90,11 +89,14 @@ class MessageRepository(
                     current = current.parentId?.let { pid -> allMessages.find { it.id == pid } }
                 }
             }
+            // One logical version for the whole switch (shared ts) but one
+            // sync sequence per row: a sequence shared across many rows is
+            // one atomic group that can grow past any shippable envelope.
             allMessages.filter { it.id !in ancestorIds }.forEach { msg ->
-                queries.deactivateMessage(updatedAt = ts, syncSeq = seq, sessionId = sessionId, id = msg.id)
+                queries.deactivateMessage(updatedAt = ts, syncSeq = nextSyncSeq(), sessionId = sessionId, id = msg.id)
             }
-            queries.activateMessage(updatedAt = ts, syncSeq = seq, id = messageId)
-            sessionRepository.stampSessionCurrentMessage(sessionId, messageId, now, ts, seq)
+            queries.activateMessage(updatedAt = ts, syncSeq = nextSyncSeq(), id = messageId)
+            sessionRepository.stampSessionCurrentMessage(sessionId, messageId, now, ts, nextSyncSeq())
         }
     }
 
@@ -113,8 +115,12 @@ class MessageRepository(
                 updatedAt = ts, isDeleted = 0L, imageRefs = serializeImageRefs(refs),
                 reasoningText = null, costEstimate = null, syncSeq = seq
             )
-            queries.deactivateSiblings(updatedAt = ts, syncSeq = seq, sessionId = sessionId, parentId = parentId, id = newId)
-            sessionRepository.stampSessionCurrentMessage(sessionId, newId, now, ts, seq)
+            // Per-row sync sequences (see selectVariation): one shared sequence
+            // across many siblings can make an unshippable sync group.
+            queries.selectSiblingIdsForDeactivation(sessionId, parentId, newId).executeAsList().forEach { siblingId ->
+                queries.deactivateMessage(updatedAt = ts, syncSeq = nextSyncSeq(), sessionId = sessionId, id = siblingId)
+            }
+            sessionRepository.stampSessionCurrentMessage(sessionId, newId, now, ts, nextSyncSeq())
             newId
         }
     }
@@ -147,18 +153,19 @@ class MessageRepository(
 
             val now = currentTimeMillis()
             val ts = nextTimestamp()
-            val seq = nextSyncSeq()
             var primaryMessageId: String? = null
             allGreetings.forEachIndexed { index, greeting ->
                 val isActive = index == 0
                 // Monotonic timestamps keep the greeting swipe order stable
                 // (all greetings inserted in the same millisecond otherwise tie).
-                val msgId = insertGreetingMessageRaw(sessionId, "assistant", greeting, null, isActive, now + index, ts, seq)
+                // Per-row sync sequences (one shared sequence across many
+                // greetings would be one unshippable atomic group).
+                val msgId = insertGreetingMessageRaw(sessionId, "assistant", greeting, null, isActive, now + index, ts, nextSyncSeq())
                 if (isActive) primaryMessageId = msgId
             }
             primaryMessageId?.let {
                 val now = currentTimeMillis()
-                sessionRepository.stampSessionCurrentMessage(sessionId, it, now, ts, seq)
+                sessionRepository.stampSessionCurrentMessage(sessionId, it, now, ts, nextSyncSeq())
             }
         }
     }
@@ -230,14 +237,13 @@ class MessageRepository(
             val message = queries.selectMessageById(id).executeAsOneOrNull()
             val now = currentTimeMillis()
             val ts = nextTimestamp()
-            val seq = nextSyncSeq()
-            queries.deleteMessage(updatedAt = ts, syncSeq = seq, id = id)
+            queries.deleteMessage(updatedAt = ts, syncSeq = nextSyncSeq(), id = id)
             if (message != null) {
                 val sessionId = message.sessionId
                 val allMessages = queries.selectAllMessagesForSession(sessionId).executeAsList()
                 val descendants = collectDescendantIds(allMessages, id)
                 descendants.forEach { descendantId ->
-                    queries.deactivateMessage(updatedAt = ts, syncSeq = seq, sessionId = sessionId, id = descendantId)
+                    queries.deactivateMessage(updatedAt = ts, syncSeq = nextSyncSeq(), sessionId = sessionId, id = descendantId)
                 }
                 val session = queries.selectSessionById(sessionId).executeAsOneOrNull()
                 val currentId = session?.currentMessageId
@@ -253,13 +259,13 @@ class MessageRepository(
                         .filter { it.parentId == message.parentId && it.id != id }
                         .maxByOrNull { it.timestamp }
                     if (sibling != null) {
-                        queries.activateMessage(updatedAt = ts, syncSeq = seq, id = sibling.id)
-                        sessionRepository.stampSessionCurrentMessage(sessionId, sibling.id, now, ts, seq)
+                        queries.activateMessage(updatedAt = ts, syncSeq = nextSyncSeq(), id = sibling.id)
+                        sessionRepository.stampSessionCurrentMessage(sessionId, sibling.id, now, ts, nextSyncSeq())
                     } else {
-                        sessionRepository.stampSessionCurrentMessage(sessionId, message.parentId, now, ts, seq)
+                        sessionRepository.stampSessionCurrentMessage(sessionId, message.parentId, now, ts, nextSyncSeq())
                     }
                 } else if (currentId != null && (currentId == id || currentId in descendants)) {
-                    sessionRepository.stampSessionCurrentMessage(sessionId, message.parentId, now, ts, seq)
+                    sessionRepository.stampSessionCurrentMessage(sessionId, message.parentId, now, ts, nextSyncSeq())
                 }
             }
         }
@@ -284,14 +290,13 @@ class MessageRepository(
     suspend fun syncGreetingRoots(sessionId: String, textList: List<String>) = withContext(ioDispatcher) {
         val now = currentTimeMillis()
         val ts = nextTimestamp()
-        val seq = nextSyncSeq()
         database.transaction {
             val allMessages = queries.selectAllMessagesForSession(sessionId).executeAsList()
             val currentRoots = allMessages.filter { it.parentId == null && it.isActivePath == 1L }
 
             currentRoots.forEachIndexed { index, existingMessage ->
                 if (index < textList.size) {
-                    queries.updateMessageContent(content = textList[index], updatedAt = ts, syncSeq = seq, id = existingMessage.id)
+                    queries.updateMessageContent(content = textList[index], updatedAt = ts, syncSeq = nextSyncSeq(), id = existingMessage.id)
                 } else {
                     // Only delete a root that is not part of a live conversation.
                     // Deleting a root cascades to its entire subtree (deactivating
@@ -300,14 +305,14 @@ class MessageRepository(
                     val hasActiveConversation = allMessages.any { it.parentId == existingMessage.id && it.isActivePath == 1L }
                     if (!hasActiveConversation) {
                         val descendants = collectDescendantIds(allMessages, existingMessage.id)
-                        queries.deleteMessage(updatedAt = ts, syncSeq = seq, id = existingMessage.id)
+                        queries.deleteMessage(updatedAt = ts, syncSeq = nextSyncSeq(), id = existingMessage.id)
                         descendants.forEach { descendantId ->
-                            queries.deactivateMessage(updatedAt = ts, syncSeq = seq, sessionId = sessionId, id = descendantId)
+                            queries.deactivateMessage(updatedAt = ts, syncSeq = nextSyncSeq(), sessionId = sessionId, id = descendantId)
                         }
                         val session = queries.selectSessionById(sessionId).executeAsOneOrNull()
                         val currentId = session?.currentMessageId
                         if (currentId != null && (currentId == existingMessage.id || currentId in descendants)) {
-                            sessionRepository.stampSessionCurrentMessage(sessionId, existingMessage.parentId, now, ts, seq)
+                            sessionRepository.stampSessionCurrentMessage(sessionId, existingMessage.parentId, now, ts, nextSyncSeq())
                         }
                     }
                 }
@@ -327,7 +332,7 @@ class MessageRepository(
                         id = newId, sessionId = sessionId, role = "assistant", content = textList[i],
                         timestamp = now + i, parentId = null, isActivePath = if (activateFirst) 1L else 0L,
                         updatedAt = ts, isDeleted = 0L, imageRefs = null,
-                        reasoningText = null, costEstimate = null, syncSeq = seq
+                        reasoningText = null, costEstimate = null, syncSeq = nextSyncSeq()
                     )
                 }
             }

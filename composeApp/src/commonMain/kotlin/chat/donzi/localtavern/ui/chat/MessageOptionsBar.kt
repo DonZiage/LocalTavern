@@ -34,7 +34,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.window.PopupPositionProvider
 import chat.donzi.localtavern.domain.Message
 
 // The bar's action partition: exactly four mains, the rest in More. Kept as
@@ -72,7 +79,7 @@ private fun OptionButton(
 // One overflow entry: plain text only (no icon) with a big hitbox.
 // [tint] overrides the text colour (Delete keeps its error colour).
 @Composable
-private fun MoreMenuItem(
+internal fun MoreMenuItem(
     label: String,
     enabled: Boolean,
     onClick: () -> Unit,
@@ -85,7 +92,7 @@ private fun MoreMenuItem(
     }
     Box(
         modifier = Modifier
-            .fillMaxWidth()
+            .widthIn(min = 112.dp)
             .heightIn(min = 56.dp)
             // Merge the label into the clickable so tapping the text
             // hits the same action (needed for semantics/test lookups).
@@ -121,46 +128,30 @@ fun MessageOptionsBar(
     modifier: Modifier = Modifier
 ) {
     var showMore by remember { mutableStateOf(false) }
+    // Anchors the More menu above its button (end-aligned), so it hovers
+    // over the messages instead of pushing them or widening the bar.
+    val moreMenuPositionProvider = remember {
+        object : PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize
+            ): IntOffset {
+                val x = (anchorBounds.right - popupContentSize.width).coerceAtLeast(0)
+                val y = (anchorBounds.top - popupContentSize.height - 4).coerceAtLeast(0)
+                return IntOffset(x = x, y = y)
+            }
+        }
+    }
+    // Height matches ChatInputBar (56 dp field + 24 dp padding = 80 dp),
+    // so swapping inputs does not shift the message list.
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .heightIn(min = 80.dp)
+            .padding(horizontal = 8.dp, vertical = 12.dp)
     ) {
-        if (showMore) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 4.dp,
-                    shadowElevation = 4.dp,
-                    modifier = Modifier.widthIn(min = 180.dp, max = 260.dp)
-                ) {
-                    Column {
-                        MoreMenuItem(
-                            label = "Add Image",
-                            enabled = true,
-                            onClick = {
-                                showMore = false
-                                onAddImage()
-                            }
-                        )
-                        MoreMenuItem(
-                            label = "Delete",
-                            enabled = true,
-                            tint = MaterialTheme.colorScheme.error,
-                            onClick = {
-                                showMore = false
-                                onDelete()
-                            }
-                        )
-                    }
-                }
-            }
-            Spacer(modifier = Modifier.size(4.dp))
-        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onClose, modifier = Modifier.size(40.dp)) {
                 Icon(Icons.Default.Close, contentDescription = "Close options", modifier = Modifier.size(20.dp))
@@ -184,12 +175,48 @@ fun MessageOptionsBar(
                 enabled = canEdit,
                 modifier = Modifier.weight(1f)
             )
-            OptionButton(
-                icon = Icons.Default.MoreHoriz,
-                label = "More",
-                onClick = { showMore = !showMore },
-                modifier = Modifier.weight(1f)
-            )
+            Box(modifier = Modifier.weight(1f)) {
+                OptionButton(
+                    icon = Icons.Default.MoreHoriz,
+                    label = "More",
+                    onClick = { showMore = !showMore },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (showMore) {
+                    Popup(
+                        popupPositionProvider = moreMenuPositionProvider,
+                        properties = PopupProperties(focusable = true),
+                        onDismissRequest = { showMore = false }
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            tonalElevation = 4.dp,
+                            shadowElevation = 4.dp
+                        ) {
+                            Column {
+                                MoreMenuItem(
+                                    label = "Add Image",
+                                    enabled = true,
+                                    onClick = {
+                                        showMore = false
+                                        onAddImage()
+                                    }
+                                )
+                                MoreMenuItem(
+                                    label = "Delete",
+                                    enabled = true,
+                                    tint = MaterialTheme.colorScheme.error,
+                                    onClick = {
+                                        showMore = false
+                                        onDelete()
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

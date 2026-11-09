@@ -824,8 +824,12 @@ class SyncRepository(
             )
             // Match local insert semantics: a newly-active message deactivates
             // its siblings so the timeline never shows two active branches.
+            // One sync sequence per sibling (see the local write paths): a
+            // shared sequence could make the cascade an unshippable group.
             if (row.isActivePath == 1L && row.isDeleted == 0L) {
-                queries.deactivateSiblings(updatedAt = row.updatedAt, syncSeq = clock.nextSyncSeq(), sessionId = row.sessionId, parentId = row.parentId, id = row.id)
+                queries.selectSiblingIdsForDeactivation(row.sessionId, row.parentId, row.id).executeAsList().forEach { siblingId ->
+                    queries.deactivateMessage(updatedAt = row.updatedAt, syncSeq = clock.nextSyncSeq(), sessionId = row.sessionId, id = siblingId)
+                }
             }
         } else {
             queries.upsertMessageFull(
@@ -835,7 +839,9 @@ class SyncRepository(
                 reasoningText = row.reasoningText, costEstimate = row.costEstimate, syncSeq = seq, id = row.id
             )
             if (row.isActivePath == 1L && row.isDeleted == 0L && existing.isActivePath != 1L) {
-                queries.deactivateSiblings(updatedAt = row.updatedAt, syncSeq = clock.nextSyncSeq(), sessionId = row.sessionId, parentId = row.parentId, id = row.id)
+                queries.selectSiblingIdsForDeactivation(row.sessionId, row.parentId, row.id).executeAsList().forEach { siblingId ->
+                    queries.deactivateMessage(updatedAt = row.updatedAt, syncSeq = clock.nextSyncSeq(), sessionId = row.sessionId, id = siblingId)
+                }
             }
         }
     }

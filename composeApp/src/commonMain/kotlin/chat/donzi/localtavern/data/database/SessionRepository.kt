@@ -91,7 +91,6 @@ class SessionRepository(
                 ?: throw IllegalArgumentException("Original session not found")
 
             val newSessionId = generateUuid()
-            val seq = nextSyncSeq()
             queries.insertChatSession(
                 id = newSessionId,
                 characterId = originalSession.characterId,
@@ -102,7 +101,7 @@ class SessionRepository(
                 parentSessionId = originalSessionId,
                 updatedAt = ts,
                 isDeleted = 0L,
-                syncSeq = seq
+                syncSeq = nextSyncSeq()
             )
 
             var lastInsertedNewId: String? = null
@@ -113,19 +112,22 @@ class SessionRepository(
                 messagesToCopy
             }
 
+            // Per-row sync sequences under one shared logical version (ts):
+            // a sequence shared by every copied message would be one
+            // unshippable atomic group for a long branch.
             filteredMessages.forEach { msg ->
                 val newMsgId = generateUuid()
                 queries.insertMessageWithParent(
                     id = newMsgId, sessionId = newSessionId, role = msg.role, content = msg.content,
                     timestamp = msg.timestamp, parentId = lastInsertedNewId, isActivePath = 1L,
                     updatedAt = ts, isDeleted = 0L, imageRefs = serializeImageRefs(msg.imageRefs),
-                    reasoningText = msg.reasoningText, costEstimate = msg.costEstimateUsd, syncSeq = seq
+                    reasoningText = msg.reasoningText, costEstimate = msg.costEstimateUsd, syncSeq = nextSyncSeq()
                 )
                 lastInsertedNewId = newMsgId
             }
 
             if (lastInsertedNewId != null) {
-                queries.updateSessionCurrentMessage(currentMessageId = lastInsertedNewId, lastTimestamp = now, updatedAt = ts, syncSeq = seq, id = newSessionId)
+                queries.updateSessionCurrentMessage(currentMessageId = lastInsertedNewId, lastTimestamp = now, updatedAt = ts, syncSeq = nextSyncSeq(), id = newSessionId)
             }
 
             newSessionId
@@ -134,10 +136,18 @@ class SessionRepository(
 
     suspend fun deleteSession(sessionId: String) = withContext(ioDispatcher) {
         val ts = nextTimestamp()
-        val seq = nextSyncSeq()
         database.transaction {
-            queries.deleteMessagesForSession(updatedAt = ts, syncSeq = seq, sessionId = sessionId)
-            queries.deleteSession(updatedAt = ts, syncSeq = seq, id = sessionId)
+            deleteSessionMessages(sessionId, ts)
+            queries.deleteSession(updatedAt = ts, syncSeq = nextSyncSeq(), id = sessionId)
+        }
+    }
+
+    // Tombstones every message of one session, one sync sequence per message
+    // (see branchSession): a shared sequence would make the whole delete one
+    // atomic group that can exceed any shippable envelope.
+    private fun deleteSessionMessages(sessionId: String, ts: Long) {
+        queries.selectAllMessagesAnyForSession(sessionId).executeAsList().forEach { msg ->
+            queries.deleteMessage(updatedAt = ts, syncSeq = nextSyncSeq(), id = msg.id)
         }
     }
 
@@ -147,12 +157,11 @@ class SessionRepository(
     suspend fun deleteSessionsForCharacters(characterIds: Set<String>) = withContext(ioDispatcher) {
         if (characterIds.isEmpty()) return@withContext
         val ts = nextTimestamp()
-        val seq = nextSyncSeq()
         database.transaction {
             characterIds.forEach { characterId ->
                 queries.selectSessionsForCharacter(characterId).executeAsList().forEach { session ->
-                    queries.deleteMessagesForSession(updatedAt = ts, syncSeq = seq, sessionId = session.id)
-                    queries.deleteSession(updatedAt = ts, syncSeq = seq, id = session.id)
+                    deleteSessionMessages(session.id, ts)
+                    queries.deleteSession(updatedAt = ts, syncSeq = nextSyncSeq(), id = session.id)
                 }
             }
         }
@@ -160,11 +169,10 @@ class SessionRepository(
 
     suspend fun deleteSessionsForPersona(personaId: String) = withContext(ioDispatcher) {
         val ts = nextTimestamp()
-        val seq = nextSyncSeq()
         database.transaction {
             queries.selectSessionsForPersona(personaId).executeAsList().forEach { session ->
-                queries.deleteMessagesForSession(updatedAt = ts, syncSeq = seq, sessionId = session.id)
-                queries.deleteSession(updatedAt = ts, syncSeq = seq, id = session.id)
+                deleteSessionMessages(session.id, ts)
+                queries.deleteSession(updatedAt = ts, syncSeq = nextSyncSeq(), id = session.id)
             }
         }
     }

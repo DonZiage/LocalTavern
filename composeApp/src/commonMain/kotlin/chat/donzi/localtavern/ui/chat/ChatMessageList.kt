@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -18,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -77,7 +79,10 @@ fun ChatMessageList(
     optionsMessageId: String? = null,
     onRequestOptions: (Message) -> Unit = {},
     onCancelEditing: () -> Unit = {},
-    onDismissOptions: () -> Unit = {}
+    onDismissOptions: () -> Unit = {},
+    // Desktop floating-menu request (right-click / bottom three-dot).
+    // When null, the desktop menu is driven per-item instead.
+    onRequestDesktopMenu: ((Message) -> Unit)? = null
 ) {
     val messages = chatState.messages
     val siblingsMap = chatState.siblingsMap
@@ -95,6 +100,7 @@ fun ChatMessageList(
     // Whether the list is pinned to the newest message. The list is
     // reversed, so index 0 (with no scroll offset) is the bottom.
     var autoScroll by remember { mutableStateOf(true) }
+    // (Per-item bubble width is tracked inside ChatMessageItem.)
 
     LaunchedEffect(listState) {
         snapshotFlow {
@@ -160,6 +166,14 @@ fun ChatMessageList(
                                     actions.onSelectVariation(siblings[currentIndex + 1].id)
                                     coroutineScope.launch { listState.animateScrollToItem(0) }
                                     true
+                                } else if (lastMessage.parentId == null) {
+                                    // Greeting roots are static: swiping past
+                                    // the last one wraps, never generates.
+                                    if (totalCount > 1) {
+                                        actions.onSelectVariation(siblings[0].id)
+                                        coroutineScope.launch { listState.animateScrollToItem(0) }
+                                        true
+                                    } else false
                                 } else {
                                     actions.onGenerateNewVariation(lastMessage.id)
                                     coroutineScope.launch { listState.animateScrollToItem(0) }
@@ -194,13 +208,27 @@ fun ChatMessageList(
                 onRequestAddImage = onRequestAddImage,
                 isDimmed = isDimmed,
                 isEditingTarget = isEditingTarget,
+                // Tap never opens options: it only cancels editing or
+                // dismisses an already-open bar. Holding (or right-click /
+                // the desktop three-dot) is what opens options.
                 onMessageTap = {
                     when {
                         editingMessageId != null && !isEditingTarget -> onCancelEditing()
                         editingMessageId != null && isEditingTarget -> Unit
                         optionsMessageId == message.id -> onDismissOptions()
+                        else -> Unit
+                    }
+                },
+                onMessageLongPress = {
+                    when {
+                        editingMessageId != null -> Unit
+                        isDesktop -> onRequestDesktopMenu?.invoke(message)
+                        optionsMessageId == message.id -> onDismissOptions()
                         else -> onRequestOptions(message)
                     }
+                },
+                onMessageRightClick = {
+                    if (editingMessageId == null) onRequestDesktopMenu?.invoke(message)
                 }
             )
         }
@@ -244,7 +272,9 @@ private fun ChatMessageItem(
     onRequestAddImage: (Message) -> Unit,
     isDimmed: Boolean = false,
     isEditingTarget: Boolean = false,
-    onMessageTap: () -> Unit = {}
+    onMessageTap: () -> Unit = {},
+    onMessageLongPress: () -> Unit = {},
+    onMessageRightClick: () -> Unit = {}
 ) {
     val clipboardManager = LocalClipboardManager.current
     val isUserMessage = message.role == "user"
@@ -270,6 +300,12 @@ private fun ChatMessageItem(
             userName = activePersonaName
         )
     }
+    // Per-bubble desktop floating menu (right-click / long-press /
+    // bottom three-dot). Mobile long-press goes to the options bar via
+    // [onMessageLongPress] instead.
+    var desktopMenuExpanded by remember { mutableStateOf(false) }
+    var bubbleWidthPx by remember { mutableStateOf(0) }
+    val bubbleDensity = androidx.compose.ui.platform.LocalDensity.current
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -297,6 +333,13 @@ private fun ChatMessageItem(
             reasoningText = message.reasoningText?.takeIf { it.isNotBlank() },
             dimmed = isDimmed,
             onMessageTap = onMessageTap,
+            onMessageLongPress = {
+                if (isDesktop) desktopMenuExpanded = !desktopMenuExpanded else onMessageLongPress()
+            },
+            onMessageRightClick = { desktopMenuExpanded = !desktopMenuExpanded },
+            desktopMenuExpanded = desktopMenuExpanded,
+            onDesktopMenuChange = { desktopMenuExpanded = it },
+            onBubbleWidthChanged = { if (it != bubbleWidthPx) bubbleWidthPx = it },
             costText = message.costEstimateUsd?.let { CostEstimator.formatUsd(it) },
             timestampText = remember(message.timestamp) {
                 // The placeholder has no real timestamp yet; stamping it
@@ -317,6 +360,9 @@ private fun ChatMessageItem(
                 if (!isGenerating) {
                     if (msgCurrentIndex < msgTotalCount - 1) {
                         actions.onSelectVariation(msgSiblings[msgCurrentIndex + 1].id)
+                    } else if (message.parentId == null) {
+                        // Greeting roots wrap to the first greeting.
+                        if (msgTotalCount > 1) actions.onSelectVariation(msgSiblings[0].id)
                     } else {
                         actions.onGenerateNewVariation(message.id)
                     }
@@ -324,54 +370,98 @@ private fun ChatMessageItem(
             }
         )
 
-        if (!isUserMessage && isLastMessage && !isSelectMode && !isDimmed && !isEditingTarget) {
+        // Bottom strip: the swipe counter (assistant last message) and a
+        // vertical three-dot below the bubble's right bottom corner
+        // (at the same height as the swipe counter). The strip is
+        // constrained to the bubble width (54 dp gutter + 460 dp max),
+        // so the dot hugs the bubble instead of the chat-area edge.
+        val showCounter = !isUserMessage && isLastMessage && !isSelectMode && !isDimmed && !isEditingTarget
+        val showDots = !isSelectMode && !isDimmed && !isEditingTarget
+        if (showCounter || showDots) {
+            // Hug the measured bubble width so the dot sits below its
+            // right corner even for short bubbles; fall back to the
+            // 460 dp bubble max before the first layout.
+            val bubbleWidthModifier = if (bubbleWidthPx > 0) {
+                Modifier.width(with(bubbleDensity) { bubbleWidthPx.toDp() })
+            } else {
+                Modifier.fillMaxWidth().widthIn(max = 460.dp)
+            }
             Row(
                 modifier = Modifier
-                    .padding(start = 54.dp, top = 2.dp, bottom = 6.dp)
-                    .widthIn(max = 460.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    .padding(
+                        start = if (!isUserMessage) 54.dp else 0.dp,
+                        end = if (isUserMessage) 54.dp else 0.dp,
+                        top = 2.dp,
+                        bottom = 6.dp
+                    )
+                    .then(bubbleWidthModifier),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(
-                    onClick = {
-                        if (msgCurrentIndex > 0) {
-                            actions.onSelectVariation(msgSiblings[msgCurrentIndex - 1].id)
-                        } else if (msgTotalCount > 1) {
-                            actions.onSelectVariation(msgSiblings[msgTotalCount - 1].id)
-                        }
-                    },
-                    enabled = !isGenerating,
-                    modifier = Modifier.size(24.dp)
+                // Left side: swipe counter.
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Previous variation",
-                        modifier = Modifier.size(14.dp)
-                    )
+                    if (showCounter) {
+                        IconButton(
+                            onClick = {
+                                if (msgCurrentIndex > 0) {
+                                    actions.onSelectVariation(msgSiblings[msgCurrentIndex - 1].id)
+                                } else if (msgTotalCount > 1) {
+                                    actions.onSelectVariation(msgSiblings[msgTotalCount - 1].id)
+                                }
+                            },
+                            enabled = !isGenerating,
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Previous variation",
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                        Text(
+                            text = "${msgCurrentIndex + 1} / $msgTotalCount",
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                        )
+                        IconButton(
+                            onClick = {
+                                if (msgCurrentIndex < msgTotalCount - 1) {
+                                    actions.onSelectVariation(msgSiblings[msgCurrentIndex + 1].id)
+                                } else if (message.parentId == null) {
+                                    if (msgTotalCount > 1) actions.onSelectVariation(msgSiblings[0].id)
+                                } else {
+                                    actions.onGenerateNewVariation(message.id)
+                                }
+                            },
+                            enabled = !isGenerating,
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                contentDescription = "Next variation",
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
                 }
-
-                Text(
-                    text = "${msgCurrentIndex + 1} / $msgTotalCount",
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                )
-
-                IconButton(
-                    onClick = {
-                        if (msgCurrentIndex < msgTotalCount - 1) {
-                            actions.onSelectVariation(msgSiblings[msgCurrentIndex + 1].id)
-                        } else {
-                            actions.onGenerateNewVariation(message.id)
-                        }
-                    },
-                    enabled = !isGenerating,
-                    modifier = Modifier.size(24.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = "Next variation",
-                        modifier = Modifier.size(14.dp)
-                    )
+                // Right-bottom corner of the bubble.
+                if (showDots) {
+                    androidx.compose.foundation.layout.Spacer(modifier = Modifier.weight(1f))
+                    IconButton(
+                        onClick = {
+                            if (isDesktop) desktopMenuExpanded = !desktopMenuExpanded else onMessageLongPress()
+                        },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "Message options",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                    }
                 }
             }
         }
