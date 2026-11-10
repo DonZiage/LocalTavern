@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.controller.AppContainer
 import chat.donzi.localtavern.data.database.DriverFactory
 import chat.donzi.localtavern.isDesktop
+import chat.donzi.localtavern.ui.common.AutoHideKeyboardOnNonInputFocus
 import chat.donzi.localtavern.ui.theme.LocalTavernTheme
 import chat.donzi.localtavern.ui.theme.ThemeTransition
 import kotlin.time.Duration.Companion.minutes
@@ -103,6 +104,7 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
+                    AutoHideKeyboardOnNonInputFocus()
                     SecretGate(secretGate)
                 }
             }
@@ -199,6 +201,11 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
                     false
                 }
         ) {
+        // Global soft-keyboard rule: hide as soon as focus lands on any
+        // element that is not a text field (message rows, buttons, cards,
+        // side-panel items, top bars). Text fields register with the focus
+        // tracker so transfers input -> input keep the keyboard up.
+        AutoHideKeyboardOnNonInputFocus()
         ThemeTransition(
             initialThemeIsDark = darkModeFromDb,
             onThemeSaved = { darkMode ->

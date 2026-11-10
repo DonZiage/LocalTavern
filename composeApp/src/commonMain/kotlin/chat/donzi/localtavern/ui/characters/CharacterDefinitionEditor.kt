@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.ui.common.nextSuppressAutoCap
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
@@ -73,7 +74,12 @@ fun CharacterDefinitionEditor(
     var remoteLoaded by remember(character.id) { mutableStateOf(character.avatarData != null || avatarLoader == null) }
     // Caps the first letter of an empty name; after the user deletes the
     // leading character, respect the keyboard instead of re-forcing caps.
+    // Same policy on every prose field below (see AutoCapitalize).
     var nameSuppressAutoCap by remember(character.id) { mutableStateOf(false) }
+    var descriptionSuppressAutoCap by remember(character.id) { mutableStateOf(false) }
+    var personalitySuppressAutoCap by remember(character.id) { mutableStateOf(false) }
+    var scenarioSuppressAutoCap by remember(character.id) { mutableStateOf(false) }
+    var firstMesSuppressAutoCap by remember(character.id) { mutableStateOf(false) }
 
     var confirmDelete by remember { mutableStateOf(false) }
 
@@ -269,7 +275,7 @@ fun CharacterDefinitionEditor(
                     name = nextValue
                 },
                 label = { Text("Name") },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
                 keyboardOptions = KeyboardOptions(
                     capitalization = if (nameSuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Words
                 )
@@ -279,25 +285,73 @@ fun CharacterDefinitionEditor(
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Text("${DefaultTokenizer.countTokens(description)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            OutlinedTextField(value = description, onValueChange = { description = it }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth(), minLines = 4)
+            OutlinedTextField(
+                value = description,
+                onValueChange = { nextValue ->
+                    descriptionSuppressAutoCap = nextSuppressAutoCap(description, nextValue, descriptionSuppressAutoCap)
+                    description = nextValue
+                },
+                label = { Text("Description") },
+                modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
+                minLines = 4,
+                keyboardOptions = KeyboardOptions(
+                    capitalization = if (descriptionSuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Sentences
+                )
+            )
             Spacer(Modifier.height(12.dp))
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Text("${DefaultTokenizer.countTokens(personality)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            OutlinedTextField(value = personality, onValueChange = { personality = it }, label = { Text("Personality") }, modifier = Modifier.fillMaxWidth(), minLines = 4)
+            OutlinedTextField(
+                value = personality,
+                onValueChange = { nextValue ->
+                    personalitySuppressAutoCap = nextSuppressAutoCap(personality, nextValue, personalitySuppressAutoCap)
+                    personality = nextValue
+                },
+                label = { Text("Personality") },
+                modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
+                minLines = 4,
+                keyboardOptions = KeyboardOptions(
+                    capitalization = if (personalitySuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Sentences
+                )
+            )
             Spacer(Modifier.height(12.dp))
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Text("${DefaultTokenizer.countTokens(scenario)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            OutlinedTextField(value = scenario, onValueChange = { scenario = it }, label = { Text("Scenario") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+            OutlinedTextField(
+                value = scenario,
+                onValueChange = { nextValue ->
+                    scenarioSuppressAutoCap = nextSuppressAutoCap(scenario, nextValue, scenarioSuppressAutoCap)
+                    scenario = nextValue
+                },
+                label = { Text("Scenario") },
+                modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
+                minLines = 3,
+                keyboardOptions = KeyboardOptions(
+                    capitalization = if (scenarioSuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Sentences
+                )
+            )
             Spacer(Modifier.height(12.dp))
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Text("${DefaultTokenizer.countTokens(firstMes)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            OutlinedTextField(value = firstMes, onValueChange = { firstMes = it }, label = { Text("First Message") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+            OutlinedTextField(
+                value = firstMes,
+                onValueChange = { nextValue ->
+                    firstMesSuppressAutoCap = nextSuppressAutoCap(firstMes, nextValue, firstMesSuppressAutoCap)
+                    firstMes = nextValue
+                },
+                label = { Text("First Message") },
+                modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
+                minLines = 3,
+                keyboardOptions = KeyboardOptions(
+                    capitalization = if (firstMesSuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Sentences
+                )
+            )
             Spacer(Modifier.height(16.dp))
 
             MessageExamplesStrip(examples = mesExample, onChange = { mesExample = it })
@@ -408,6 +462,7 @@ fun MessageExamplesStrip(
     editingIndex?.let { idx ->
         if (idx in examples.indices) {
             var text by remember(examples[idx]) { mutableStateOf(examples[idx]) }
+            var exampleSuppressAutoCap by remember(examples[idx]) { mutableStateOf(false) }
             AlertDialog(
                 onDismissRequest = {
                     // Cancelling a freshly added empty entry must not leave a ghost pill.
@@ -422,7 +477,19 @@ fun MessageExamplesStrip(
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             Text("${DefaultTokenizer.countTokens(text)} tokens", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        OutlinedTextField(value = text, onValueChange = { text = it }, modifier = Modifier.fillMaxWidth(), minLines = 5, label = { Text("Example message text") })
+                        OutlinedTextField(
+                            value = text,
+                            onValueChange = { nextValue ->
+                                exampleSuppressAutoCap = nextSuppressAutoCap(text, nextValue, exampleSuppressAutoCap)
+                                text = nextValue
+                            },
+                            modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
+                            minLines = 5,
+                            label = { Text("Example message text") },
+                            keyboardOptions = KeyboardOptions(
+                                capitalization = if (exampleSuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Sentences
+                            )
+                        )
                     }
                 },
                 confirmButton = { TextButton(onClick = { onChange(examples.toMutableList().also { it[idx] = text }); editingIndex = null }) { Text("Save") } },

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeightIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Search
@@ -38,8 +39,10 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.data.network.ModelInfo
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,9 +79,13 @@ fun ModelPicker(
                         Icon(Icons.Default.Search, null)
                     }
                 },
+                // Model ids are lowercase slugs ("openai/gpt-4"): never
+                // auto-capitalise (default None, made explicit).
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
                 modifier = Modifier
                     .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryEditable)
                     .fillMaxWidth()
+                    .trackTextFieldFocus()
                     .onPreviewKeyEvent { event ->
                         if (event.type == KeyEventType.KeyUp && (event.key == Key.Enter || event.key == Key.Tab)) {
                             if (modelDropdownExpanded && filteredModels.isNotEmpty()) {

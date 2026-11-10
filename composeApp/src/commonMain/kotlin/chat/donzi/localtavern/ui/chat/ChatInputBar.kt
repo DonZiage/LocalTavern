@@ -31,6 +31,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.ui.common.nextSuppressAutoCap
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import coil3.compose.AsyncImage
 
@@ -217,6 +218,7 @@ fun ChatInputBar(
                 keyboardActions = KeyboardActions(onSend = { handleImeAction() }),
                 modifier = Modifier
                     .weight(1f)
+                    .trackTextFieldFocus()
                     .onPreviewKeyEvent { event ->
                         if (!isGenerating && event.type == KeyEventType.KeyDown &&
                             (event.key == Key.Enter || event.key == Key.NumPadEnter)) {

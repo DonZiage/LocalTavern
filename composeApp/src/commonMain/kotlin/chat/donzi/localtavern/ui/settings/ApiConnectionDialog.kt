@@ -1,11 +1,13 @@
 package chat.donzi.localtavern.ui.settings
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
@@ -14,6 +16,8 @@ import chat.donzi.localtavern.data.network.ConnectionProbe
 import chat.donzi.localtavern.data.network.ModelEndpointInfo
 import chat.donzi.localtavern.data.network.ModelInfo
 import chat.donzi.localtavern.domain.ApiConfig
+import chat.donzi.localtavern.ui.common.nextSuppressAutoCap
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 import chat.donzi.localtavern.utils.fuzzyScore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -40,6 +44,7 @@ fun ApiConnectionDialog(
 ) {
     var apiKey by remember { mutableStateOf("") }
     var name by remember { mutableStateOf(initialConnection?.name ?: "") }
+    var nameSuppressAutoCap by remember { mutableStateOf(false) }
     var baseUrl by remember { mutableStateOf(initialConnection?.baseUrl ?: "") }
 
     val isLocal = remember(baseUrl) {
@@ -326,8 +331,10 @@ fun ApiConnectionDialog(
                         onValueChange = { apiKey = it },
                         label = { Text("2. ${if (initialConnection == null) "Enter API Key$optionalText" else "Update API Key"}") },
                         placeholder = { Text(maskedApiKey) },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
                         visualTransformation = PasswordVisualTransformation(),
+                        // API keys are case-sensitive: never auto-capitalise.
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
                         isError = apiKey.isNotEmpty() && probeResult == ConnectionProbe.AuthFailed,
                         trailingIcon = {
                             if (isLoadingModels) CircularProgressIndicator(modifier = Modifier.size(24.dp))
@@ -407,10 +414,16 @@ fun ApiConnectionDialog(
                     // the dialog a dead end for renaming an existing profile.
                     OutlinedTextField(
                         value = name,
-                        onValueChange = { name = it },
+                        onValueChange = { nextValue ->
+                            nameSuppressAutoCap = nextSuppressAutoCap(name, nextValue, nameSuppressAutoCap)
+                            name = nextValue
+                        },
                         label = { Text("6. Profile Name (Optional)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
+                        modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = if (nameSuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Words
+                        )
                     )
                 }
             }
@@ -475,9 +488,12 @@ private fun BaseUrlPicker(
             onValueChange = onBaseUrlChange,
             label = { Text("1. Endpoint URL (Required)") },
             placeholder = { Text("https://openrouter.ai/api/v1") },
+            // URLs are matched literally: never auto-capitalise.
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
             modifier = Modifier
                 .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryEditable)
-                .fillMaxWidth(),
+                .fillMaxWidth()
+                .trackTextFieldFocus(),
             trailingIcon = {
                 if (baseUrl.isBlank()) {
                     ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuExpanded)

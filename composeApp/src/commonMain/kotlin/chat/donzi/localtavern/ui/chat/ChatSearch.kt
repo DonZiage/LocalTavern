@@ -26,9 +26,14 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.domain.Message
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 import kotlinx.coroutines.delay
 
 // Pure search-matching logic for the in-conversation search. Kept as plain
@@ -56,6 +61,51 @@ fun currentSearchMatchId(matches: List<String>, currentIndex: Int): String? =
 // "3 / 12" for the bar, "0 / 0" when there are no matches.
 fun searchMatchPositionText(currentIndex: Int, total: Int): String =
     if (total <= 0) "0 / 0" else "${currentIndex.coerceIn(0, total - 1) + 1} / $total"
+
+// All case-insensitive, non-overlapping occurrences of [query] in [text] as
+// inclusive char ranges (start..end), left to right. Blank queries match
+// nothing. The query is trimmed first, mirroring [findSearchMatchIds], so a
+// query padded with spaces highlights the trimmed term.
+fun findHighlightRanges(text: String, query: String): List<IntRange> {
+    val q = query.trim()
+    if (q.isEmpty() || text.isEmpty()) return emptyList()
+    val ranges = mutableListOf<IntRange>()
+    var from = 0
+    while (from < text.length) {
+        val idx = text.indexOf(q, from, ignoreCase = true)
+        if (idx < 0) break
+        ranges.add(idx..(idx + q.length - 1))
+        from = idx + q.length
+    }
+    return ranges
+}
+
+// Returns [original] with every occurrence of [query] highlighted
+// ([background]/[foreground], optionally bold for the current match).
+// Original spans (bold/italic/code/...) are preserved; only the background
+// and text color of the matched ranges change. No matches returns the
+// original unchanged.
+fun highlightAnnotatedString(
+    original: AnnotatedString,
+    query: String,
+    background: Color,
+    foreground: Color,
+    bold: Boolean = false
+): AnnotatedString {
+    val ranges = findHighlightRanges(original.text, query)
+    if (ranges.isEmpty()) return original
+    val highlightStyle = SpanStyle(
+        background = background,
+        color = foreground,
+        fontWeight = if (bold) FontWeight.Bold else null
+    )
+    return buildAnnotatedString {
+        append(original)
+        ranges.forEach { range ->
+            addStyle(highlightStyle, range.first, range.last + 1)
+        }
+    }
+}
 
 // Bar shown above the message list while the conversation search is
 // active: the query field plus prev/next navigation, the match counter
@@ -98,6 +148,7 @@ fun ChatSearchBar(
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             modifier = Modifier
                 .weight(1f)
+                .trackTextFieldFocus()
                 .focusRequester(focusRequester),
             colors = TextFieldDefaults.colors(
                 focusedIndicatorColor = Color.Transparent,

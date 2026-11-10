@@ -15,9 +15,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import chat.donzi.localtavern.domain.Lorebook
 import chat.donzi.localtavern.domain.LorebookEntry
 import chat.donzi.localtavern.saveFile
+import chat.donzi.localtavern.ui.common.nextSuppressAutoCap
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 import chat.donzi.localtavern.utils.DefaultTokenizer
 import chat.donzi.localtavern.utils.LorebookParser
 import chat.donzi.localtavern.utils.rememberLorebookPickerLauncher
@@ -228,8 +232,10 @@ private fun LorebookEntryEditDialog(
     onSave: (LorebookEntry) -> Unit
 ) {
     var name by remember(entry) { mutableStateOf(entry.name) }
+    var nameSuppressAutoCap by remember(entry) { mutableStateOf(false) }
     var keysText by remember(entry) { mutableStateOf(entry.keys.joinToString(", ")) }
     var content by remember(entry) { mutableStateOf(entry.content) }
+    var contentSuppressAutoCap by remember(entry) { mutableStateOf(false) }
     var constant by remember(entry) { mutableStateOf(entry.constant) }
     var selective by remember(entry) { mutableStateOf(entry.selective) }
     var caseSensitive by remember(entry) { mutableStateOf(entry.caseSensitive) }
@@ -242,24 +248,39 @@ private fun LorebookEntryEditDialog(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
                     value = name,
-                    onValueChange = { name = it },
+                    onValueChange = { nextValue ->
+                        nameSuppressAutoCap = nextSuppressAutoCap(name, nextValue, nameSuppressAutoCap)
+                        name = nextValue
+                    },
                     label = { Text("Name (optional)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
+                    modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = if (nameSuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Words
+                    )
                 )
+                // Trigger keys are matched case-sensitively when enabled: they
+                // must never be auto-capitalised (default None, made explicit).
                 OutlinedTextField(
                     value = keysText,
                     onValueChange = { keysText = it },
                     label = { Text("Trigger keys (comma separated)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
+                    modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None)
                 )
                 OutlinedTextField(
                     value = content,
-                    onValueChange = { content = it },
+                    onValueChange = { nextValue ->
+                        contentSuppressAutoCap = nextSuppressAutoCap(content, nextValue, contentSuppressAutoCap)
+                        content = nextValue
+                    },
                     label = { Text("Content") },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 4
+                    modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
+                    minLines = 4,
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = if (contentSuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Sentences
+                    )
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(checked = constant, onCheckedChange = { constant = it })
@@ -283,8 +304,9 @@ private fun LorebookEntryEditDialog(
                             value = secondaryKeysText,
                             onValueChange = { secondaryKeysText = it },
                             label = { Text("Secondary keys (comma separated)") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
+                            modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None)
                         )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {

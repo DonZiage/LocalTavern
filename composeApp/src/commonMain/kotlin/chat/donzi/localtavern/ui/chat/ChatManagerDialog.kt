@@ -22,6 +22,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import chat.donzi.localtavern.data.database.SessionRepository
 import chat.donzi.localtavern.domain.Session
 import chat.donzi.localtavern.ui.common.nextSuppressAutoCap
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 import kotlinx.coroutines.launch
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
@@ -122,7 +123,7 @@ fun ChatManagerDialog(
         AlertDialog(
             onDismissRequest = { sessionToRename = null },
             title = { Text("Rename Chat") },
-            text = { Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { OutlinedTextField(value = editTitleText, onValueChange = { nextValue -> renameSuppressAutoCap = nextSuppressAutoCap(editTitleText, nextValue, renameSuppressAutoCap); editTitleText = nextValue }, label = { Text("Chat Title") }, placeholder = { Text("#${targetSession.id.take(6)}") }, singleLine = true, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(capitalization = if (renameSuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Words)) } },
+            text = { Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { OutlinedTextField(value = editTitleText, onValueChange = { nextValue -> renameSuppressAutoCap = nextSuppressAutoCap(editTitleText, nextValue, renameSuppressAutoCap); editTitleText = nextValue }, label = { Text("Chat Title") }, placeholder = { Text("#${targetSession.id.take(6)}") }, singleLine = true, modifier = Modifier.fillMaxWidth().trackTextFieldFocus(), keyboardOptions = KeyboardOptions(capitalization = if (renameSuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Words)) } },
             confirmButton = { TextButton(onClick = { coroutineScope.launch { sessionRepository.updateSessionTitle(targetSession.id, editTitleText.ifBlank { null }); sessionToRename = null; loadSessions() } }) { Text("Save") } },
             dismissButton = { TextButton(onClick = { sessionToRename = null }) { Text("Cancel") } }
         )

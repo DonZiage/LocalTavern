@@ -24,9 +24,11 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.ui.PassphrasePolicy
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 
 // Values collected by PassphraseDialog. `current` is non-null only when the
 // dialog was opened with requireCurrent (change-passphrase flow); `value` is
@@ -79,10 +81,11 @@ fun PassphraseDialog(
                         label = { Text("Current passphrase") },
                         visualTransformation = PasswordVisualTransformation(),
                         singleLine = true,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, imeAction = ImeAction.Done),
                         keyboardActions = KeyboardActions(onDone = { if (canConfirm) submit() }),
                         modifier = Modifier
                             .widthIn(max = 260.dp).fillMaxWidth()
+                            .trackTextFieldFocus()
                             .onPreviewKeyEvent { event ->
                                 if (event.type == KeyEventType.KeyDown &&
                                     (event.key == Key.Enter || event.key == Key.NumPadEnter)
@@ -101,10 +104,11 @@ fun PassphraseDialog(
                     label = { Text(if (requireCurrent) "New passphrase" else "Passphrase") },
                     visualTransformation = PasswordVisualTransformation(),
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { if (canConfirm) submit() }),
                     modifier = Modifier
                         .widthIn(max = 260.dp).fillMaxWidth()
+                        .trackTextFieldFocus()
                         .onPreviewKeyEvent { event ->
                             if (event.type == KeyEventType.KeyDown &&
                                 (event.key == Key.Enter || event.key == Key.NumPadEnter)
@@ -124,10 +128,11 @@ fun PassphraseDialog(
                         visualTransformation = PasswordVisualTransformation(),
                         singleLine = true,
                         isError = mismatch,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, imeAction = ImeAction.Done),
                         keyboardActions = KeyboardActions(onDone = { if (canConfirm) submit() }),
                         modifier = Modifier
                             .widthIn(max = 260.dp).fillMaxWidth()
+                            .trackTextFieldFocus()
                             .onPreviewKeyEvent { event ->
                                 if (event.type == KeyEventType.KeyDown &&
                                     (event.key == Key.Enter || event.key == Key.NumPadEnter)

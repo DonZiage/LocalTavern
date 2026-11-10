@@ -31,6 +31,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.donzi.localtavern.ui.common.nextSuppressAutoCap
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 import kotlinx.coroutines.launch
 
 @Composable
@@ -57,6 +58,7 @@ internal fun MessageEditTextField(
         },
         modifier = Modifier
             .widthIn(min = 40.dp)
+            .trackTextFieldFocus()
             .focusRequester(focusRequester)
             .bringIntoViewRequester(bringIntoViewRequester)
             .onPreviewKeyEvent { event ->

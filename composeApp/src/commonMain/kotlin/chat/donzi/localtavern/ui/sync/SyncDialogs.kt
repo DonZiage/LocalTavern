@@ -14,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -27,6 +28,7 @@ import chat.donzi.localtavern.data.sync.SyncService
 import chat.donzi.localtavern.data.sync.launchQrScanner
 import chat.donzi.localtavern.data.sync.supportsQrScanning
 import chat.donzi.localtavern.data.sync.validateFetchAddress
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 import chat.donzi.localtavern.utils.KeepScreenOn
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -866,8 +868,11 @@ internal fun SyncFlowDialog(
                                     value = manualAddress,
                                     onValueChange = { manualAddress = it },
                                     label = { Text("Address, e.g. 192.168.1.5") },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true
+                                    modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
+                                    singleLine = true,
+                                    // Host addresses are lowercase: never
+                                    // auto-capitalise.
+                                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None)
                                 )
                             }
                             // Step 3: enter the PIN shown on the host's screen.
@@ -904,8 +909,8 @@ internal fun SyncFlowDialog(
                                     onValueChange = { pin = it.filter { char -> char.isDigit() }.take(PIN_LENGTH) },
                                     label = { Text("Pairing PIN from host's screen") },
                                     visualTransformation = PasswordVisualTransformation(),
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                                    modifier = Modifier.fillMaxWidth(),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, capitalization = KeyboardCapitalization.None),
+                                    modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
                                     singleLine = true,
                                     enabled = !isConnecting
                                 )

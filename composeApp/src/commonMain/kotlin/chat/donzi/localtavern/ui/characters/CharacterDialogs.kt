@@ -21,6 +21,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.ui.common.nextSuppressAutoCap
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 
 // Dialogs owned by the character list: create (name input), the single /
 // multi delete confirmations and the mass-import summary. The callers keep
@@ -46,7 +47,7 @@ fun CreateCharacterDialog(
                 },
                 label = { Text("Character Name") },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
                 keyboardOptions = KeyboardOptions(
                     capitalization = if (suppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Words
                 )

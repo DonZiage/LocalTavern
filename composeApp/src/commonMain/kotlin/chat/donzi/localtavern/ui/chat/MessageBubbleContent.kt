@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -41,7 +42,13 @@ internal fun MessageBubbleContent(
     pendingImageCount: Int = 0,
     reasoningText: String?,
     costText: String?,
-    timestampText: String? = null
+    timestampText: String? = null,
+    // In-conversation search: non-blank while this message contains the
+    // query; every occurrence of the term is highlighted in the rendered
+    // text. [isCurrentMatch] bolds the highlighted occurrences so the
+    // navigation focus is visible even without the border.
+    highlightQuery: String = "",
+    isCurrentMatch: Boolean = false
 ) {
     Column {
         if (shouldShowEllipsis(isUser, isGenerating, content)) {
@@ -57,9 +64,28 @@ internal fun MessageBubbleContent(
             )
         } else if (content.isNotBlank()) {
             val markdownBlocks = rememberMarkdown(text = content, defaultColor = textColor)
+            // Highlight the search term inside the already-parsed blocks so
+            // the ranges line up with the visible (post-markdown) text.
+            val displayedBlocks = if (highlightQuery.isNotBlank()) {
+                val highlightBackground = MaterialTheme.colorScheme.tertiaryContainer
+                val highlightForeground = MaterialTheme.colorScheme.onTertiaryContainer
+                markdownBlocks.map { block ->
+                    block.copy(
+                        text = highlightAnnotatedString(
+                            block.text,
+                            highlightQuery,
+                            highlightBackground,
+                            highlightForeground,
+                            bold = isCurrentMatch
+                        )
+                    )
+                }
+            } else {
+                markdownBlocks
+            }
             SelectionContainer {
                 Column {
-                    markdownBlocks.forEachIndexed { index, block ->
+                    displayedBlocks.forEachIndexed { index, block ->
                         if (block.text.isNotEmpty()) {
                             if (index > 0) {
                                 Spacer(Modifier.height(6.dp))

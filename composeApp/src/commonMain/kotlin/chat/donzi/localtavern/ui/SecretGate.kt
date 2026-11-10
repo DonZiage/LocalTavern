@@ -36,8 +36,10 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 import kotlinx.coroutines.launch
 
 // Full-screen gate shown BEFORE the main UI whenever the unlock backend is
@@ -142,10 +144,12 @@ private fun SetupContent(state: SecretGateState) {
         label = { Text("Passphrase") },
         visualTransformation = PasswordVisualTransformation(),
         singleLine = true,
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+        // Passphrases are case-sensitive: never auto-capitalise.
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, imeAction = ImeAction.Next),
         keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
         modifier = Modifier
             .widthIn(max = 260.dp).fillMaxWidth()
+            .trackTextFieldFocus()
             .focusRequester(firstFieldFocus)
             .onPreviewKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown &&
@@ -169,12 +173,13 @@ private fun SetupContent(state: SecretGateState) {
         visualTransformation = PasswordVisualTransformation(),
         singleLine = true,
         isError = confirmation.isNotEmpty() && confirmation != passphrase,
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = {
             if (canSubmit) scope.launch { state.submitSetup(passphrase, confirmation) }
         }),
         modifier = Modifier
             .widthIn(max = 260.dp).fillMaxWidth()
+            .trackTextFieldFocus()
             .onPreviewKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown &&
                     (event.key == Key.Enter || event.key == Key.NumPadEnter)
@@ -267,12 +272,13 @@ private fun UnlockContent(state: SecretGateState) {
         label = { Text("Passphrase") },
         visualTransformation = PasswordVisualTransformation(),
         singleLine = true,
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = {
             if (canSubmit) scope.launch { state.submitUnlock(passphrase) }
         }),
         modifier = Modifier
             .widthIn(max = 260.dp).fillMaxWidth()
+            .trackTextFieldFocus()
             .focusRequester(fieldFocus)
             .onPreviewKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown &&

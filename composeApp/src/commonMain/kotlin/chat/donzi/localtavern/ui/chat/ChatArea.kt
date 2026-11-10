@@ -167,6 +167,7 @@ fun ChatArea(
                 onDismissOptions = { optionsMessage = null },
                 searchMatchedIds = searchMatches.toSet(),
                 searchCurrentId = searchCurrentId,
+                searchQuery = searchQuery,
                 isSearchActive = isSearchActive && searchQuery.isNotBlank(),
                 modifier = Modifier
                     .weight(1f)

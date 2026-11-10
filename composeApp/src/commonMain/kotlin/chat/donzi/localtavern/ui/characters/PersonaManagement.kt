@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import chat.donzi.localtavern.domain.Persona
 import chat.donzi.localtavern.ui.common.nextSuppressAutoCap
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 import chat.donzi.localtavern.utils.rememberImagePickerLauncher
 import chat.donzi.localtavern.utils.DefaultTokenizer
 import coil3.compose.AsyncImage
@@ -150,6 +151,7 @@ private fun PersonaEditDialog(
     var name by remember(initialName) { mutableStateOf(initialName) }
     var nameSuppressAutoCap by remember(initialName) { mutableStateOf(false) }
     var description by remember(initialDescription) { mutableStateOf(initialDescription) }
+    var descriptionSuppressAutoCap by remember(initialDescription) { mutableStateOf(false) }
     var avatarData by remember(initialAvatar) { mutableStateOf(initialAvatar) }
     var remoteLoaded by remember(initialAvatar) { mutableStateOf(initialAvatar != null) }
 
@@ -244,7 +246,7 @@ private fun PersonaEditDialog(
                             nameSuppressAutoCap = nextSuppressAutoCap(name, nextValue, nameSuppressAutoCap)
                             name = nextValue
                         },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
                         singleLine = true,
                         shape = RoundedCornerShape(10.dp),
                         keyboardOptions = KeyboardOptions(
@@ -261,11 +263,17 @@ private fun PersonaEditDialog(
                     Spacer(Modifier.height(4.dp))
                     OutlinedTextField(
                         value = description,
-                        onValueChange = { description = it },
-                        modifier = Modifier.fillMaxWidth(),
+                        onValueChange = { nextValue ->
+                            descriptionSuppressAutoCap = nextSuppressAutoCap(description, nextValue, descriptionSuppressAutoCap)
+                            description = nextValue
+                        },
+                        modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
                         minLines = 3,
                         maxLines = 5,
-                        shape = RoundedCornerShape(10.dp)
+                        shape = RoundedCornerShape(10.dp),
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = if (descriptionSuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Sentences
+                        )
                     )
                 }
 

@@ -86,10 +86,13 @@ fun MessageBubble(
     // Reports the bubble's pixel width so the caller can hug the
     // bottom three-dot to the bubble's right edge (not the screen edge).
     onBubbleWidthChanged: (Int) -> Unit = {},
-    // In-conversation search highlight: matches get a tertiary border,
-    // the current match a thicker primary border.
+    // In-conversation search highlight: matches get a tertiary border, the
+    // current match a thicker primary border, and [highlightQuery] (the
+    // active search term, empty for non-matches) is highlighted inside the
+    // rendered text.
     isSearchMatch: Boolean = false,
-    isCurrentMatch: Boolean = false
+    isCurrentMatch: Boolean = false,
+    highlightQuery: String = ""
 ) {
     var isEditing by remember { mutableStateOf(false) }
     var editedTextValue by remember(content) {
@@ -329,7 +332,9 @@ fun MessageBubble(
                 pendingImageCount = pendingImageCount,
                 reasoningText = reasoningText,
                 costText = costText,
-                timestampText = timestampText
+                timestampText = timestampText,
+                highlightQuery = if (isSearchMatch) highlightQuery else "",
+                isCurrentMatch = isCurrentMatch
             )
             if (isDesktop && desktopMenuExpanded && !isEditing) {
                 Popup(

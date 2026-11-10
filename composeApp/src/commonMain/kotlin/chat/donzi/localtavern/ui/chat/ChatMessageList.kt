@@ -42,7 +42,9 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -83,10 +85,12 @@ fun ChatMessageList(
     // Desktop floating-menu request (right-click / bottom three-dot).
     // When null, the desktop menu is driven per-item instead.
     onRequestDesktopMenu: ((Message) -> Unit)? = null,
-    // In-conversation search: matched ids, the focused match, and whether
-    // any search is running (non-blank query dims non-matches).
+    // In-conversation search: matched ids, the focused match, the active
+    // query (highlighted inside the matched bubbles), and whether any search
+    // is running (non-blank query dims non-matches).
     searchMatchedIds: Set<String> = emptySet(),
     searchCurrentId: String? = null,
+    searchQuery: String = "",
     isSearchActive: Boolean = false
 ) {
     val messages = chatState.messages
@@ -95,6 +99,7 @@ fun ChatMessageList(
     val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
 
     val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
     val listState = rememberLazyListState()
     val lastMessage = messages.lastOrNull()
     val siblings = lastMessage?.let { siblingsMap[it.id] ?: listOf(it) } ?: emptyList()
@@ -155,6 +160,20 @@ fun ChatMessageList(
         state = listState,
         modifier = Modifier
             .fillMaxSize()
+            // Interacting with the message list (tap, scroll, swipe) moves
+            // keyboard focus to a non-input element, so the soft keyboard
+            // must hide. Skipped while a message is being edited inline:
+            // the focused element then IS a text field and must stay up.
+            // The chat input is a sibling (not inside the list), so it is
+            // never affected by this detector.
+            .pointerInput(editingMessageId, keyboardController) {
+                awaitPointerEventScope {
+                    while (true) {
+                        awaitPointerEvent()
+                        if (editingMessageId == null) keyboardController?.hide()
+                    }
+                }
+            }
             .focusRequester(focusRequester)
             .focusable()
             .onKeyEvent { event ->
@@ -229,6 +248,7 @@ fun ChatMessageList(
                 isEditingTarget = isEditingTarget,
                 isSearchMatch = isSearchMatch,
                 isCurrentMatch = isCurrentMatch,
+                searchQuery = searchQuery,
                 // Tap never opens options: it only cancels editing or
                 // dismisses an already-open bar. Holding (or right-click /
                 // the desktop three-dot) is what opens options.
@@ -295,6 +315,7 @@ private fun ChatMessageItem(
     isEditingTarget: Boolean = false,
     isSearchMatch: Boolean = false,
     isCurrentMatch: Boolean = false,
+    searchQuery: String = "",
     onMessageTap: () -> Unit = {},
     onMessageLongPress: () -> Unit = {},
     onMessageRightClick: () -> Unit = {}
@@ -357,6 +378,7 @@ private fun ChatMessageItem(
             dimmed = isDimmed,
             isSearchMatch = isSearchMatch,
             isCurrentMatch = isCurrentMatch,
+            highlightQuery = searchQuery,
             onMessageTap = onMessageTap,
             onMessageLongPress = {
                 if (isDesktop) desktopMenuExpanded = !desktopMenuExpanded else onMessageLongPress()

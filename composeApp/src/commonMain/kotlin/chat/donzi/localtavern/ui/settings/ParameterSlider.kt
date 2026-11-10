@@ -17,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -82,6 +83,7 @@ fun ParameterSlider(
                         .width(60.dp)
                         .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
                         .padding(horizontal = 4.dp, vertical = 2.dp)
+                        .trackTextFieldFocus()
                         .onFocusChanged { focusState ->
                             // Commit (or revert) when the user clicks away:
                             // otherwise the raw uncommitted text keeps

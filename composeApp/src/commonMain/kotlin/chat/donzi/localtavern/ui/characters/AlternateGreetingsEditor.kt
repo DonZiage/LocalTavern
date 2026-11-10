@@ -1,7 +1,10 @@
 package chat.donzi.localtavern.ui.characters
 
 import chat.donzi.localtavern.utils.DefaultTokenizer
+import chat.donzi.localtavern.ui.common.nextSuppressAutoCap
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -15,6 +18,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.*
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
@@ -178,6 +182,7 @@ private fun GreetingEditDialog(
     onDelete: () -> Unit
 ) {
     var text by remember(initial) { mutableStateOf(initial) }
+    var greetingSuppressAutoCap by remember(initial) { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -189,10 +194,16 @@ private fun GreetingEditDialog(
                 }
                 OutlinedTextField(
                     value = text,
-                    onValueChange = { text = it },
-                    modifier = Modifier.fillMaxWidth(),
+                    onValueChange = { nextValue ->
+                        greetingSuppressAutoCap = nextSuppressAutoCap(text, nextValue, greetingSuppressAutoCap)
+                        text = nextValue
+                    },
+                    modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
                     minLines = 5,
-                    label = { Text("Greeting text") }
+                    label = { Text("Greeting text") },
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = if (greetingSuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Sentences
+                    )
                 )
             }
         },

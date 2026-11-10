@@ -33,6 +33,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 import kotlinx.coroutines.delay
 
 // Search field for the character list: collapses to a search icon until
@@ -73,6 +74,7 @@ fun CharacterSearchBar(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(40.dp)
+                    .trackTextFieldFocus()
                     .focusRequester(focusRequester),
                 textStyle = MaterialTheme.typography.bodyMedium.copy(
                     color = MaterialTheme.colorScheme.onSurface

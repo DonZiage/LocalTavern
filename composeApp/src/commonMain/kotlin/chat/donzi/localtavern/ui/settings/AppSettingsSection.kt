@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -24,10 +25,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.appDatabasePath
 import chat.donzi.localtavern.appVersionName
 import chat.donzi.localtavern.data.sync.DeviceName
+import chat.donzi.localtavern.ui.common.nextSuppressAutoCap
+import chat.donzi.localtavern.ui.common.trackTextFieldFocus
 
 // General app preferences (all per-device, persisted in AppSettings) plus an
 // informational About block.
@@ -160,6 +164,7 @@ private fun RenameDeviceDialog(
     onDismiss: () -> Unit
 ) {
     var name by remember { mutableStateOf(currentName) }
+    var nameSuppressAutoCap by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -173,10 +178,17 @@ private fun RenameDeviceDialog(
                 )
                 OutlinedTextField(
                     value = name,
-                    onValueChange = { name = it.take(DeviceName.MAX_LENGTH) },
+                    onValueChange = { nextValue ->
+                        val bounded = nextValue.take(DeviceName.MAX_LENGTH)
+                        nameSuppressAutoCap = nextSuppressAutoCap(name, bounded, nameSuppressAutoCap)
+                        name = bounded
+                    },
                     label = { Text("Device name") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = if (nameSuppressAutoCap) KeyboardCapitalization.None else KeyboardCapitalization.Words
+                    )
                 )
             }
         },
