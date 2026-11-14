@@ -26,6 +26,7 @@ import chat.donzi.localtavern.controller.AppContainer
 import chat.donzi.localtavern.data.database.DriverFactory
 import chat.donzi.localtavern.isDesktop
 import chat.donzi.localtavern.ui.common.AutoHideKeyboardOnNonInputFocus
+import chat.donzi.localtavern.ui.common.dismissKeyboardOnNonInputTap
 import chat.donzi.localtavern.ui.theme.LocalTavernTheme
 import chat.donzi.localtavern.ui.theme.ThemeTransition
 import kotlin.time.Duration.Companion.minutes
@@ -101,7 +102,11 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
         secretGate.mode != SecretGateMode.Open -> {
             LocalTavernTheme(darkTheme = systemDark) {
                 Surface(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        // Same rule as the main screen: a tap outside an
+                        // input field dismisses the soft keyboard.
+                        .dismissKeyboardOnNonInputTap(),
                     color = MaterialTheme.colorScheme.background
                 ) {
                     AutoHideKeyboardOnNonInputFocus()
@@ -186,6 +191,11 @@ fun App(driverFactory: DriverFactory, onThemeChanged: (Boolean) -> Unit = {}) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                // A tap on anything that is not an input field (message rows,
+                // top bar, side-panel items, ...) must dismiss the soft
+                // keyboard: on touch devices such a tap never moves the
+                // Compose focus, so the focus tracker alone cannot see it.
+                .dismissKeyboardOnNonInputTap()
                 .pointerInput(Unit) {
                     awaitPointerEventScope {
                         while (true) {

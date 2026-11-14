@@ -112,7 +112,7 @@ class ScreenSmokeTest {
                 onSave = { _, _, _, _, _, _ -> }
             )
         }
-        onNodeWithText("1. Endpoint URL (Required)").assertExists()
+        onNodeWithText("1. Endpoint (Required)").assertExists()
         onNodeWithText("Next").assertExists()
     }
 

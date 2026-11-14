@@ -52,6 +52,7 @@ The project exists to solve the "service complexity" problem: most LLM interface
 
 - **14 commercial providers:** OpenAI, Anthropic, Gemini, Mistral, DeepSeek, OpenRouter, xAI, TogetherAI, Fireworks AI, Perplexity, Cohere, AI21, DreamGen, Mancer. Anthropic speaks its native `/messages` dialect (including extended thinking); everything else uses the OpenAI-compatible API.
 - **Local inference:** Ollama, LM Studio, KoboldCPP, llama.cpp, TabbyAPI, Oobabooga, vLLM, or any OpenAI-compatible local endpoint.
+- **Named provider options:** the endpoint picker lists every provider by name only — the URL an option stands for is never shown next to it, and the picked option is displayed by its name (`OpenAI`) instead of its raw endpoint (focusing the field reveals the URL for custom endpoints).
 - **Connection profiles:** multiple API profiles with per-connection parameters, live connection probing (distinguishes auth failures from unreachable endpoints), and a fuzzy-searchable model picker.
 - **Real-time cost estimation** — live cloud prices are fetched automatically from OpenRouter's public models endpoint at startup (bundled offline catalog as fallback), so estimates always track current list prices. Shown as a "Max prompt cost" readout, an in-flight estimate, and stored per message; cost info is hidden entirely for local inference models.
 - **Reasoning mode** for supported models (DeepSeek-R1, OpenAI o-series, Anthropic extended thinking) with Auto/On/Off override per connection. Chain-of-thought is captured, shown in a collapsible section, and syncs across devices: OpenAI o-series gets `reasoning_effort`, Anthropic gets a thinking budget plus the beta header, R1-style models stream `reasoning_content`.
@@ -82,6 +83,7 @@ The project exists to solve the "service complexity" problem: most LLM interface
 - Refined UI with glassmorphism, fluid animations, and a consistent 12–16pt rounded aesthetic.
 - Desktop: collapsible side panels. Mobile: animated drawers.
 - Dark/light theme toggle with a circular-reveal transition.
+- **Keyboard follows the focus:** the soft keyboard is dismissed as soon as the user taps anything that is not an input field — a message row, a top-bar button, a side-panel item — while a tap inside an input (or a transfer from one input to another) keeps it up.
 
 ---
 

@@ -7,6 +7,8 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -479,26 +481,49 @@ private fun BaseUrlPicker(
     onBaseUrlChange: (String) -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
+    // The chosen endpoint is presented by its NAME ("OpenAI"): the raw URL
+    // belongs to the option, it is not something to read. Focusing the field
+    // reveals the URL, so a custom endpoint stays editable.
+    var endpointFocused by remember { mutableStateOf(false) }
+    // The name of the picked option. It is kept aside (and not derived from
+    // the URL) because two options can share an endpoint.
+    var selectedProvider by remember { mutableStateOf<String?>(null) }
+    val focusManager = LocalFocusManager.current
+    val displayValue = remember(baseUrl, endpointFocused, selectedProvider) {
+        if (endpointFocused) {
+            baseUrl
+        } else {
+            selectedProvider ?: ProviderCatalog.displayNameForEndpoint(baseUrl) ?: baseUrl
+        }
+    }
     ExposedDropdownMenuBox(
         expanded = menuExpanded,
         onExpandedChange = { menuExpanded = it }
     ) {
         OutlinedTextField(
-            value = baseUrl,
-            onValueChange = onBaseUrlChange,
-            label = { Text("1. Endpoint URL (Required)") },
-            placeholder = { Text("https://openrouter.ai/api/v1") },
+            value = displayValue,
+            onValueChange = { nextValue ->
+                // A typed endpoint is a custom one: it has no option name.
+                selectedProvider = null
+                onBaseUrlChange(nextValue)
+            },
+            label = { Text("1. Endpoint (Required)") },
+            placeholder = { Text("OpenAI, Ollama, …") },
             // URLs are matched literally: never auto-capitalise.
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
             modifier = Modifier
                 .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryEditable)
                 .fillMaxWidth()
-                .trackTextFieldFocus(),
+                .trackTextFieldFocus()
+                .onFocusChanged { endpointFocused = it.isFocused },
             trailingIcon = {
                 if (baseUrl.isBlank()) {
                     ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuExpanded)
                 } else {
-                    IconButton(onClick = { onBaseUrlChange("") }) {
+                    IconButton(onClick = {
+                        selectedProvider = null
+                        onBaseUrlChange("")
+                    }) {
                         Icon(Icons.Filled.Clear, "Clear URL")
                     }
                 }
@@ -512,24 +537,38 @@ private fun BaseUrlPicker(
             onDismissRequest = { menuExpanded = false },
             modifier = Modifier.exposedDropdownSize().requiredHeightIn(max = 360.dp)
         ) {
-            ProviderCatalog.providerSections.forEach { (sectionName, providersInSection) ->
-                Text(
-                    text = sectionName,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-                )
-                providersInSection.forEach { provider ->
-                    ProviderCatalog.defaultUrls[provider]?.let { url ->
-                        DropdownMenuItem(
-                            text = { Text(provider, style = MaterialTheme.typography.bodyMedium) },
-                            onClick = {
-                                onBaseUrlChange(url)
-                                menuExpanded = false
-                            }
-                        )
-                    }
+            ProviderOptions { provider, url ->
+                selectedProvider = provider
+                onBaseUrlChange(url)
+                menuExpanded = false
+                if (endpointFocused) {
+                    // The option is now shown by its name: drop the focus so
+                    // the field does not keep the raw URL on screen.
+                    focusManager.clearFocus()
                 }
+            }
+        }
+    }
+}
+
+// The provider options of the endpoint picker. Every option is listed by
+// its NAME only: the URL it stands for is an implementation detail of the
+// option and must never be shown next to it.
+@Composable
+internal fun ProviderOptions(onProviderSelected: (provider: String, url: String) -> Unit) {
+    ProviderCatalog.providerSections.forEach { (sectionName, providersInSection) ->
+        Text(
+            text = sectionName,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+        )
+        providersInSection.forEach { provider ->
+            ProviderCatalog.defaultUrls[provider]?.let { url ->
+                DropdownMenuItem(
+                    text = { Text(provider, style = MaterialTheme.typography.bodyMedium) },
+                    onClick = { onProviderSelected(provider, url) }
+                )
             }
         }
     }

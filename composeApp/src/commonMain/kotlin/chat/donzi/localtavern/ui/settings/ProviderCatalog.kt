@@ -61,6 +61,25 @@ object ProviderCatalog {
         "DreamGen" to listOf("dreamgen.com")
     )
 
+    /**
+     * The name of the option an endpoint stands for ("OpenAI"), or null when
+     * the endpoint names no option (a custom endpoint, or one shared by two
+     * options - TabbyAPI and Oobabooga both default to localhost:5000).
+     *
+     * The provider options are presented by name: the raw URL belongs to the
+     * option, it is not something the user has to read. The endpoint itself
+     * stays the value that is stored and used.
+     */
+    fun displayNameForEndpoint(baseUrl: String?): String? {
+        val trimmed = baseUrl?.trim().orEmpty()
+        if (trimmed.isBlank()) return null
+        val matches = defaultUrls.filterValues { it.equals(trimmed, ignoreCase = true) }
+        // An endpoint that stands for more than one option names none of
+        // them: it is shown as it is.
+        if (matches.size != 1) return null
+        return matches.keys.first()
+    }
+
     // True for endpoints that live on this machine or the local network:
     // they need no API key and are free at the API layer.
     fun isLocalEndpoint(baseUrl: String?): Boolean {
