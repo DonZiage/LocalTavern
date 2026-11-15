@@ -94,6 +94,14 @@ jobs:
 
       - name: Set up Android SDK (compileSdk 36)
         uses: android-actions/setup-android@v3
+        with:
+          # Without explicit packages the action tries to install the
+          # obsolete `tools` package (`sdkmanager tools`), which no
+          # longer exists and fails the step. Pin the packages the
+          # project actually needs instead.
+          api-level: 36
+          build-tools: 36.0.0
+          cmdline-tools-version: 16.0
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
