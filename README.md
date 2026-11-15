@@ -9,6 +9,7 @@ The project exists to solve the "service complexity" problem: most LLM interface
 - **License:** GPL-3.0
 - **Current version:** 0.6.5 (versionCode 65 — verified against `composeApp/build.gradle.kts`, 2026-10-14)
 - **Backend:** Kotlin 2.3.21, Compose Multiplatform 1.10.3, Ktor 3.4.3
+- **CI:** [![CI](https://github.com/DonZiage/LocalTavern/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/DonZiage/LocalTavern/actions/workflows/ci.yml) — runs on every push / PR to `dev` (see below)
 
 ---
 
@@ -43,6 +44,27 @@ The project exists to solve the "service complexity" problem: most LLM interface
 # Build the iOS framework (requires macOS)
 ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64
 ```
+
+## Continuous Integration
+
+`.github/workflows/ci.yml` runs on every push and pull request to `dev`
+(and can be triggered manually from the Actions tab):
+
+- **Desktop tests (Ubuntu)** — `./gradlew :composeApp:desktopTest` under
+  Xvfb, then a Linux desktop package build as a smoke test. The `.deb` is
+  uploaded as an artifact (7 days); test reports are uploaded on failure.
+- **Android debug APK (Ubuntu)** — `./gradlew :composeApp:assembleDebug`
+  (AGP 8.13.2, compileSdk 36). The debug APK is uploaded as an artifact
+  (7 days). No signing keys are used or needed.
+- **iOS simulator framework (macOS)** — `./gradlew
+  :composeApp:linkDebugFrameworkIosSimulatorArm64`, the Kotlin/Native part
+  of the iOS target. The Xcode host app is not built in CI: `iosApp/` has
+  no shared scheme and uses automatic code signing, which needs an Apple
+  Developer identity.
+
+All jobs use JDK 17 and Gradle 8.14.3 via the wrapper, with Gradle
+dependency caching. A push that breaks any target fails the run, so `dev`
+stays green before it is merged to `main`.
 
 ---
 
