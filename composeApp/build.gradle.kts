@@ -16,9 +16,17 @@ kotlin {
 
     jvm("desktop")
 
-    iosX64()
-    iosArm64()
-    iosSimulatorArm64()
+    // Each iOS target needs a framework binary, or Gradle registers no
+    // `link*Framework*` tasks at all — `linkDebugFrameworkIosSimulatorArm64`
+    // (and the Xcode `embedAndSignAppleFrameworkForXcode` task) simply do
+    // not exist. The Swift code imports the framework as `ComposeApp`
+    // (see iosApp/iosApp/ContentView.swift), so that is the base name.
+    listOf(iosX64(), iosArm64(), iosSimulatorArm64()).forEach {
+        it.binaries.framework {
+            baseName = "ComposeApp"
+            isStatic = true
+        }
+    }
 
     sourceSets {
         commonMain.dependencies {
