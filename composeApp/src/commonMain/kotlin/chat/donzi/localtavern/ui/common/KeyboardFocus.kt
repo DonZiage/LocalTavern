@@ -146,6 +146,34 @@ fun AutoHideKeyboardOnNonInputFocus() {
     }
 }
 
+/**
+ * Hides the soft keyboard when a drawer / side panel opens.
+ *
+ * Opening a panel is a state change, not a tap inside the panel, so the
+ * root tap watcher ([Modifier.dismissKeyboardOnNonInputTap]) cannot see
+ * it: the tap that opened the panel was on the top bar, and by the time
+ * the panel slides in the chat input is still focused behind it. The
+ * panel itself is the new focus of attention, so the keyboard from the
+ * chat input must go. A panel's own text field (character search, model
+ * search, ...) requests focus only when the user taps it afterwards, so
+ * hiding here does not block using a panel input.
+ *
+ * Pass `activeDrawer != ActiveDrawer.None` from the screen that owns the
+ * drawer state; the parameter is a plain Boolean so this stays testable
+ * without the layout package (which would create an import cycle).
+ */
+@Composable
+fun HideKeyboardOnDrawerOpen(isDrawerOpen: Boolean) {
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    LaunchedEffect(isDrawerOpen) {
+        if (isDrawerOpen) {
+            focusManager.clearFocus()
+            keyboardController?.hide()
+        }
+    }
+}
+
 // Holder for the root offset of the observed node. A plain holder (not a
 // snapshot state) keeps the layout callback free of recomposition triggers:
 // the value is only read while dispatching a pointer event.

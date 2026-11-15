@@ -12,6 +12,7 @@ import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.domain.Character
 import chat.donzi.localtavern.domain.Persona
 import chat.donzi.localtavern.isDesktop
+import chat.donzi.localtavern.ui.common.HideKeyboardOnDrawerOpen
 import chat.donzi.localtavern.utils.BatchImportResult
 import chat.donzi.localtavern.utils.PickedFile
 import kotlinx.coroutines.delay
@@ -59,6 +60,11 @@ fun MainScreen(
 
     val chatState by deps.chatController.state.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // Opening a drawer must dismiss the keyboard from the chat input:
+    // the tap that opened it was on the top bar, and the panel sliding in
+    // is not itself a tap the root watcher can see.
+    HideKeyboardOnDrawerOpen(activeDrawer != ActiveDrawer.None)
 
     val hasPersona = remember(personas) {
         // The default "User" persona is no longer stored: the cards only ever

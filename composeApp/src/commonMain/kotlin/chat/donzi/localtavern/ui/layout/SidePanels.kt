@@ -1,6 +1,7 @@
 package chat.donzi.localtavern.ui.layout
 import chat.donzi.localtavern.ui.settings.SettingsPanelContent
 import chat.donzi.localtavern.ui.characters.CharactersPanelContent
+import chat.donzi.localtavern.ui.common.dismissKeyboardOnNonInputTap
 import chat.donzi.localtavern.ui.settings.AppSettingsSection
 
 import androidx.compose.animation.AnimatedVisibility
@@ -113,7 +114,13 @@ fun SidePanels(
     val settingsScrollState = rememberScrollState()
     val charactersScrollState = rememberScrollState()
 
-    Box(modifier = Modifier.fillMaxSize().zIndex(100f)) {
+    Box(
+        // Panel-level watcher, in addition to the App-root one: taps inside
+        // the overlay drawers (scrolling list, section header, character
+        // row, ...) must dismiss the keyboard even if the root watcher
+        // misses them, and a tap inside a panel text field still keeps it.
+        modifier = Modifier.fillMaxSize().dismissKeyboardOnNonInputTap().zIndex(100f)
+    ) {
         AnimatedVisibility(
             visible = activeDrawer != ActiveDrawer.None,
             enter = fadeIn(),

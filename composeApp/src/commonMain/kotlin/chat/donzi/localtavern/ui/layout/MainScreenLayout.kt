@@ -3,6 +3,7 @@ import chat.donzi.localtavern.ui.settings.SettingsPanelContent
 import chat.donzi.localtavern.ui.chat.MessageSelectTopBar
 import chat.donzi.localtavern.ui.common.ExportNotificationBubble
 import chat.donzi.localtavern.ui.common.ErrorNotificationBubble
+import chat.donzi.localtavern.ui.common.dismissKeyboardOnNonInputTap
 import chat.donzi.localtavern.ui.common.rememberAvatarBytes
 import chat.donzi.localtavern.ui.chat.ChatTopBar
 import chat.donzi.localtavern.ui.chat.ChatManagerDialog
@@ -63,7 +64,10 @@ internal fun DesktopSettingsPanel(
     var settingsSyncExpanded by remember { mutableStateOf(false) }
     var settingsAppExpanded by remember { mutableStateOf(false) }
     var settingsSecurityExpanded by remember { mutableStateOf(false) }
-    Box(modifier.width(drawerWidth).fillMaxHeight()) {
+    // Panel-level watcher, like the mobile overlay: a tap on a settings
+    // row/slider must dismiss the keyboard even if the App-root watcher
+    // misses it, while a tap inside a panel text field keeps it.
+    Box(modifier.dismissKeyboardOnNonInputTap().width(drawerWidth).fillMaxHeight()) {
         SettingsPanelContent(
             apiSettingsRepository = deps.apiSettingsRepository,
             apiKeyCipher = deps.apiKeyCipher,
@@ -119,7 +123,10 @@ internal fun DesktopCharactersPanel(
 ) {
     var personasExpanded by remember { mutableStateOf(true) }
     var charactersExpanded by remember { mutableStateOf(true) }
-    Box(modifier.width(drawerWidth).fillMaxHeight()) {
+    // Panel-level watcher, like the mobile overlay: a tap on a character /
+    // persona row must dismiss the keyboard even if the App-root watcher
+    // misses it, while a tap inside the panel search field keeps it.
+    Box(modifier.dismissKeyboardOnNonInputTap().width(drawerWidth).fillMaxHeight()) {
         CharactersPanelContent(
             personas = personas,
             activePersonaId = activePersonaId,
