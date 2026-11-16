@@ -114,12 +114,16 @@ fun SidePanels(
     val settingsScrollState = rememberScrollState()
     val charactersScrollState = rememberScrollState()
 
+    // NOTE: no pointerInput / dismiss watcher on this container. It is
+    // always composed, full-screen and above the chat (zIndex 100), even
+    // with no drawer open — and a pointerInput here makes it the hit
+    // target for every tap, so nothing underneath (top bar, chat input,
+    // send button, ...) ever receives one. That is what 45c621d broke on
+    // Android: the screen looked fine but could not be touched at all.
+    // The App-root watcher already sees every tap, and the panel-level
+    // watcher lives on the drawers themselves, below.
     Box(
-        // Panel-level watcher, in addition to the App-root one: taps inside
-        // the overlay drawers (scrolling list, section header, character
-        // row, ...) must dismiss the keyboard even if the root watcher
-        // misses them, and a tap inside a panel text field still keeps it.
-        modifier = Modifier.fillMaxSize().dismissKeyboardOnNonInputTap().zIndex(100f)
+        modifier = Modifier.fillMaxSize().zIndex(100f)
     ) {
         AnimatedVisibility(
             visible = activeDrawer != ActiveDrawer.None,
@@ -151,35 +155,42 @@ fun SidePanels(
                 .width(drawerWidth)
                 .align(Alignment.CenterStart)
         ) {
-            SettingsPanelContent(
-                apiSettingsRepository = apiSettingsRepository,
-                apiKeyCipher = apiKeyCipher,
-                syncService = syncService,
-                syncRepository = syncRepository,
-                syncDiscovery = syncDiscovery,
-                chatClient = chatClient,
-                onEnsureSyncRunning = onEnsureSyncRunning,
-                isDarkMode = isDarkMode,
-                onToggleDarkMode = onToggleDarkMode,
-                onApiChanged = onApiChanged,
-                autoSyncOnLaunch = autoSyncOnLaunch,
-                onAutoSyncOnLaunchChange = onAutoSyncOnLaunchChange,
-                sendWithCtrlEnter = sendWithCtrlEnter,
-                onSendWithCtrlEnterChange = onSendWithCtrlEnterChange,
-                confirmBeforeDelete = confirmBeforeDelete,
-                onConfirmBeforeDeleteChange = onConfirmBeforeDeleteChange,
-                autoLockIdleMinutes = autoLockIdleMinutes,
-                onAutoLockIdleMinutesChange = onAutoLockIdleMinutesChange,
-                apiSectionExpanded = settingsApiExpanded,
-                onApiSectionExpandedChange = { settingsApiExpanded = it },
-                syncSectionExpanded = settingsSyncExpanded,
-                onSyncSectionExpandedChange = { settingsSyncExpanded = it },
-                appSettingsSectionExpanded = settingsAppExpanded,
-                onAppSettingsSectionExpandedChange = { settingsAppExpanded = it },
-                securitySectionExpanded = settingsSecurityExpanded,
-                onSecuritySectionExpandedChange = { settingsSecurityExpanded = it },
-                scrollState = settingsScrollState
-            )
+            // Panel-level watcher, like the desktop panels: scoped to the
+            // drawer itself (drawerWidth wide), never to the full-screen
+            // container above. Taps on a settings row/slider dismiss the
+            // keyboard even if the App-root watcher misses them, while a
+            // tap inside a panel text field keeps it.
+            Box(modifier = Modifier.fillMaxSize().dismissKeyboardOnNonInputTap()) {
+                SettingsPanelContent(
+                    apiSettingsRepository = apiSettingsRepository,
+                    apiKeyCipher = apiKeyCipher,
+                    syncService = syncService,
+                    syncRepository = syncRepository,
+                    syncDiscovery = syncDiscovery,
+                    chatClient = chatClient,
+                    onEnsureSyncRunning = onEnsureSyncRunning,
+                    isDarkMode = isDarkMode,
+                    onToggleDarkMode = onToggleDarkMode,
+                    onApiChanged = onApiChanged,
+                    autoSyncOnLaunch = autoSyncOnLaunch,
+                    onAutoSyncOnLaunchChange = onAutoSyncOnLaunchChange,
+                    sendWithCtrlEnter = sendWithCtrlEnter,
+                    onSendWithCtrlEnterChange = onSendWithCtrlEnterChange,
+                    confirmBeforeDelete = confirmBeforeDelete,
+                    onConfirmBeforeDeleteChange = onConfirmBeforeDeleteChange,
+                    autoLockIdleMinutes = autoLockIdleMinutes,
+                    onAutoLockIdleMinutesChange = onAutoLockIdleMinutesChange,
+                    apiSectionExpanded = settingsApiExpanded,
+                    onApiSectionExpandedChange = { settingsApiExpanded = it },
+                    syncSectionExpanded = settingsSyncExpanded,
+                    onSyncSectionExpandedChange = { settingsSyncExpanded = it },
+                    appSettingsSectionExpanded = settingsAppExpanded,
+                    onAppSettingsSectionExpandedChange = { settingsAppExpanded = it },
+                    securitySectionExpanded = settingsSecurityExpanded,
+                    onSecuritySectionExpandedChange = { settingsSecurityExpanded = it },
+                    scrollState = settingsScrollState
+                )
+            }
         }
 
         AnimatedVisibility(
@@ -194,34 +205,41 @@ fun SidePanels(
                 .width(drawerWidth)
                 .align(Alignment.CenterEnd)
         ) {
-            CharactersPanelContent(
-                personas = personas,
-                activePersonaId = activePersonaId,
-                onPersonaSelect = onPersonaSelect,
-                onPersonaAdd = onPersonaAdd,
-                onPersonaUpdate = onPersonaUpdate,
-                onPersonaDelete = onPersonaDelete,
-                characters = characters,
-                onCharacterSelect = onCharacterSelect,
-                onCharactersDelete = onCharactersDelete,
-                onImportCharacters = onImportCharacters,
-                onExportSelected = onExportSelected,
-                onCharacterExport = onCharacterExport,
-                onCharacterCreate = onCharacterCreate,
-                onCharacterEdit = onCharacterEdit,
-                autoEditDefaultPersona = autoEditDefaultPersona,
-                onAutoEditConsumed = onAutoEditConsumed,
-                autoShowNewCharacterMenu = autoShowNewCharacterMenu,
-                onAutoShowMenuConsumed = onAutoShowMenuConsumed,
-                personasExpanded = personasExpanded,
-                onPersonasExpandedChange = { personasExpanded = it },
-                charactersExpanded = charactersExpanded,
-                onCharactersExpandedChange = { charactersExpanded = it },
-                confirmBeforeDelete = confirmBeforeDelete,
-                scrollState = charactersScrollState,
-                characterAvatarProvider = characterAvatarProvider,
-                personaAvatarProvider = personaAvatarProvider
-            )
+            // Panel-level watcher, like the desktop panels: scoped to the
+            // drawer itself (drawerWidth wide), never to the full-screen
+            // container above. Taps on a character / persona row dismiss
+            // the keyboard even if the App-root watcher misses them, while
+            // a tap inside the panel search field keeps it.
+            Box(modifier = Modifier.fillMaxSize().dismissKeyboardOnNonInputTap()) {
+                CharactersPanelContent(
+                    personas = personas,
+                    activePersonaId = activePersonaId,
+                    onPersonaSelect = onPersonaSelect,
+                    onPersonaAdd = onPersonaAdd,
+                    onPersonaUpdate = onPersonaUpdate,
+                    onPersonaDelete = onPersonaDelete,
+                    characters = characters,
+                    onCharacterSelect = onCharacterSelect,
+                    onCharactersDelete = onCharactersDelete,
+                    onImportCharacters = onImportCharacters,
+                    onExportSelected = onExportSelected,
+                    onCharacterExport = onCharacterExport,
+                    onCharacterCreate = onCharacterCreate,
+                    onCharacterEdit = onCharacterEdit,
+                    autoEditDefaultPersona = autoEditDefaultPersona,
+                    onAutoEditConsumed = onAutoEditConsumed,
+                    autoShowNewCharacterMenu = autoShowNewCharacterMenu,
+                    onAutoShowMenuConsumed = onAutoShowMenuConsumed,
+                    personasExpanded = personasExpanded,
+                    onPersonasExpandedChange = { personasExpanded = it },
+                    charactersExpanded = charactersExpanded,
+                    onCharactersExpandedChange = { charactersExpanded = it },
+                    confirmBeforeDelete = confirmBeforeDelete,
+                    scrollState = charactersScrollState,
+                    characterAvatarProvider = characterAvatarProvider,
+                    personaAvatarProvider = personaAvatarProvider
+                )
+            }
         }
     }
 }

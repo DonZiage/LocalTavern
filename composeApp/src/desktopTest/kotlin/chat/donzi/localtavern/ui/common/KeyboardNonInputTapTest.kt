@@ -3,8 +3,10 @@ package chat.donzi.localtavern.ui.common
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -349,6 +351,110 @@ class KeyboardNonInputTapTest {
         assertFalse(
             TextFieldFocusTracker.isAnyTextFieldFocused,
             "opening a drawer must dismiss the keyboard"
+        )
+    }
+
+    // Regression for 45c621d on Android: the mobile side panels live in
+    // an always-composed, full-screen Box above the chat (zIndex 100),
+    // even with no drawer open. Putting the dismiss watcher on that
+    // container made it the hit target for every tap, so the chat
+    // underneath — top bar, input, send button, everything — stopped
+    // receiving taps at all, while the screen still looked fine. The
+    // watcher therefore belongs on the drawers themselves, never on the
+    // full-screen container. This mirrors SidePanels.kt with the drawer
+    // closed: outer Box with no watcher, chat button underneath.
+    @Test
+    fun tappingChatContentUnderAClosedOverlay_reachesTheChat() = runComposeUiTest {
+        var buttonTapped = false
+        setContent {
+            CompositionLocalProvider(LocalInputModeManager provides TouchInputModeManager) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Text(
+                        text = "Chat send button",
+                        modifier = Modifier
+                            .padding(top = 200.dp)
+                            .clickable { buttonTapped = true }
+                    )
+                    // The SidePanels container: always composed, full
+                    // screen, above the chat — and with NO dismiss
+                    // watcher on it. No drawer is open, so it holds
+                    // nothing visible.
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .zIndex(100f)
+                    ) {
+                    }
+                }
+            }
+        }
+        waitForIdle()
+
+        onNodeWithText("Chat send button").performTouchInput { click() }
+        waitForIdle()
+
+        assertTrue(
+            buttonTapped,
+            "a tap on the chat must reach the chat even with the closed overlay above it"
+        )
+    }
+
+    // The other half of the same fix: with the drawer open, the watcher
+    // scoped to the drawer itself (drawerWidth wide) must still dismiss
+    // the keyboard on a panel row tap, and the tap must still reach the
+    // row. This mirrors SidePanels.kt with a drawer open.
+    @Test
+    fun tappingAPanelRowWithDrawerOpen_dismissesTheKeyboardAndStillClicks() = runComposeUiTest {
+        val focusRequester = FocusRequester()
+        var rowTapped = false
+        setContent {
+            CompositionLocalProvider(LocalInputModeManager provides TouchInputModeManager) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    BasicTextField(
+                        value = "Draft",
+                        onValueChange = { },
+                        modifier = Modifier
+                            .focusRequester(focusRequester)
+                            .trackTextFieldFocus()
+                    )
+                    // The SidePanels container: no watcher on it.
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .zIndex(100f)
+                    ) {
+                        // The open drawer: watcher scoped to the drawer.
+                        Box(
+                            modifier = Modifier
+                                .width(300.dp)
+                                .fillMaxHeight()
+                                .dismissKeyboardOnNonInputTap()
+                        ) {
+                            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                                Text(
+                                    text = "Panel character row",
+                                    modifier = Modifier
+                                        .padding(top = 200.dp)
+                                        .clickable { rowTapped = true }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        waitForIdle()
+        runOnIdle { focusRequester.requestFocus() }
+        waitForIdle()
+        assertTrue(TextFieldFocusTracker.isAnyTextFieldFocused)
+
+        onNodeWithText("Panel character row").performTouchInput { click() }
+        waitForIdle()
+
+        assertTrue(rowTapped, "the tap must still reach the panel row")
+        assertFalse(
+            TextFieldFocusTracker.isAnyTextFieldFocused,
+            "a tap on a side-panel row must dismiss the keyboard"
         )
     }
 }
