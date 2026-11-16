@@ -183,17 +183,18 @@ private class QrScanViewController(
         // (assigning it fails with "val cannot be reassigned"); the
         // layer's frame is settable and is the same rectangle for a
         // view with no transform, so layout goes through the layer.
-        overlay.layer.frame = CGRectMake(0.0, 0.0, width, height)
+        // UIView.layer is nullable in the bindings, hence the safe call.
+        overlay.layer?.frame = CGRectMake(0.0, 0.0, width, height)
         val side = min(width, height) * 0.72
         val left = (width - side) / 2.0
         val top = height * 0.42 - side / 2.0
         val right = left + side
         val bottom = top + side
 
-        dimViews.getOrNull(0)?.layer.frame = CGRectMake(0.0, 0.0, width, top)
-        dimViews.getOrNull(1)?.layer.frame = CGRectMake(0.0, bottom, width, height - bottom)
-        dimViews.getOrNull(2)?.layer.frame = CGRectMake(0.0, top, left, side)
-        dimViews.getOrNull(3)?.layer.frame = CGRectMake(right, top, width - right, side)
+        dimViews.getOrNull(0)?.layer?.frame = CGRectMake(0.0, 0.0, width, top)
+        dimViews.getOrNull(1)?.layer?.frame = CGRectMake(0.0, bottom, width, height - bottom)
+        dimViews.getOrNull(2)?.layer?.frame = CGRectMake(0.0, top, left, side)
+        dimViews.getOrNull(3)?.layer?.frame = CGRectMake(right, top, width - right, side)
 
         val arm = 28.0
         val corners = listOf(
@@ -210,8 +211,8 @@ private class QrScanViewController(
             bracketLayers.getOrNull(index)?.path = path.CGPath
         }
 
-        instructionLabel?.layer.frame = CGRectMake(16.0, 56.0, width - 32.0, 24.0)
-        cancelButton?.layer.frame = CGRectMake((width - 120.0) / 2.0, height - 88.0, 120.0, 44.0)
+        instructionLabel?.layer?.frame = CGRectMake(16.0, 56.0, width - 32.0, 24.0)
+        cancelButton?.layer?.frame = CGRectMake((width - 120.0) / 2.0, height - 88.0, 120.0, 44.0)
     }
 
     private fun finishWith(text: String?) {

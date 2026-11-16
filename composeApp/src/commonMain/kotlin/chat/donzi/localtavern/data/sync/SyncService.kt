@@ -331,9 +331,15 @@ class SyncService(
 
     // Retry loop for the fingerprint confirmation: after this device's user
     // confirms, the confirmation is sent to the peer until the peer
-    // acknowledges it (or the handshake finishes another way). One attempt
-    // is enough in the normal case; the loop only covers a dropped packet
-    // or a peer that was briefly unreachable.
+    // acknowledges it. One attempt is enough in the normal case; the loop
+    // only covers a dropped packet or a peer that was briefly unreachable.
+    // The loop deliberately does NOT stop when the pending pairing clears:
+    // recording the local confirmation can complete the pairing right here
+    // (the peer already confirmed), which clears the pending state before
+    // this loop's first check runs — but the peer still needs to hear that
+    // this side confirmed, or it waits forever. The loop stops on the
+    // peer's acknowledgement, on cancellation (cancelPairing/stopServer),
+    // or after CONFIRM_MAX_ATTEMPTS.
     private var confirmRetryJob: Job? = null
 
     /**
@@ -352,8 +358,6 @@ class SyncService(
         confirmRetryJob = scope.launch {
             var attempts = 0
             while (isActive && attempts < CONFIRM_MAX_ATTEMPTS) {
-                val state = _state.value
-                if (state.pendingPeerDeviceId != peerId || state.pendingPeerFingerprint == null) return@launch
                 attempts++
                 if (sendFingerprintConfirmation(peerId)) return@launch
                 delay(CONFIRM_RETRY_DELAY_MS)
