@@ -401,6 +401,14 @@ class SyncPairing(
     // ---------- Client side ----------
 
     suspend fun connectToDevice(host: String, port: Int, pin: String): Result<String> = withContext(Dispatchers.IO) {
+        // The `port` parameter is the HOST's port (where this request
+        // connects to); our own listen port is the SyncPairing property of
+        // the same name, shadowed by the parameter. The host records the
+        // listen port we send as our address for the fingerprint
+        // confirmation, so sending the host's port here made the host
+        // POST its confirmation to itself — the guest never heard back
+        // and the handshake timed out.
+        val ownPort = this@SyncPairing.port
         try {
             val base = "http://$host:$port"
             // The announce query param tells the host a receiver has arrived
@@ -427,7 +435,7 @@ class SyncPairing(
                         publicKey = encodeBase64(identity.publicKeyBytes),
                         nonce = encodeBase64(nonce),
                         pinProof = encodeBase64(proof),
-                        listenPort = port
+                        listenPort = ownPort
                     )
                 )
             }.body()
@@ -460,6 +468,7 @@ class SyncPairing(
             )
             state.update {
                 it.copy(
+                    pairingStage = PairingStage.VerifyingPin,
                     pendingPeerFingerprint = crypto.pairingFingerprint(identity.publicKeyBytes, peerKey),
                     pendingPeerName = peerName,
                     pendingPeerDeviceId = response.deviceId,
