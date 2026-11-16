@@ -1,6 +1,7 @@
 package chat.donzi.localtavern.data.sync
 
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.useContents
 import platform.AVFoundation.AVCaptureConnection
 import platform.AVFoundation.AVCaptureDevice
 import platform.AVFoundation.AVCaptureDeviceInput
@@ -155,7 +156,8 @@ private class QrScanViewController(
             it.setTitleColor(UIColor.whiteColor, forState = UIControlStateNormal)
             it.titleLabel?.font = UIFont.systemFontOfSize(17.0)
             // UIAction carries a closure, so no ObjC selector is needed.
-            val cancelAction = UIAction(title = "", image = null, identifier = null) { _ ->
+            // The ObjC initializer is a factory method, not a constructor.
+            val cancelAction = UIAction.actionWithTitle(title = "", image = null, identifier = null) { _ ->
                 finishWith(null)
             }
             it.addAction(cancelAction, forControlEvents = UIControlEventTouchUpInside)
@@ -174,10 +176,10 @@ private class QrScanViewController(
     // stay clear of it.
     private fun layoutOverlay() {
         val overlay = overlayView ?: return
-        val bounds = view.bounds
-        overlay.frame = bounds
-        val width = bounds.size.width
-        val height = bounds.size.height
+        // C struct fields are read through useContents; direct
+        // `bounds.size.width` does not resolve in Kotlin/Native.
+        val (width, height) = view.bounds.useContents { size.width to size.height }
+        overlay.frame = CGRectMake(0.0, 0.0, width, height)
         val side = min(width, height) * 0.72
         val left = (width - side) / 2.0
         val top = height * 0.42 - side / 2.0
