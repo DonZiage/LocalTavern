@@ -52,10 +52,10 @@ The project exists to solve the "service complexity" problem: most LLM interface
 
 - **Desktop tests (Ubuntu)** — `./gradlew :composeApp:desktopTest` under
   Xvfb, then a Linux desktop package build as a smoke test. The `.deb` is
-  uploaded as an artifact (7 days); test reports are uploaded on failure.
+  uploaded as an artifact (3 days); test reports are uploaded on failure.
 - **Android debug APK (Ubuntu)** — `./gradlew :composeApp:assembleDebug`
   (AGP 8.13.2, compileSdk 36). The debug APK is uploaded as an artifact
-  (7 days). No signing keys are used or needed.
+  (3 days). No signing keys are used or needed.
 - **iOS simulator framework (macOS)** — `./gradlew
   :composeApp:linkDebugFrameworkIosSimulatorArm64`, the Kotlin/Native part
   of the iOS target. The Xcode host app is not built in CI: `iosApp/` has
@@ -65,6 +65,12 @@ The project exists to solve the "service complexity" problem: most LLM interface
 All jobs use JDK 17 and Gradle 8.14.3 via the wrapper, with Gradle
 dependency caching. A push that breaks any target fails the run, so `dev`
 stays green before it is merged to `main`.
+
+**Cost:** the repo is public, so GitHub Actions minutes on these standard
+runners are free and unmetered. The only metered part on a free account
+is storage (artifacts share a 500 MB free allowance), so artifacts are
+kept only 3 days, docs-only pushes skip CI entirely, and a newer push
+cancels an older still-running one.
 
 ---
 
