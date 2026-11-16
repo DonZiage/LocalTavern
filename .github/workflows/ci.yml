@@ -19,14 +19,33 @@
 # Toolchain: JDK 17 (project uses `jvmToolchain(17)`), Gradle 8.14.3 via
 # the wrapper. No signing keys or secrets are needed: Android builds the
 # debug APK only, and no release artifacts are produced.
+#
+# Cost: LocalTavern is a public repo, so GitHub Actions minutes on these
+# standard runners (ubuntu-latest, macos-latest) are free and unmetered —
+# that is what keeps this workflow at $0, not the settings below. The
+# only thing GitHub meters on a free account is storage: artifacts and
+# Packages share a 500 MB free allowance ($0.25/GB-month over it) and the
+# Actions cache allows 10 GB per repo. So this workflow keeps costs at
+# zero by: only standard runners, no duplicate runs (concurrency cancels
+# an older run on a new push), no runs at all for docs-only changes
+# (paths-ignore below), short artifact retention (3 days), and job
+# timeouts so a hung job cannot sit on a runner indefinitely.
 
 name: CI
 
 on:
   push:
     branches: [dev]
+    paths-ignore:
+      - "**.md"
+      - LICENSE
+      - .gitignore
   pull_request:
     branches: [dev]
+    paths-ignore:
+      - "**.md"
+      - LICENSE
+      - .gitignore
   workflow_dispatch:
 
 permissions:
@@ -40,6 +59,7 @@ jobs:
   test:
     name: Desktop tests (Ubuntu)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -68,7 +88,7 @@ jobs:
           path: |
             composeApp/build/test-results/desktopTest/
             composeApp/build/reports/tests/desktopTest/
-          retention-days: 7
+          retention-days: 3
 
       - name: Upload Linux desktop package
         if: success()
@@ -77,11 +97,12 @@ jobs:
           name: localtavern-linux-deb
           path: composeApp/build/compose/binaries/main/deb/*.deb
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 3
 
   android:
     name: Android debug APK (Ubuntu)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -116,11 +137,12 @@ jobs:
           name: localtavern-debug-apk
           path: composeApp/build/outputs/apk/debug/*.apk
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 3
 
   ios:
     name: iOS simulator framework (macOS)
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - name: Check out
         uses: actions/checkout@v4
