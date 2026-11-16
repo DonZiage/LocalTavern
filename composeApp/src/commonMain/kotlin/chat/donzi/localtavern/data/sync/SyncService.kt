@@ -4,8 +4,13 @@ import chat.donzi.localtavern.data.blob.BlobStore
 import chat.donzi.localtavern.data.database.ConflictEvent
 import chat.donzi.localtavern.data.database.SyncPeer
 import io.ktor.client.HttpClient
+import io.ktor.client.call.body
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,7 +47,7 @@ enum class PairingStage {
     /** The receiver submitted the PIN and the pair request succeeded: fingerprint card shown. */
     VerifyingPin,
 
-    /** Fingerprint confirmed (either side) or an authenticated exchange arrived: pairing done. */
+    /** Fingerprint confirmed on BOTH devices: pairing done, syncing may start. */
     Paired
 }
 
@@ -59,13 +64,22 @@ data class SyncUiState(
     // Display-only name of the receiver that announced itself (sanitized).
     val connectedPeerName: String? = null,
     // Fingerprint of the peer that just paired (host and client side), shown
-    // for out-of-band comparison until the user confirms it. While it is set,
-    // this device refuses to INITIATE exchanges with that peer — the peer is
-    // not yet trusted. (Incoming authenticated exchanges auto-complete the
-    // pairing instead of being refused: see SyncExchange.onVerifiedExchange.)
+    // for out-of-band comparison until BOTH users confirm it. While it is
+    // set, this device refuses to INITIATE exchanges with that peer — the
+    // peer is not yet trusted — and incoming exchanges do NOT complete the
+    // pairing either: one side confirming must never be enough for data to
+    // flow. Only the mutual handshake (both sides confirmed, see
+    // SyncPairing.confirmFingerprint / onPeerFingerprintConfirmed) clears
+    // it and opens sync.
     val pendingPeerFingerprint: String? = null,
     val pendingPeerName: String? = null,
     val pendingPeerDeviceId: String? = null,
+    // The two halves of the fingerprint handshake, for the pending peer:
+    // this device's user confirmed the code matches, and the peer's user
+    // confirmed it on their screen (arrived as an authenticated
+    // POST /pair-confirm). Pairing completes only when both are true.
+    val fingerprintConfirmedByMe: Boolean = false,
+    val fingerprintConfirmedByPeer: Boolean = false,
     // Name of the peer once pairing completed (survives the pendingPeer*
     // clear, so the host's success screen can greet the receiver by name).
     val pairedPeerName: String? = null,
@@ -90,6 +104,14 @@ const val SYNC_DISCOVERY_PORT = 47325
 const val CHUNK_BYTES = 512 * 1024
 internal const val PAIRING_TTL_MS = 5 * 60 * 1000L
 internal const val MAX_PAIRING_ATTEMPTS = 5
+// Fingerprint-confirmation delivery: the confirming side retries sending
+// its confirmation while the handshake is still open.
+private const val CONFIRM_RETRY_DELAY_MS = 5_000L
+private const val CONFIRM_MAX_ATTEMPTS = 24
+// Plaintext of the authenticated POST /pair-confirm payload: decrypting it
+// under the paired channel key IS the authentication; the bytes themselves
+// carry no data.
+private val PAIR_CONFIRM_PAYLOAD = "confirmed".encodeToByteArray()
 
 // The sync server winds down when it goes quiet: after this long without any
 // sync traffic, pairing attempt or explicit engagement it stops listening
@@ -185,8 +207,7 @@ class SyncService(
         channelKeys = channelKeys,
         blobTransfer = blobTransfer,
         advertisedFetchAddress = { pairing.advertisedFetchAddress() },
-        noteActivity = { noteActivity() },
-        onVerifiedExchange = { fromDeviceId -> pairing.markPairingComplete(fromDeviceId) }
+        noteActivity = { noteActivity() }
     )
 
     // High-water mark of the most recent sync/pairing activity; the idle
@@ -201,6 +222,9 @@ class SyncService(
             HelloResponse(deviceId = identity.deviceId, deviceName = identity.deviceName)
         },
         onPair = { request, remoteHost -> pairing.handlePairRequest(request, remoteHost) },
+        onPairConfirm = { fromDeviceId, payload, ephemeralPublicKey, exchangeId ->
+            handlePairConfirm(fromDeviceId, payload, ephemeralPublicKey, exchangeId)
+        },
         onExchange = { fromDeviceId, payload, ephemeralPublicKey, exchangeId ->
             exchange.handleExchange(fromDeviceId, payload, ephemeralPublicKey, exchangeId)
         },
@@ -219,6 +243,8 @@ class SyncService(
     fun stopServer() {
         idleWatchdog?.cancel()
         idleWatchdog = null
+        confirmRetryJob?.cancel()
+        confirmRetryJob = null
         server.stop()
         pairing.resetOnServerStop()
         _state.update { it.copy(isServerRunning = false, pairingPin = null) }
@@ -274,6 +300,8 @@ class SyncService(
      * proceeds (tests assert immediately after).
      */
     suspend fun cancelPairing() {
+        confirmRetryJob?.cancel()
+        confirmRetryJob = null
         val pendingId = _state.value.pendingPeerDeviceId
         if (pendingId != null && _state.value.pendingPeerFingerprint != null) {
             runCatching { repository.deletePeer(pendingId) }
@@ -301,8 +329,134 @@ class SyncService(
      */
     fun pairingQrPayload(): String? = pairing.pairingQrPayload()
 
-    /** Acknowledges the out-of-band fingerprint comparison after pairing. */
-    fun confirmFingerprint() = pairing.confirmFingerprint()
+    // Retry loop for the fingerprint confirmation: after this device's user
+    // confirms, the confirmation is sent to the peer until the peer
+    // acknowledges it (or the handshake finishes another way). One attempt
+    // is enough in the normal case; the loop only covers a dropped packet
+    // or a peer that was briefly unreachable.
+    private var confirmRetryJob: Job? = null
+
+    /**
+     * Acknowledges the out-of-band fingerprint comparison after pairing:
+     * records this device's confirmation and sends it to the peer. The
+     * pairing completes — and sync starts — only once the peer has
+     * confirmed too, so confirming here never syncs on its own.
+     */
+    fun confirmFingerprint() {
+        val peerId = _state.value.pendingPeerDeviceId ?: run {
+            pairing.confirmFingerprint()
+            return
+        }
+        pairing.confirmFingerprint()
+        confirmRetryJob?.cancel()
+        confirmRetryJob = scope.launch {
+            var attempts = 0
+            while (isActive && attempts < CONFIRM_MAX_ATTEMPTS) {
+                val state = _state.value
+                if (state.pendingPeerDeviceId != peerId || state.pendingPeerFingerprint == null) return@launch
+                attempts++
+                if (sendFingerprintConfirmation(peerId)) return@launch
+                delay(CONFIRM_RETRY_DELAY_MS)
+            }
+        }
+    }
+
+    /**
+     * Sends this device's fingerprint confirmation to the peer over the
+     * paired channel (same AEAD authentication as an exchange: only the
+     * paired peer can read it). Returns true when the peer acknowledged
+     * and recorded it. One attempt; the retry loop in confirmFingerprint
+     * covers failures.
+     */
+    private suspend fun sendFingerprintConfirmation(peerId: String): Boolean {
+        return try {
+            val peer = repository.getPeer(peerId) ?: return false
+            val peerKey = peer.publicKey ?: return false
+            val address = peer.lastKnownAddress ?: return false
+            val host = address.substringBeforeLast(':')
+            val port = address.substringAfterLast(':').toIntOrNull() ?: SYNC_PORT
+            val channelKey = channelKeys.outboundChannelKey(peerKey)
+            val exchangeId = freshExchangeId()
+            val payload = encodeBase64(
+                crypto.encrypt(
+                    channelKey.key,
+                    aad(from = identity.deviceId, to = peerId, exchangeId = exchangeId),
+                    PAIR_CONFIRM_PAYLOAD
+                )
+            )
+            val response: PairConfirmResponse = httpClient.post("http://$host:$port/pair-confirm") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    PairConfirmRequest(
+                        fromDeviceId = identity.deviceId,
+                        exchangeId = exchangeId,
+                        payload = payload,
+                        ephemeralPublicKey = encodeBase64(channelKey.ephemeralPublicKey)
+                    )
+                )
+            }.body()
+            response.ok
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Server side of POST /pair-confirm: the peer's user confirmed the
+     * fingerprint on their screen. Authenticated exactly like an exchange
+     * (paired static secret + fresh ephemeral, AEAD) — only the paired
+     * peer can produce it. Records the confirmation; if this device's user
+     * already confirmed, the handshake completes here. A confirmation is
+     * also the peer proving it is reachable right now, so a locally
+     * confirmed device answers with its own confirmation immediately.
+     */
+    suspend fun handlePairConfirm(fromDeviceId: String, encryptedPayload: String, requestEphemeralKey: String, exchangeId: String): PairConfirmResponse {
+        try {
+            if (exchangeId.isBlank()) {
+                return PairConfirmResponse(ok = false, message = "Missing exchange id.")
+            }
+            if (!isValidDeviceId(fromDeviceId)) {
+                return PairConfirmResponse(ok = false, message = "Invalid device id.")
+            }
+            val peer = repository.getPeer(fromDeviceId)
+                ?: return PairConfirmResponse(ok = false, message = "Not paired.")
+            noteActivity()
+            val peerKey = peer.publicKey
+                ?: return PairConfirmResponse(ok = false, message = "Peer has no key.")
+            val peerEphemeral = runCatching { decodeBase64(requestEphemeralKey) }.getOrNull()
+            if (peerEphemeral == null || peerEphemeral.size != 32) {
+                return PairConfirmResponse(ok = false, message = "Invalid ephemeral key.")
+            }
+            val channelKey = channelKeys.inboundChannelKey(peerKey, peerEphemeral)
+            val decrypted = try {
+                crypto.decrypt(channelKey, aad(from = fromDeviceId, to = identity.deviceId, exchangeId = exchangeId), decodeBase64(encryptedPayload))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                return PairConfirmResponse(ok = false, message = "Could not read confirmation.")
+            }
+            if (!decrypted.contentEquals(PAIR_CONFIRM_PAYLOAD)) {
+                return PairConfirmResponse(ok = false, message = "Invalid confirmation.")
+            }
+            // Capture whether this device's user already confirmed BEFORE
+            // recording the peer's: recording may complete the handshake
+            // and clear the pending peer, after which the check below
+            // could no longer tell that an answer is owed.
+            val iConfirmed = _state.value.fingerprintConfirmedByMe &&
+                _state.value.pendingPeerDeviceId == fromDeviceId
+            pairing.onPeerFingerprintConfirmed(fromDeviceId, exchangeId)
+            if (iConfirmed) {
+                scope.launch { sendFingerprintConfirmation(fromDeviceId) }
+            }
+            return PairConfirmResponse(ok = true)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            return PairConfirmResponse(ok = false, message = "Could not read confirmation.")
+        }
+    }
 
     suspend fun connectToDevice(host: String, port: Int, pin: String): Result<String> =
         pairing.connectToDevice(host, port, pin)

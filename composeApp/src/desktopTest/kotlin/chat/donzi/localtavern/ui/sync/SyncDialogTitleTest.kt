@@ -89,4 +89,24 @@ class SyncDialogTitleTest {
             syncDialogTitle(SyncRole.Host, ReceiverStep.Find, null, PairingStage.WaitingForReceiver, null, false, false)
         )
     }
+
+    @Test
+    fun waitingForPeer_afterOwnConfirm_hasWaitingTitle() {
+        assertEquals(
+            "Waiting for the other device",
+            syncDialogTitle(SyncRole.Host, ReceiverStep.Find, null, PairingStage.VerifyingPin, "AA BB", false, false, confirmedByMe = true, confirmedByPeer = false)
+        )
+        assertEquals(
+            "Waiting for the other device",
+            syncDialogTitle(SyncRole.Receiver, ReceiverStep.Pin, null, PairingStage.VerifyingPin, "AA BB", false, false, confirmedByMe = true, confirmedByPeer = false)
+        )
+    }
+
+    @Test
+    fun peerConfirmedFirst_stillShowsVerifyTitle() {
+        assertEquals(
+            "Verify fingerprint",
+            syncDialogTitle(SyncRole.Receiver, ReceiverStep.Pin, null, PairingStage.VerifyingPin, "AA BB", false, false, confirmedByMe = false, confirmedByPeer = true)
+        )
+    }
 }

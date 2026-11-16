@@ -96,6 +96,21 @@ class SyncProtocolTest {
         }
     }
 
+    // Confirms the fingerprint on BOTH devices and waits until the mutual
+    // handshake has completed on each side (stage Paired). One side's
+    // confirmation alone never completes a pairing, and the confirmations
+    // travel over HTTP, so the test must wait for the round trip instead
+    // of syncing immediately after the second confirm.
+    private suspend fun confirmBothAndAwaitPaired(host: Device, guest: Device) {
+        host.service.confirmFingerprint()
+        guest.service.confirmFingerprint()
+        withTimeout(30_000) {
+            while (host.service.state.value.pairingStage != PairingStage.Paired ||
+                guest.service.state.value.pairingStage != PairingStage.Paired
+            ) delay(10)
+        }
+    }
+
     // Fresh client for manual protocol calls in tests.
     private fun httpClient(): HttpClient = HttpClient {
         install(ContentNegotiation) {
@@ -254,8 +269,7 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             // Guest initiates the sync.
             val syncResult = guest.service.syncNow("host-device")
@@ -296,8 +310,7 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             // Simulate the peer having changed IP (DHCP): the stored address
             // is wrong, discovery would fix it, but a manual update must be
@@ -325,8 +338,7 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             // Host rotates its key: all pairings must be dropped.
             val rotateResult = host.service.rotateIdentityKey()
@@ -366,8 +378,7 @@ class SyncProtocolTest {
             val newPin = host.service.state.value.pairingPin!!
             val result = guest.service.connectToDevice("127.0.0.1", hostPort, newPin)
             assertTrue(result.isSuccess, "Re-pairing after rotation must succeed: ${result.exceptionOrNull()}")
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             seedPersona(host, "p-host", "Host Persona", 1000L)
             val syncResult = guest.service.syncNow("host-device")
@@ -390,8 +401,7 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             // At pairing time the host records the name the guest sent.
             assertEquals("Guest", host.repository.getPeer("guest-device")!!.name)
@@ -457,8 +467,7 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             // First exchange: guest's row reaches the host and both sides'
             // cursors advance past its stamp.
@@ -501,8 +510,7 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             // ~21 MB of library data (330 characters with 64 KB avatars, plus
             // sessions and messages): larger than MAX_SYNC_BODY_BYTES, so a
@@ -554,8 +562,7 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             val avatar = ByteArray(64 * 1024) { (it % 251).toByte() }
             seedCharacterLibrary(host, count = 330, avatar = avatar)
@@ -635,8 +642,7 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             // Host holds a message whose image blob is larger than one chunk,
             // so the fetch must reassemble several pieces.
@@ -696,8 +702,7 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             // The host references a blob it does not actually have (e.g. it
             // never fetched it from its own upstream peer). The ref is a
@@ -740,8 +745,7 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             // A pre-blob-store peer ships the serialized image bytes inline.
             val img = ByteArray(64) { 3 }
@@ -812,8 +816,7 @@ class SyncProtocolTest {
             )
 
             // Confirming on both sides opens the exchange.
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
             val syncResult = guest.service.syncNow("host-device")
             assertTrue(syncResult.isSuccess, "Sync must succeed after confirmation: ${syncResult.exceptionOrNull()}")
             assertTrue(guest.personas().any { it.id == "p-host" })
@@ -834,8 +837,7 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             // Build one exchange request exactly as syncNow would, but with a
             // FIXED exchange id so it can be sent twice verbatim.
@@ -891,8 +893,7 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             // A hostile peer ships a path-traversal ref next to a valid one;
             // only the well-formed SHA-256 key may survive ingest.
@@ -959,8 +960,7 @@ class SyncProtocolTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             // A malicious (or buggy) peer stores arbitrary bytes under a ref
             // whose SHA-256 they do not match. Content addressing is only
@@ -988,6 +988,88 @@ class SyncProtocolTest {
                 guest.blobStore.read(refHash),
                 "Blob content that does not hash to its ref must never be stored (the store must not be poisonable)"
             )
+        } finally {
+            host.stop()
+            guest.stop()
+        }
+    }
+
+    // One side confirming must never complete the pairing: the guest
+    // confirms, the host sees that confirmation, but both stay unverified
+    // and the guest's sync is refused — no data moves until the host
+    // confirms too.
+    @Test
+    fun guestOnlyConfirm_doesNotCompletePairingAndRefusesSync() = runTest {
+        val hostPort = freePort()
+        val host = Device("host-device", "Host", hostPort)
+        val guest = Device("guest-device", "Guest", hostPort + 1)
+        try {
+            host.start()
+            guest.start()
+            seedPersona(host, "p-host", "Host Persona", 1000L)
+            host.service.startPairing()
+            val pin = host.service.state.value.pairingPin!!
+            guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+            guest.service.confirmFingerprint()
+            // The guest's confirmation reaches the host, so the host sees
+            // "guest confirmed" — but neither side is paired yet.
+            withTimeout(30_000) {
+                while (!host.service.state.value.fingerprintConfirmedByPeer) delay(10)
+            }
+            assertEquals(PairingStage.VerifyingPin, guest.service.state.value.pairingStage, "Guest must stay unverified until the host confirms")
+            assertEquals(PairingStage.VerifyingPin, host.service.state.value.pairingStage, "Host must stay unverified until it confirms")
+            assertTrue(guest.service.state.value.fingerprintConfirmedByMe, "Guest recorded its own confirmation")
+            assertTrue(host.service.state.value.fingerprintConfirmedByPeer, "Host saw the guest's confirmation")
+            assertFalse(host.service.state.value.fingerprintConfirmedByMe, "Host has not confirmed yet")
+            val refused = guest.service.syncNow("host-device")
+            assertTrue(refused.isFailure, "Sync must be refused until both sides confirm")
+            assertTrue(guest.personas().none { it.id == "p-host" }, "No data must move before both confirm")
+            // Now the host confirms too: the handshake completes on both
+            // sides and the sync flows.
+            host.service.confirmFingerprint()
+            withTimeout(30_000) {
+                while (host.service.state.value.pairingStage != PairingStage.Paired ||
+                    guest.service.state.value.pairingStage != PairingStage.Paired
+                ) delay(10)
+            }
+            val result = guest.service.syncNow("host-device")
+            assertTrue(result.isSuccess, "Sync after both confirm must succeed: ${result.exceptionOrNull()}")
+            assertTrue(guest.personas().any { it.id == "p-host" }, "Guest must receive host data after both confirm")
+        } finally {
+            host.stop()
+            guest.stop()
+        }
+    }
+
+    // The fingerprint-confirmation endpoint only accepts authenticated
+    // confirmations from the paired peer: unknown devices and garbage
+    // payloads are refused, and a refused confirmation leaves the pending
+    // fingerprint untouched.
+    @Test
+    fun pairConfirm_fromUnknownPeerOrWithBadPayload_isRefused() = runTest {
+        val hostPort = freePort()
+        val host = Device("host-device", "Host", hostPort)
+        val guest = Device("guest-device", "Guest", hostPort + 1)
+        try {
+            host.start()
+            guest.start()
+            host.service.startPairing()
+            val pin = host.service.state.value.pairingPin!!
+            guest.service.connectToDevice("127.0.0.1", hostPort, pin)
+            val unknown = host.service.handlePairConfirm("no-such-device", "AAAA", "AAAA", "ex-unknown")
+            assertFalse(unknown.ok, "A confirmation from an unknown device must be refused")
+            val badKey = host.service.handlePairConfirm("guest-device", "AAAA", "AAAA", "ex-bad-key")
+            assertFalse(badKey.ok, "A confirmation with a malformed ephemeral key must be refused")
+            val badPayload = host.service.handlePairConfirm(
+                "guest-device",
+                encodeBase64(ByteArray(32) { 7 }),
+                encodeBase64(ByteArray(32) { 3 }),
+                "ex-bad-payload"
+            )
+            assertFalse(badPayload.ok, "A confirmation that fails authentication must be refused")
+            assertEquals(PairingStage.VerifyingPin, host.service.state.value.pairingStage, "Refused confirmations must not touch the pending pairing")
+            assertNotNull(host.service.state.value.pendingPeerFingerprint, "The fingerprint must still be pending")
+            assertFalse(host.service.state.value.fingerprintConfirmedByPeer, "No peer confirmation must be recorded")
         } finally {
             host.stop()
             guest.stop()

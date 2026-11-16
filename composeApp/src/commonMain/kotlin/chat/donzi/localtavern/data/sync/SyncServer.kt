@@ -23,12 +23,15 @@ import kotlinx.serialization.json.Json
 //                      host's screen can switch from QR to PIN as soon as a
 //                      receiver has connected
 //   POST /pair      -> PIN-authenticated pairing, returns both keys
+//   POST /pair-confirm -> authenticated fingerprint confirmation (one half
+//                      of the mutual pairing handshake; carries no data)
 //   POST /exchange  -> encrypted bidirectional sync exchange
 //   POST /blob/fetch-> encrypted chunked pull of message-image blobs
 class SyncServer(
     private val port: Int,
     private val hello: (announcedName: String?) -> HelloResponse,
     private val onPair: suspend (PairRequest, remoteHost: String?) -> PairResponse,
+    private val onPairConfirm: suspend (fromDeviceId: String, payload: String, ephemeralPublicKey: String, exchangeId: String) -> PairConfirmResponse,
     private val onExchange: suspend (fromDeviceId: String, payload: String, ephemeralPublicKey: String, exchangeId: String) -> ExchangeResponse,
     private val onBlobFetch: suspend (fromDeviceId: String, payload: String, ephemeralPublicKey: String, exchangeId: String) -> BlobFetchResponse
 ) {
@@ -75,6 +78,23 @@ class SyncServer(
                     }
                     val remoteHost = call.request.origin.remoteHost
                     call.respond(onPair(request, remoteHost))
+                }
+                post("/pair-confirm") {
+                    if (!acceptsBodySize(call)) {
+                        call.respond(HttpStatusCode.PayloadTooLarge, PairConfirmResponse(ok = false, message = "Request too large."))
+                        return@post
+                    }
+                    val request = runCatching { call.receive<PairConfirmRequest>() }.getOrNull()
+                    if (request == null) {
+                        call.respond(HttpStatusCode.BadRequest, PairConfirmResponse(ok = false, message = "Invalid confirmation payload."))
+                        return@post
+                    }
+                    val response = onPairConfirm(request.fromDeviceId, request.payload, request.ephemeralPublicKey, request.exchangeId)
+                    if (response.ok) {
+                        call.respond(response)
+                    } else {
+                        call.respond(HttpStatusCode.BadRequest, response)
+                    }
                 }
                 post("/exchange") {
                     if (!acceptsBodySize(call)) {
@@ -131,6 +151,24 @@ class SyncServer(
         server = null
     }
 }
+
+// Wire body of the /pair-confirm endpoint: same shape as an exchange
+// request (encrypted payload + sender's ephemeral key) but carrying only
+// the fingerprint confirmation, no data. The AEAD tag authenticates the
+// sender as the paired peer; the plaintext is a fixed marker.
+@Serializable
+data class PairConfirmRequest(
+    val fromDeviceId: String,
+    val exchangeId: String = "",
+    val payload: String,
+    val ephemeralPublicKey: String = ""
+)
+
+@Serializable
+data class PairConfirmResponse(
+    val ok: Boolean,
+    val message: String = ""
+)
 
 // Wire body of the /exchange endpoint: an encrypted envelope plus the
 // sender's per-exchange ephemeral X25519 public key. The ephemeral key rides

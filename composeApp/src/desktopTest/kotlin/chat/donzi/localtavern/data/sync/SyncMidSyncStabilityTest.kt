@@ -23,6 +23,7 @@ import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 // Stability tests for mid-sync local changes: a change made while a sync is
@@ -107,6 +108,21 @@ class SyncMidSyncStabilityTest {
         )
     }
 
+    // Confirms the fingerprint on BOTH devices and waits until the mutual
+    // handshake has completed on each side (stage Paired). One side's
+    // confirmation alone never completes a pairing, and the confirmations
+    // travel over HTTP, so the test must wait for the round trip instead
+    // of syncing immediately after the second confirm.
+    private suspend fun confirmBothAndAwaitPaired(host: Device, guest: Device) {
+        host.service.confirmFingerprint()
+        guest.service.confirmFingerprint()
+        withTimeout(30_000) {
+            while (host.service.state.value.pairingStage != PairingStage.Paired ||
+                guest.service.state.value.pairingStage != PairingStage.Paired
+            ) delay(10)
+        }
+    }
+
     // A local write during a running sync must be delivered by the same
     // session (no second sync needed) and must not break the sync.
     @Test
@@ -121,8 +137,7 @@ class SyncMidSyncStabilityTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             val sync = async { guest.service.syncNow("host-device") }
             // Wait until the sync is provably in process (first progress
@@ -159,8 +174,7 @@ class SyncMidSyncStabilityTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             val a = async { guest.service.syncNow("host-device") }
             val b = async { guest.service.syncNow("host-device") }
@@ -209,8 +223,7 @@ class SyncMidSyncStabilityTest {
             host.service.startPairing()
             val pin = host.service.state.value.pairingPin!!
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
-            host.service.confirmFingerprint()
-            guest.service.confirmFingerprint()
+            confirmBothAndAwaitPaired(host, guest)
 
             guest.repository.updatePeerAddress("host-device", "127.0.0.1:$hostPort")
             val result = guest.service.syncNow("host-device")
@@ -223,10 +236,13 @@ class SyncMidSyncStabilityTest {
         }
     }
 
-    // Host-only confirm + host-initiated sync must complete the guest pairing
-    // (the guest auto-completes on the authenticated exchange).
+    // One-sided confirmation must NOT complete the pairing and must NOT
+    // sync: the host confirms, but the guest has not, so the host's sync
+    // is refused, the guest still shows the fingerprint, and no data
+    // moves. Only after the guest confirms too does the handshake
+    // complete and the sync flow.
     @Test
-    fun hostOnlyConfirm_plusHostSync_completesGuestPairing() = runTest {
+    fun hostOnlyConfirm_doesNotSyncUntilGuestConfirms() = runTest {
         val hostPort = freePort()
         val tempDir = Files.createTempDirectory("mid-change").toFile()
         val (host, guest) = devicePair(tempDir, hostPort)
@@ -239,12 +255,31 @@ class SyncMidSyncStabilityTest {
             guest.service.connectToDevice("127.0.0.1", hostPort, pin)
             // Only the host confirms ("matches" on desktop).
             host.service.confirmFingerprint()
-            // Host initiates the sync (what the fixed host UI must do).
-            host.repository.updatePeerAddress("guest-device", "127.0.0.1:${hostPort + 1}")
+            // The host's confirmation arrives at the guest, so the guest
+            // sees "host confirmed" — but neither side is paired yet.
+            withTimeout(30_000) {
+                while (!guest.service.state.value.fingerprintConfirmedByPeer) delay(10)
+            }
+            assertEquals(PairingStage.VerifyingPin, host.service.state.value.pairingStage, "Host must stay unverified until the guest confirms")
+            assertEquals(PairingStage.VerifyingPin, guest.service.state.value.pairingStage, "Guest must stay unverified until it confirms")
+            assertTrue(host.service.state.value.fingerprintConfirmedByMe, "Host recorded its own confirmation")
+            assertTrue(guest.service.state.value.fingerprintConfirmedByPeer, "Guest saw the host's confirmation")
+            assertFalse(guest.service.state.value.fingerprintConfirmedByMe, "Guest has not confirmed yet")
+            // Host-initiated sync is refused while its fingerprint is pending.
+            val refused = host.service.syncNow("guest-device")
+            assertTrue(refused.isFailure, "Sync must be refused until both sides confirm")
+            assertFalse(guest.personas().any { it.id == "p-host" }, "No data must move before both confirm")
+            // Now the guest confirms too: the handshake completes on both
+            // sides and the sync flows.
+            guest.service.confirmFingerprint()
+            withTimeout(30_000) {
+                while (host.service.state.value.pairingStage != PairingStage.Paired ||
+                    guest.service.state.value.pairingStage != PairingStage.Paired
+                ) delay(10)
+            }
             val result = host.service.syncNow("guest-device")
-            assertTrue(result.isSuccess, "Host-initiated sync must succeed: ${result.exceptionOrNull()}")
-            assertEquals(null, guest.service.state.value.pendingPeerFingerprint, "Guest must auto-complete pairing")
-            assertTrue(guest.personas().any { it.id == "p-host" }, "Guest must receive host data")
+            assertTrue(result.isSuccess, "Sync after both confirm must succeed: ${result.exceptionOrNull()}")
+            assertTrue(guest.personas().any { it.id == "p-host" }, "Guest must receive host data after both confirm")
         } finally {
             host.stop()
             guest.stop()

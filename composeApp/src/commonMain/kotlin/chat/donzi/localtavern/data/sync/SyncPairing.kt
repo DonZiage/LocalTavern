@@ -69,6 +69,12 @@ class SyncPairing(
     private val pairingMutex = Mutex()
     private var seenPairingNonces = mutableSetOf<String>()
 
+    // Exchange ids of confirmations seen during the CURRENT pending
+    // pairing, to reject replays of a captured confirmation against a
+    // later pairing with the same peer. Cleared whenever a pairing session
+    // starts or ends.
+    private var seenConfirmExchangeIds = mutableSetOf<String>()
+
     private val identity get() = identityProvider()
 
     /** True while a pairing PIN is still valid (used by the idle watchdog). */
@@ -79,12 +85,15 @@ class SyncPairing(
         activePin.value = null
         pairingFailures.value = 0
         seenPairingNonces = mutableSetOf()
+        seenConfirmExchangeIds = mutableSetOf()
         state.update {
             it.copy(
                 pairingPin = null,
                 pairingStage = PairingStage.Idle,
                 connectedPeerName = null,
-                pairedPeerName = null
+                pairedPeerName = null,
+                fingerprintConfirmedByMe = false,
+                fingerprintConfirmedByPeer = false
             )
         }
     }
@@ -100,6 +109,7 @@ class SyncPairing(
         pinExpiresAt.value = Clock.System.now().toEpochMilliseconds() + PAIRING_TTL_MS
         pairingFailures.value = 0
         seenPairingNonces = mutableSetOf()
+        seenConfirmExchangeIds = mutableSetOf()
         state.update {
             it.copy(
                 pairingPin = activePin.value,
@@ -110,7 +120,9 @@ class SyncPairing(
                 syncError = null,
                 pendingPeerFingerprint = null,
                 pendingPeerName = null,
-                pendingPeerDeviceId = null
+                pendingPeerDeviceId = null,
+                fingerprintConfirmedByMe = false,
+                fingerprintConfirmedByPeer = false
             )
         }
     }
@@ -119,6 +131,7 @@ class SyncPairing(
         activePin.value = null
         pairingFailures.value = 0
         seenPairingNonces = mutableSetOf()
+        seenConfirmExchangeIds = mutableSetOf()
         state.update {
             it.copy(
                 pairingPin = null,
@@ -128,7 +141,9 @@ class SyncPairing(
                 pairedPeerName = null,
                 pendingPeerFingerprint = null,
                 pendingPeerName = null,
-                pendingPeerDeviceId = null
+                pendingPeerDeviceId = null,
+                fingerprintConfirmedByMe = false,
+                fingerprintConfirmedByPeer = false
             )
         }
     }
@@ -154,26 +169,62 @@ class SyncPairing(
         }
     }
 
+    // ---------- Fingerprint handshake ----------
+
+    // The state transition shared by both halves of the handshake: once
+    // this device's user AND the peer have both confirmed the fingerprint,
+    // the pending peer becomes paired and sync may start. One side alone
+    // never completes a pairing — that is the whole point of the handshake.
+    private fun completePairingIfBothConfirmed(current: SyncUiState): SyncUiState {
+        if (current.pendingPeerFingerprint == null) return current
+        if (!current.fingerprintConfirmedByMe || !current.fingerprintConfirmedByPeer) return current
+        return current.copy(
+            pairingStage = PairingStage.Paired,
+            pairedPeerName = current.pendingPeerName,
+            pendingPeerFingerprint = null,
+            pendingPeerName = null,
+            pendingPeerDeviceId = null,
+            fingerprintConfirmedByMe = false,
+            fingerprintConfirmedByPeer = false
+        )
+    }
+
     /**
-     * An authenticated exchange arrived from the peer whose fingerprint is
-     * still pending: the other side has verified its fingerprint (the only
-     * way it can produce an exchange is by holding the shared secret this
-     * pairing established), so this side's gate opens automatically — the
-     * flow no longer requires both users to press "Fingerprints match" at
-     * the same time.
+     * Records that the peer confirmed the fingerprint on its screen
+     * (authenticated POST /pair-confirm). A peer confirmation on its own
+     * never opens sync: the pairing completes only once this device's user
+     * has confirmed too.
      */
-    fun markPairingComplete(fromDeviceId: String) {
+    fun onPeerFingerprintConfirmed(deviceId: String, exchangeId: String) {
+        // A confirmation only counts for the pairing that is pending RIGHT
+        // NOW: the peer can only confirm after its own pending exists,
+        // which is always after this side's pending was set, so a
+        // confirmation with no current pending peer is a stale retry from
+        // an earlier session and must never pre-confirm a fresh pairing.
+        if (state.value.pendingPeerDeviceId != deviceId || state.value.pendingPeerFingerprint == null) return
+        if (exchangeId.isNotBlank() && !seenConfirmExchangeIds.add(exchangeId)) return
         state.update {
-            if (it.pendingPeerDeviceId == fromDeviceId && it.pendingPeerFingerprint != null) {
-                it.copy(
-                    pairingStage = PairingStage.Paired,
-                    pairedPeerName = it.pendingPeerName,
-                    pendingPeerFingerprint = null,
-                    pendingPeerName = null,
-                    pendingPeerDeviceId = null
-                )
+            if (it.pendingPeerDeviceId == deviceId && it.pendingPeerFingerprint != null) {
+                completePairingIfBothConfirmed(it.copy(fingerprintConfirmedByPeer = true))
             } else {
                 it
+            }
+        }
+    }
+
+    /**
+     * Acknowledges the out-of-band fingerprint comparison after pairing:
+     * records this device's confirmation. SyncService sends the
+     * confirmation to the peer; the pairing itself completes only when the
+     * peer has confirmed too, so confirming here never starts a sync on
+     * its own.
+     */
+    fun confirmFingerprint() {
+        state.update {
+            if (it.pendingPeerFingerprint == null) {
+                it
+            } else {
+                completePairingIfBothConfirmed(it.copy(fingerprintConfirmedByMe = true))
             }
         }
     }
@@ -211,19 +262,6 @@ class SyncPairing(
             prefix == 172 -> second in 16..31
             prefix == 192 && second == 168 -> true
             else -> false
-        }
-    }
-
-    /** Acknowledges the out-of-band fingerprint comparison after pairing. */
-    fun confirmFingerprint() {
-        state.update {
-            it.copy(
-                pairingStage = PairingStage.Paired,
-                pairedPeerName = it.pendingPeerName,
-                pendingPeerFingerprint = null,
-                pendingPeerName = null,
-                pendingPeerDeviceId = null
-            )
         }
     }
 
@@ -328,7 +366,12 @@ class SyncPairing(
                 deviceId = request.deviceId,
                 name = peerName,
                 publicKey = peerPublicKey,
-                lastKnownAddress = remoteHost?.let { "$it:$port" },
+                // The guest's address is its source IP plus the port it
+                // listens on (sent in the pair request): the host must be
+                // able to reach it for the fingerprint confirmation and
+                // later syncs. An out-of-range port falls back to this
+                // device's own port (the pre-existing behaviour).
+                lastKnownAddress = remoteHost?.let { "$it:${request.listenPort.takeIf { it in 1..65535 } ?: port}" },
                 receivedCursor = 0L,
                 peerReceivedCursor = 0L,
                 lastSyncAt = now,
@@ -341,7 +384,9 @@ class SyncPairing(
                 pairingStage = PairingStage.VerifyingPin,
                 pendingPeerFingerprint = fingerprint,
                 pendingPeerName = peerName,
-                pendingPeerDeviceId = request.deviceId
+                pendingPeerDeviceId = request.deviceId,
+                fingerprintConfirmedByMe = false,
+                fingerprintConfirmedByPeer = false
             )
         }
         return PairResponse(
@@ -381,7 +426,8 @@ class SyncPairing(
                         deviceName = identity.deviceName,
                         publicKey = encodeBase64(identity.publicKeyBytes),
                         nonce = encodeBase64(nonce),
-                        pinProof = encodeBase64(proof)
+                        pinProof = encodeBase64(proof),
+                        listenPort = port
                     )
                 )
             }.body()
@@ -413,7 +459,13 @@ class SyncPairing(
                 )
             )
             state.update {
-                it.copy(pendingPeerFingerprint = crypto.pairingFingerprint(identity.publicKeyBytes, peerKey), pendingPeerName = peerName, pendingPeerDeviceId = response.deviceId)
+                it.copy(
+                    pendingPeerFingerprint = crypto.pairingFingerprint(identity.publicKeyBytes, peerKey),
+                    pendingPeerName = peerName,
+                    pendingPeerDeviceId = response.deviceId,
+                    fingerprintConfirmedByMe = false,
+                    fingerprintConfirmedByPeer = false
+                )
             }
             Result.success(response.deviceId)
         } catch (e: CancellationException) {

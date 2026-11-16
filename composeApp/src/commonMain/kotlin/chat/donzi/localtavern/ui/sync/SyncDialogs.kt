@@ -1,8 +1,11 @@
 package chat.donzi.localtavern.ui.sync
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -12,11 +15,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import chat.donzi.localtavern.data.sync.DiscoveredPeer
 import chat.donzi.localtavern.data.sync.PairPayload
@@ -58,7 +63,9 @@ internal fun syncDialogTitle(
     pairingStage: PairingStage,
     pendingFingerprint: String?,
     isConnecting: Boolean,
-    isSyncing: Boolean
+    isSyncing: Boolean,
+    confirmedByMe: Boolean = false,
+    confirmedByPeer: Boolean = false
 ): String = when (postPair) {
     PostPairState.Syncing -> "Syncing your devices"
     PostPairState.Success -> "Sync complete"
@@ -66,6 +73,9 @@ internal fun syncDialogTitle(
     null -> when (step) {
         null -> "Pair devices"
         SyncRole.Host -> when {
+            // I confirmed and am waiting for the peer: the screen's job is
+            // now waiting, not verifying.
+            pendingFingerprint != null && confirmedByMe && !confirmedByPeer -> "Waiting for the other device"
             pendingFingerprint != null -> "Verify fingerprint"
             pairingStage == PairingStage.Paired && isSyncing -> "Syncing your devices"
             pairingStage == PairingStage.Paired -> "Pairing complete"
@@ -73,6 +83,7 @@ internal fun syncDialogTitle(
         }
         SyncRole.Receiver -> when {
             isConnecting -> "Connecting…"
+            pendingFingerprint != null && confirmedByMe && !confirmedByPeer -> "Waiting for the other device"
             pendingFingerprint != null -> "Verify fingerprint"
             else -> when (receiverStep) {
                 ReceiverStep.Find -> "Enter pairing code"
@@ -197,10 +208,17 @@ private fun HostConnectionInfoToggle(
 // Shows the fingerprint of the peer that just paired. The SAME string must be
 // visible on the other device; if they differ, someone intercepted the
 // pairing and it must be cancelled.
+//
+// This is a two-sided handshake, and the card says so: each side shows
+// whether IT has confirmed and whether the OTHER side has. Nothing syncs
+// until both say the code matches — one side confirming never starts a
+// sync on its own.
 @Composable
 private fun FingerprintConfirmation(
     fingerprint: String,
     peerName: String,
+    confirmedByMe: Boolean,
+    confirmedByPeer: Boolean,
     onConfirm: () -> Unit,
     onReject: () -> Unit
 ) {
@@ -230,13 +248,104 @@ private fun FingerprintConfirmation(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.height(8.dp))
-            Button(onClick = onConfirm, modifier = Modifier.fillMaxWidth()) {
-                Text("Fingerprints match")
+            // Who has confirmed so far — the handshake is visible, not
+            // implied: neither side is left wondering what the other did.
+            Text(
+                text = if (confirmedByMe) "You: confirmed ✓" else "You: not confirmed yet",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (confirmedByMe) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = if (confirmedByPeer) "$peerName: confirmed ✓" else "$peerName: waiting…",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (confirmedByPeer) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            if (confirmedByMe) {
+                WaitingRow("Waiting for $peerName to confirm…")
+                Spacer(modifier = Modifier.height(8.dp))
+            } else {
+                Button(onClick = onConfirm, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (confirmedByPeer) "Fingerprints match — confirm" else "Fingerprints match")
+                }
             }
             TextButton(onClick = onReject, modifier = Modifier.fillMaxWidth()) {
                 Text("Don't match — remove this device")
             }
         }
+    }
+}
+
+// A PIN-specific entry field: six boxes, one digit each, numeric keypad.
+// The digits are shown — this is a code the user just read off the other
+// screen, not a password. Typing fills left to right, backspace steps
+// back, pasting a full code fills all six at once, and the sixth digit
+// submits immediately, so no separate "Pair" tap is needed.
+@Composable
+internal fun PinInput(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onComplete: () -> Unit,
+    enabled: Boolean
+) {
+    val focusRequester = remember { FocusRequester() }
+    // Submit exactly once per completed entry: fires when the value
+    // becomes six digits, and again only after the user edits it (for
+    // example after a failed attempt).
+    LaunchedEffect(value) {
+        if (value.length == PIN_LENGTH) onComplete()
+    }
+    // Focus the (invisible) field as soon as the PIN step appears, so the
+    // numeric keypad is already up.
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    Box(
+        // Registered as a text-field area (bounds only): taps on the boxes
+        // must not dismiss the keyboard — they are taps on an input. The
+        // hidden field below registers the focus itself, so taps outside
+        // the boxes still dismiss.
+        modifier = Modifier.fillMaxWidth().trackTextFieldFocus()
+            .clickable(enabled = enabled) { focusRequester.requestFocus() }
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            repeat(PIN_LENGTH) { index ->
+                val digit = value.getOrNull(index)?.toString() ?: ""
+                val filled = digit.isNotEmpty()
+                val isCurrent = index == value.length
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = if (filled) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = BorderStroke(
+                        1.dp,
+                        if (isCurrent && enabled) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
+                    ),
+                    modifier = Modifier.weight(1f).aspectRatio(1f)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            digit,
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+        // The real text field is invisible: it owns the keyboard, the
+        // digits-only filter and paste handling, while the boxes above
+        // render the value. Tapping anywhere on the boxes focuses it.
+        BasicTextField(
+            value = value,
+            onValueChange = { next ->
+                onValueChange(next.filter { it.isDigit() }.take(PIN_LENGTH))
+            },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine = true,
+            enabled = enabled,
+            modifier = Modifier.size(1.dp).focusRequester(focusRequester).alpha(0f)
+                .trackTextFieldFocus()
+        )
     }
 }
 
@@ -333,16 +442,16 @@ internal fun SyncFlowDialog(
         }
     }
 
-    // When the OTHER side confirms first and its authenticated exchange
-    // completes this pairing (see SyncPairing.markPairingComplete), the
-    // receiver's screen leaves the fingerprint card on its own: show the
-    // success screen instead of the PIN form, so both devices see the same
-    // outcome without a second tap.
-    LaunchedEffect(syncState.pairingStage) {
-        if (step == SyncRole.Receiver && syncState.pairingStage == PairingStage.Paired && postPair == null) {
-            postPair = PostPairState.Success
-        }
-    }
+    // When the handshake completes (both devices confirmed), the initial
+    // sync runs on THIS side too — whichever side confirmed second starts
+    // it as its confirm lands, and whichever confirmed first starts it
+    // here when the peer's confirmation arrives. Either way the dialog
+    // stays open with a spinner while it runs. (Placed after the local
+    // helpers it calls, below.)
+    //
+    // NOTE: there is deliberately no auto-complete here: an authenticated
+    // exchange from the peer is not its user's confirmation, so it must
+    // never flip this screen on its own.
 
     fun close() {
         scope.launch {
@@ -428,6 +537,10 @@ internal fun SyncFlowDialog(
     }
 
     fun pair() {
+        // Guard against double submission: the PIN field auto-submits on
+        // the sixth digit AND the Pair button can be tapped, and both can
+        // fire before the first recomposition disables the button.
+        if (isConnecting) return
         isConnecting = true
         status = null
         statusIsError = false
@@ -462,30 +575,40 @@ internal fun SyncFlowDialog(
     }
 
     // Set when pairing succeeds; used to run the initial sync once the
-    // fingerprint has been confirmed. The dialog STAYS OPEN while the sync
-    // runs (spinner), shows the outcome, and only closes on success — a
-    // failed initial sync can no longer happen silently in the background.
-    fun confirmFingerprintAndSync() {
-        syncService.confirmFingerprint()
+    // fingerprint handshake has completed (both devices confirmed). The
+    // dialog STAYS OPEN while the sync runs (spinner), shows the outcome,
+    // and only closes on success — a failed initial sync can no longer
+    // happen silently in the background.
+    //
+    // Confirming records this device's half of the handshake and sends it
+    // to the peer; it does NOT start the sync. The sync starts (on BOTH
+    // sides) from the pairingStage effect below, once the peer has
+    // confirmed too.
+    fun confirmReceiverFingerprint() {
         postPairPeerId = pairedPeerId ?: postPairPeerId
         pairedPeerId = null
-        runInitialSync()
+        syncService.confirmFingerprint()
     }
 
     fun retryInitialSync() {
         runInitialSync()
     }
 
-    // Host-side counterpart of confirmFingerprintAndSync: confirming on the
-    // host ALSO starts the initial sync (instead of only flipping local
-    // state). The exchange authenticates the host, so the receiver's
-    // pairing completes automatically on its screen — confirming on one
-    // device is enough, and both sides converge in the same session.
-    fun confirmHostAndSync() {
-        val peerId = syncState.pendingPeerDeviceId
+    // Host-side counterpart of confirmReceiverFingerprint: same handshake,
+    // same rule — confirming never starts a sync on its own.
+    fun confirmHostFingerprint() {
+        postPairPeerId = syncState.pendingPeerDeviceId
         syncService.confirmFingerprint()
-        postPairPeerId = peerId
-        runInitialSync()
+    }
+
+    // The handshake just completed (both devices confirmed): run the
+    // initial sync on this side. Whichever side confirmed second gets here
+    // as its confirm lands; whichever confirmed first gets here when the
+    // peer's confirmation arrives.
+    LaunchedEffect(syncState.pairingStage) {
+        if (syncState.pairingStage == PairingStage.Paired && postPair == null) {
+            runInitialSync()
+        }
     }
 
     AlertDialog(
@@ -499,7 +622,9 @@ internal fun SyncFlowDialog(
                     pairingStage = syncState.pairingStage,
                     pendingFingerprint = pendingFingerprint,
                     isConnecting = isConnecting,
-                    isSyncing = syncState.isSyncing
+                    isSyncing = syncState.isSyncing,
+                    confirmedByMe = syncState.fingerprintConfirmedByMe,
+                    confirmedByPeer = syncState.fingerprintConfirmedByPeer
                 )
             )
         },
@@ -583,23 +708,24 @@ internal fun SyncFlowDialog(
                             }
                         }
                         // The receiver submitted the PIN: compare fingerprints.
-                        // The other side may complete the pairing on its own —
-                        // then this card is replaced by the success screen live.
+                        // Both devices must confirm before anything syncs —
+                        // this card stays until the other side confirms too.
                         pendingFingerprint != null -> {
                             FingerprintConfirmation(
                                 fingerprint = pendingFingerprint,
                                 peerName = syncState.pendingPeerName ?: "the other device",
-                                onConfirm = { confirmHostAndSync() },
+                                confirmedByMe = syncState.fingerprintConfirmedByMe,
+                                confirmedByPeer = syncState.fingerprintConfirmedByPeer,
+                                onConfirm = { confirmHostFingerprint() },
                                 onReject = { scope.launch { syncService.rejectPendingPairing() } }
                             )
                             Text(
-                                text = "The other device entered the PIN. Confirming also starts the initial sync with it.",
+                                text = "The other device entered the PIN. Both devices must confirm the code before anything syncs.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        // Fingerprint confirmed (either side) or the receiver's
-                        // first authenticated exchange arrived: pairing done.
+                        // Fingerprint confirmed on both devices: pairing done.
                         syncState.pairingStage == PairingStage.Paired -> {
                             // When a sync is actually running on this side, show
                             // its live progress here instead of a plain "done".
@@ -646,7 +772,10 @@ internal fun SyncFlowDialog(
                             )
                             if (pin != null) {
                                 Text(
-                                    text = pin,
+                                    // Grouped for reading ("123 456"); the
+                                    // receiver types six digits, spaces are
+                                    // ignored by its PIN field.
+                                    text = pin.chunked(3).joinToString(" "),
                                     style = MaterialTheme.typography.headlineMedium,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.primary
@@ -693,7 +822,10 @@ internal fun SyncFlowDialog(
                             )
                             if (pin != null) {
                                 Text(
-                                    text = pin,
+                                    // Grouped for reading ("123 456"); the
+                                    // receiver types six digits, spaces are
+                                    // ignored by its PIN field.
+                                    text = pin.chunked(3).joinToString(" "),
                                     style = MaterialTheme.typography.headlineMedium,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.primary
@@ -775,11 +907,13 @@ internal fun SyncFlowDialog(
                                 FingerprintConfirmation(
                                     fingerprint = pendingFingerprint,
                                     peerName = syncState.pendingPeerName ?: "the other device",
-                                    onConfirm = { confirmFingerprintAndSync() },
+                                    confirmedByMe = syncState.fingerprintConfirmedByMe,
+                                    confirmedByPeer = syncState.fingerprintConfirmedByPeer,
+                                    onConfirm = { confirmReceiverFingerprint() },
                                     onReject = { scope.launch { syncService.rejectPendingPairing() } }
                                 )
                                 Text(
-                                    text = "Confirming also starts the initial sync with the host.",
+                                    text = "Both devices must confirm the code before anything syncs.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -900,18 +1034,15 @@ internal fun SyncFlowDialog(
                                         )
                                     }
                                 }
-                                OutlinedTextField(
+                                Text(
+                                    text = "Enter the 6-digit PIN from the host's screen:",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                PinInput(
                                     value = pin,
-                                    // Digits only, exactly PIN_LENGTH: the PIN
-                                    // is a 6-digit number, and the numeric
-                                    // keypad (NumberPassword) is what deploys
-                                    // on mobile for it.
-                                    onValueChange = { pin = it.filter { char -> char.isDigit() }.take(PIN_LENGTH) },
-                                    label = { Text("Pairing PIN from host's screen") },
-                                    visualTransformation = PasswordVisualTransformation(),
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, capitalization = KeyboardCapitalization.None),
-                                    modifier = Modifier.fillMaxWidth().trackTextFieldFocus(),
-                                    singleLine = true,
+                                    onValueChange = { pin = it },
+                                    onComplete = { pair() },
                                     enabled = !isConnecting
                                 )
                             }
@@ -975,7 +1106,7 @@ internal fun SyncFlowDialog(
                             ) { Text("Continue") }
                             ReceiverStep.Pin -> TextButton(
                                 onClick = { pair() },
-                                enabled = host.isNotBlank() && pin.isNotBlank() && !isConnecting
+                                enabled = host.isNotBlank() && pin.length == PIN_LENGTH && !isConnecting
                             ) {
                                 if (isConnecting) {
                                     CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)

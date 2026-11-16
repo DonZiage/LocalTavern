@@ -13,15 +13,30 @@ import platform.AVFoundation.AVLayerVideoGravityResizeAspectFill
 import platform.AVFoundation.AVMediaTypeVideo
 import platform.AVFoundation.AVMetadataMachineReadableCodeObject
 import platform.AVFoundation.AVMetadataObjectTypeQRCode
+import platform.CoreGraphics.CGPointMake
+import platform.CoreGraphics.CGRectMake
 import platform.Foundation.NSURL
+import platform.QuartzCore.CAShapeLayer
+import platform.QuartzCore.kCALineCapRound
+import platform.UIKit.UIAction
 import platform.UIKit.UIApplication
+import platform.UIKit.UIButton
+import platform.UIKit.UIButtonTypeSystem
 import platform.UIKit.UIColor
+import platform.UIKit.UIControlEventTouchUpInside
+import platform.UIKit.UIControlStateNormal
+import platform.UIKit.UIFont
+import platform.UIKit.UILabel
+import platform.UIKit.UITextAlignmentCenter
+import platform.UIKit.UIView
 import platform.UIKit.UIViewController
 import platform.UIKit.UIWindow
+import platform.UIKit.UIBezierPath
 import platform.darwin.NSObject
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_main_queue
 import platform.darwin.dispatch_queue_create
+import kotlin.math.min
 
 actual val supportsQrScanning: Boolean = true
 
@@ -48,6 +63,14 @@ private class QrScanViewController(
     private var session: AVCaptureSession? = null
     private var delegate: QrScanDelegate? = null
     private var previewLayer: AVCaptureVideoPreviewLayer? = null
+
+    // Viewfinder overlay pieces (dimmed scrim, corner brackets, instruction
+    // and Cancel button), laid out in viewDidLayoutSubviews.
+    private var overlayView: UIView? = null
+    private var dimViews: List<UIView> = emptyList()
+    private var bracketLayers: List<CAShapeLayer> = emptyList()
+    private var instructionLabel: UILabel? = null
+    private var cancelButton: UIButton? = null
 
     override fun viewDidLoad() {
         super.viewDidLoad()
@@ -89,12 +112,100 @@ private class QrScanViewController(
         previewLayer = layer
         view.layer.addSublayer(layer)
 
+        setupOverlay()
         session.startRunning()
+    }
+
+    // Dimmed scrim with a clear square viewfinder and white corner brackets,
+    // an instruction line and a Cancel button — the user always knows what
+    // to aim at and how to get out. (The Cancel button is new: previously
+    // the scanner could only be left by scanning a code.)
+    private fun setupOverlay() {
+        val overlay = UIView()
+        overlay.backgroundColor = UIColor.clearColor
+        view.addSubview(overlay)
+        overlayView = overlay
+
+        val dimColor = UIColor.blackColor.colorWithAlphaComponent(0.55)
+        dimViews = (0 until 4).map {
+            UIView().also {
+                it.backgroundColor = dimColor
+                overlay.addSubview(it)
+            }
+        }
+        bracketLayers = (0 until 4).map {
+            CAShapeLayer().also {
+                it.strokeColor = UIColor.whiteColor.CGColor
+                it.fillColor = UIColor.clearColor.CGColor
+                it.lineWidth = 4.0
+                it.lineCap = kCALineCapRound
+                overlay.layer.addSublayer(it)
+            }
+        }
+        instructionLabel = UILabel().also {
+            it.text = "Align the QR code inside the frame"
+            it.textColor = UIColor.whiteColor
+            it.textAlignment = UITextAlignmentCenter
+            it.font = UIFont.systemFontOfSize(17.0)
+            it.numberOfLines = 0
+            overlay.addSubview(it)
+        }
+        cancelButton = UIButton.buttonWithType(UIButtonTypeSystem).also {
+            it.setTitle("Cancel", forState = UIControlStateNormal)
+            it.setTitleColor(UIColor.whiteColor, forState = UIControlStateNormal)
+            it.titleLabel?.font = UIFont.systemFontOfSize(17.0)
+            // UIAction carries a closure, so no ObjC selector is needed.
+            val cancelAction = UIAction(title = "", image = null, identifier = null) { _ ->
+                finishWith(null)
+            }
+            it.addAction(cancelAction, forControlEvents = UIControlEventTouchUpInside)
+            overlay.addSubview(it)
+        }
     }
 
     override fun viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         previewLayer?.frame = view.bounds
+        layoutOverlay()
+    }
+
+    // The square is 72% of the screen's smaller dimension, centered a
+    // little above the middle so the Cancel button and the instruction line
+    // stay clear of it.
+    private fun layoutOverlay() {
+        val overlay = overlayView ?: return
+        val bounds = view.bounds
+        overlay.frame = bounds
+        val width = bounds.size.width
+        val height = bounds.size.height
+        val side = min(width, height) * 0.72
+        val left = (width - side) / 2.0
+        val top = height * 0.42 - side / 2.0
+        val right = left + side
+        val bottom = top + side
+
+        dimViews.getOrNull(0)?.frame = CGRectMake(0.0, 0.0, width, top)
+        dimViews.getOrNull(1)?.frame = CGRectMake(0.0, bottom, width, height - bottom)
+        dimViews.getOrNull(2)?.frame = CGRectMake(0.0, top, left, side)
+        dimViews.getOrNull(3)?.frame = CGRectMake(right, top, width - right, side)
+
+        val arm = 28.0
+        val corners = listOf(
+            Triple(CGPointMake(left, top + arm), CGPointMake(left, top), CGPointMake(left + arm, top)),
+            Triple(CGPointMake(right - arm, top), CGPointMake(right, top), CGPointMake(right, top + arm)),
+            Triple(CGPointMake(left, bottom - arm), CGPointMake(left, bottom), CGPointMake(left + arm, bottom)),
+            Triple(CGPointMake(right - arm, bottom), CGPointMake(right, bottom), CGPointMake(right, bottom - arm))
+        )
+        corners.forEachIndexed { index, (start, corner, end) ->
+            val path = UIBezierPath()
+            path.moveToPoint(start)
+            path.addLineToPoint(corner)
+            path.addLineToPoint(end)
+            bracketLayers.getOrNull(index)?.path = path.CGPath
+        }
+
+        instructionLabel?.frame = CGRectMake(16.0, 56.0, width - 32.0, 24.0)
+        cancelButton?.frame = CGRectMake((width - 120.0) / 2.0, height - 88.0, 120.0, 44.0)
     }
 
     private fun finishWith(text: String?) {

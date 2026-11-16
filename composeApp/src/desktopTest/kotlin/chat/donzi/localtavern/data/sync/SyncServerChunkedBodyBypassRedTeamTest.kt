@@ -37,6 +37,7 @@ class SyncServerChunkedBodyBypassRedTeamTest {
             port = port,
             hello = { HelloResponse(deviceId = "me", deviceName = "me") },
             onPair = { _, _ -> PairResponse(ok = false, message = "n/a") },
+            onPairConfirm = { _, _, _, _ -> PairConfirmResponse(ok = false, message = "n/a") },
             onExchange = { _, payload, _, _ ->
                 handlerInvokedWithBody = true
                 ExchangeResponse(ok = false, message = "body accepted")

@@ -51,13 +51,7 @@ class SyncExchange(
     private val channelKeys: SyncChannelKeys,
     private val blobTransfer: SyncBlobTransfer,
     private val advertisedFetchAddress: () -> String?,
-    private val noteActivity: () -> Unit,
-    // Fired once an exchange from a pending (fingerprint-unconfirmed) peer
-    // has been AUTHENTICATED: the sender must hold the shared secret this
-    // pairing established, which proves the other side has verified its
-    // fingerprint. The pairing layer uses this to auto-complete the gate, so
-    // the flow works even when the two users confirm at different times.
-    private val onVerifiedExchange: (fromDeviceId: String) -> Unit = { }
+    private val noteActivity: () -> Unit
 ) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
@@ -406,10 +400,11 @@ class SyncExchange(
             if (!checkAndMarkExchangeSeen(fromDeviceId, exchangeId)) {
                 return ExchangeResponse(ok = false, message = "Replayed exchange.")
             }
-            // Authenticated: the sender holds the paired static secret. If its
-            // fingerprint was still pending on this side, this exchange IS the
-            // other side's confirmation — complete the pairing.
-            onVerifiedExchange(fromDeviceId)
+            // Authenticated: the sender holds the paired static secret. It
+            // does NOT complete the pairing: an exchange proves the peer
+            // holds the key, not that its user compared fingerprints — the
+            // mutual handshake (both sides confirming) is the only thing
+            // that clears the pending fingerprint (see SyncPairing).
             // Authenticated display-name update (see syncNow): never touches
             // cursors or deltas, so renaming cannot disturb sync state.
             DeviceName.sanitize(envelope.fromDeviceName.orEmpty())?.let { name ->

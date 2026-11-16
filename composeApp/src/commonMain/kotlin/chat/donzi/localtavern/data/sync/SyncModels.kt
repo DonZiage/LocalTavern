@@ -469,7 +469,14 @@ data class PairRequest(
     val deviceName: String,
     val publicKey: String,     // base64 X25519 public key
     val nonce: String,         // base64 random 16 bytes (PBKDF2 salt)
-    val pinProof: String       // base64 HMAC-SHA256 over deviceId|publicKey|nonce
+    val pinProof: String,      // base64 HMAC-SHA256 over deviceId|publicKey|nonce
+    // Port the guest listens on for sync traffic (its SYNC_PORT). The host
+    // records it as the peer's address: the source IP of the pair request
+    // alone is not enough, because the guest may listen on a different
+    // port than the host (tests run two servers on one machine; a device
+    // may also run sync on a custom port). Defaults to SYNC_PORT for
+    // older peers that do not send it.
+    val listenPort: Int = SYNC_PORT
 )
 
 @Serializable
